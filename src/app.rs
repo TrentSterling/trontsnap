@@ -2,15 +2,16 @@
 // and hosts the history gallery window.
 //
 // Threads:
-//   - eframe/winit (this thread): draws the gallery, keeps the pre-warmed region
-//     overlay viewport alive, pumps the tray message window, handles tray clicks.
+//   - eframe/winit (this thread): draws the gallery, pumps the tray message window,
+//     handles tray clicks.
 //   - keyboard hook (see keyhook.rs): a WH_KEYBOARD_LL hook that catches
 //     PrintScreen / Ctrl+PrintScreen system-wide even while the gallery is hidden.
 //   - single-instance acceptor: a second launch pokes us to show the window.
+//   - region overlay (see region_win32.rs): each Ctrl+PrintScreen spawns a thread
+//     that puts up a DEDICATED fullscreen Win32/GDI picker. The gallery window is
+//     never touched, so there is no maximize/restore/focus churn.
 //
-// PrintScreen = fullscreen grab (in-process). Ctrl+PrintScreen = region: the hotkey
-// thread grabs the frozen frame and update() repurposes THIS window into a fullscreen
-// borderless picker (no subprocess, no new GL context) — no launch cost, no black flash.
+// PrintScreen = fullscreen grab. Ctrl+PrintScreen = dedicated GDI region picker.
 
 use std::io::Write as _;
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
@@ -20,32 +21,18 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crossbeam_channel::{Receiver, Sender};
 use eframe::egui;
-use image::RgbaImage;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
 use tray_icon::{TrayIcon, TrayIconBuilder, TrayIconEvent};
-use windows::Win32::Foundation::{HWND, RECT};
-use windows::Win32::UI::WindowsAndMessaging::{
-    GetWindowRect, SetWindowPos, SystemParametersInfoW, HWND_NOTOPMOST, SPI_GETWORKAREA,
-    SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
-};
 
 use crate::autostart;
 use crate::capture;
 use crate::gallery::Gallery;
 use crate::keyhook::{HotkeyEvent, KeyboardHook};
-use crate::overlay::{build_rect_map, enumerate_windows_raw, RegionOutcome, RegionPicker};
+use crate::region_win32;
 
 const PORT: u16 = 48761;
-
-/// A freshly grabbed monitor image + pre-enumerated smart-capture window rects,
-/// handed from the hotkey thread to the UI thread to enter in-process region mode.
-struct RegionCapture {
-    img: RgbaImage,
-    windows: Vec<egui::Rect>,
-}
 
 pub fn run(start_hidden: bool) -> anyhow::Result<()> {
     // Single instance: bind a loopback port. If it's taken, another TrontSnap is
@@ -75,7 +62,7 @@ pub fn run(start_hidden: bool) -> anyhow::Result<()> {
     eframe::run_native(
         "TrontSnap",
         options,
-        Box::new(move |cc| match App::new(cc, listener, start_hidden) {
+        Box::new(move |cc| match App::new(cc, listener) {
             Ok(app) => Ok(Box::new(app) as Box<dyn eframe::App>),
             Err(e) => Err(Box::<dyn std::error::Error + Send + Sync>::from(e.to_string())),
         }),
@@ -95,34 +82,16 @@ pub struct App {
     quit_id: MenuId,
     show_flag: Arc<AtomicBool>,
     want_quit: bool,
-    // In-process region capture (no subprocess): the hotkey thread grabs the frame
-    // and sends it here; update() repurposes this window into the fullscreen picker.
-    region_tx: Sender<RegionCapture>,
-    region_rx: Receiver<RegionCapture>,
-    region: Option<RegionPicker>,
-    window_shown: bool,
-    was_visible_before_region: bool,
-    // Deferred, frames-later window geometry repair after a region session (see the
-    // restore comment in update()). `gallery_rect` is the last known-good windowed
-    // rect so we can put the gallery back exactly where it was.
-    pending_restore: Option<u8>,
-    gallery_rect: Option<(i32, i32, i32, i32)>,
 }
 
 impl App {
-    fn new(
-        cc: &eframe::CreationContext<'_>,
-        listener: TcpListener,
-        start_hidden: bool,
-    ) -> anyhow::Result<Self> {
+    fn new(cc: &eframe::CreationContext<'_>, listener: TcpListener) -> anyhow::Result<Self> {
         crate::theme::apply(&cc.egui_ctx);
-
-        let (region_tx, region_rx) = crossbeam_channel::unbounded::<RegionCapture>();
 
         // Global hotkeys via a low-level keyboard hook (best-effort — if it can't
         // install, the gallery still works). See keyhook.rs for why RegisterHotkey
         // was unreliable for bare PrintScreen.
-        let hotkeys = match setup_hotkeys(cc.egui_ctx.clone(), region_tx.clone()) {
+        let hotkeys = match setup_hotkeys() {
             Ok(m) => Some(m),
             Err(e) => {
                 eprintln!("trontsnap: hotkeys unavailable: {e:#}");
@@ -179,18 +148,10 @@ impl App {
             quit_id: quit_i.id().clone(),
             show_flag,
             want_quit: false,
-            region_tx,
-            region_rx,
-            region: None,
-            window_shown: !start_hidden,
-            was_visible_before_region: true,
-            pending_restore: None,
-            gallery_rect: None,
         })
     }
 
     fn show(&mut self, ctx: &egui::Context) {
-        self.window_shown = true;
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
         // No rescan here: the live capture watcher keeps the gallery current, so
@@ -198,7 +159,6 @@ impl App {
     }
 
     fn hide(&mut self, ctx: &egui::Context) {
-        self.window_shown = false;
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
     }
 }
@@ -208,124 +168,13 @@ impl eframe::App for App {
         // Keep ticking so tray/second-instance events are serviced even when hidden.
         ctx.request_repaint_after(Duration::from_millis(150));
 
-        let hwnd = hwnd_from_frame(frame);
-
-        // Deferred window-geometry repair after a region session. The Fullscreen(false)
-        // we queued on `done` is applied by winit AFTER update() returns; winit's own
-        // fullscreen-exit then restores the window to a bogus rect whenever it was
-        // tray-hidden at fullscreen-enter (observed live: -21333,-21333 @ 107x19,
-        // still WS_VISIBLE + topmost). That stale off-screen sliver is exactly why
-        // "Ctrl+PrtSc stopped working": the NEXT fullscreen resolves to no on-screen
-        // monitor, so the picker is invisible. So: wait a few frames for winit to
-        // settle, then hard-set a known-good on-screen rect + drop topmost via Win32
-        // (physical px; eframe's OuterPosition is point/pixel-ambiguous — see toast.rs).
-        if let Some(n) = self.pending_restore {
-            if n == 0 {
-                if let Some(h) = hwnd {
-                    restore_windowed(h, self.gallery_rect);
-                }
-                self.pending_restore = None;
-            } else {
-                self.pending_restore = Some(n - 1);
-                ctx.request_repaint();
-            }
-        }
-
-        // In-process region capture. Drain to the freshest queued frame EVERY frame
-        // (not only while idle): a fresh Ctrl+PrtSc then always (re)enters the picker,
-        // even kicking a previously stuck/off-screen picker back onto the primary
-        // monitor instead of being silently swallowed forever. Repurpose THIS
-        // already-warm window into a fullscreen borderless picker — no subprocess,
-        // no new GL context, so no launch cost and no black flash.
-        let mut latest: Option<RegionCapture> = None;
-        while let Ok(cap) = self.region_rx.try_recv() {
-            latest = Some(cap);
-        }
-        if let Some(RegionCapture { img, windows }) = latest {
-            if self.region.is_none() {
-                // First entry this session: remember whether the gallery was showing
-                // and, if so and it's a sane rect, where — so we restore it there with
-                // no jump. A corrupt/off-screen rect is ignored (falls back to center).
-                self.was_visible_before_region = self.window_shown;
-                if let Some(h) = hwnd {
-                    if let Some(r) = sane_window_rect(h) {
-                        self.gallery_rect = Some(r);
-                    }
-                }
-            }
-            self.pending_restore = None; // supersede any in-flight restore
-            // Park the (possibly off-screen) window on the primary monitor BEFORE we
-            // fullscreen, so the picker is guaranteed to cover a real monitor.
-            if let Some(h) = hwnd {
-                move_onto_primary(h);
-            }
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-            ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(false));
-            ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
-                egui::viewport::WindowLevel::AlwaysOnTop,
-            ));
-            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
-            self.region = Some(RegionPicker::new(img, windows));
-        }
-
-        if self.region.is_some() {
-            let mut done = false;
-            egui::CentralPanel::default()
-                .frame(egui::Frame::none())
-                .show(ctx, |ui| {
-                    if let Some(picker) = &mut self.region {
-                        if let RegionOutcome::Done = picker.ui(ctx, ui) {
-                            done = true;
-                        }
-                    }
-                });
-            if done {
-                if self.was_visible_before_region {
-                    // Gallery was open: exit fullscreen in place. Measured
-                    // flash-free (winit's fullscreen-exit on a visible window is a
-                    // single-frame cut on this stack).
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(true));
-                    ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
-                        egui::viewport::WindowLevel::Normal,
-                    ));
-                } else {
-                    // Tray-hidden target: hide FIRST, before touching Fullscreen/
-                    // Decorations/WindowLevel. With Visible(false) sent LAST, DWM
-                    // plays a ~130-150ms fade-to-dark while the AlwaysOnTop
-                    // fullscreen-exit is still on screen — that fade IS the reported
-                    // close flash. Hiding first means the geometry restore happens
-                    // on an already-invisible window: DWM has nothing to composite,
-                    // so it just vanishes in one frame (probe-verified).
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(true));
-                    ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
-                        egui::viewport::WindowLevel::Normal,
-                    ));
-                    self.window_shown = false;
-                }
-                self.region = None;
-                // Repair the window geometry a few frames from now, once winit has
-                // actually applied the queued Fullscreen(false) — otherwise our
-                // SetWindowPos runs first and winit's buggy restore clobbers it back
-                // off-screen. The top-of-frame drain handles any stale queued capture.
-                self.pending_restore = Some(3);
-                ctx.request_repaint();
-            }
-            return; // don't lay out the gallery underneath the overlay this frame
-        }
-
         while let Ok(ev) = MenuEvent::receiver().try_recv() {
             if ev.id == self.open_id {
                 self.show(ctx);
             } else if ev.id == self.full_id {
                 do_full();
             } else if ev.id == self.region_id {
-                // Grab off the UI thread (xcap is ~90ms) then hand to update().
-                let ctx2 = ctx.clone();
-                let tx = self.region_tx.clone();
-                std::thread::spawn(move || start_region(&ctx2, &tx));
+                std::thread::spawn(region_win32::capture_region);
             } else if ev.id == self.auto_id {
                 autostart::set(self.auto_item.is_checked());
             } else if ev.id == self.quit_id {
@@ -350,6 +199,7 @@ impl eframe::App for App {
             self.hide(ctx);
         }
 
+        let hwnd = hwnd_from_frame(frame);
         egui::CentralPanel::default().show(ctx, |ui| {
             self.gallery.ui(ui, ctx, hwnd);
         });
@@ -357,45 +207,21 @@ impl eframe::App for App {
 }
 
 /// Install the WH_KEYBOARD_LL hook and start the consumer thread. PrintScreen runs
-/// do_full(); Ctrl+PrintScreen grabs the frame here (off the UI thread) and hands it
-/// to the UI thread, which repurposes its own window into the picker — no subprocess.
-fn setup_hotkeys(
-    ctx: egui::Context,
-    region_tx: Sender<RegionCapture>,
-) -> anyhow::Result<KeyboardHook> {
+/// do_full(); Ctrl+PrintScreen spawns the dedicated Win32 region overlay on its own
+/// thread (it blocks in a modal message loop until you pick or cancel).
+fn setup_hotkeys() -> anyhow::Result<KeyboardHook> {
     let (hook, rx) = KeyboardHook::install()?;
     std::thread::spawn(move || {
         while let Ok(ev) = rx.recv() {
             match ev {
                 HotkeyEvent::Full => do_full(),
-                HotkeyEvent::Region => start_region(&ctx, &region_tx),
+                HotkeyEvent::Region => {
+                    std::thread::spawn(region_win32::capture_region);
+                }
             }
         }
     });
     Ok(hook)
-}
-
-/// Grab the primary monitor and enumerate smart-capture window targets (both off
-/// the UI thread — xcap is ~90ms), then hand both to the UI thread to enter region
-/// mode. Enumeration runs on a nested thread concurrently with the grab, so it
-/// costs ~0 extra wall-clock and never touches the UI thread.
-fn start_region(ctx: &egui::Context, region_tx: &Sender<RegionCapture>) {
-    // Nudge the loop awake early — if the window is tray-hidden and idling on the
-    // 150ms tick, warm it up before the ~90ms capture even finishes.
-    ctx.request_repaint();
-    let enum_handle = std::thread::spawn(enumerate_windows_raw);
-    match capture::grab_primary() {
-        Ok(img) => {
-            let raw = enum_handle.join().unwrap_or_default();
-            let windows = build_rect_map(&raw, img.width() as i32, img.height() as i32);
-            let _ = region_tx.send(RegionCapture { img, windows });
-            ctx.request_repaint();
-        }
-        Err(e) => {
-            let _ = enum_handle.join();
-            eprintln!("trontsnap: region capture failed: {e:#}");
-        }
-    }
 }
 
 fn do_full() {
@@ -408,85 +234,6 @@ fn do_full() {
         },
         Err(e) => eprintln!("trontsnap: full capture failed: {e:#}"),
     });
-}
-
-/// True if `(x, y, w, h)` (physical px) is plausibly a real, on-screen gallery
-/// window — not the off-screen sliver winit leaves after a bad fullscreen-exit
-/// (the observed -21333,-21333 @ 107x19), and not a zero/degenerate rect.
-fn rect_is_sane((x, y, w, h): (i32, i32, i32, i32)) -> bool {
-    (400..=10000).contains(&w)
-        && (300..=10000).contains(&h)
-        && (-2000..20000).contains(&x)
-        && (-2000..20000).contains(&y)
-}
-
-/// The window's current outer rect as `(x, y, w, h)` physical px, but only if it
-/// looks like a sane on-screen window (so we never memorise a corrupt rect).
-fn sane_window_rect(hwnd: isize) -> Option<(i32, i32, i32, i32)> {
-    unsafe {
-        let mut r = RECT::default();
-        GetWindowRect(HWND(hwnd), &mut r).ok()?;
-        let rect = (r.left, r.top, r.right - r.left, r.bottom - r.top);
-        rect_is_sane(rect).then_some(rect)
-    }
-}
-
-/// Primary work area (excludes the taskbar) as `(x, y, w, h)` physical px.
-fn work_area() -> Option<(i32, i32, i32, i32)> {
-    unsafe {
-        let mut wa = RECT::default();
-        SystemParametersInfoW(
-            SPI_GETWORKAREA,
-            0,
-            Some(&mut wa as *mut _ as *mut _),
-            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
-        )
-        .ok()?;
-        Some((wa.left, wa.top, wa.right - wa.left, wa.bottom - wa.top))
-    }
-}
-
-/// A sensible centered default gallery rect on the primary monitor, used when we
-/// have no remembered (or a corrupt) rect to restore to.
-fn default_gallery_rect() -> (i32, i32, i32, i32) {
-    match work_area() {
-        Some((l, t, ww, wh)) => {
-            let w = (ww as f32 * 0.62) as i32;
-            let h = (wh as f32 * 0.68) as i32;
-            (l + (ww - w) / 2, t + (wh - h) / 2, w, h)
-        }
-        None => (200, 120, 1180, 760),
-    }
-}
-
-/// Move the window's top-left to the primary-monitor origin (position only) so a
-/// following Fullscreen(true) resolves to the primary monitor even when a prior
-/// region cycle parked the window off-screen.
-fn move_onto_primary(hwnd: isize) {
-    unsafe {
-        let _ = SetWindowPos(
-            HWND(hwnd),
-            HWND(0),
-            0,
-            0,
-            0,
-            0,
-            SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER,
-        );
-    }
-}
-
-/// Hard-restore the window to a known-good on-screen rect and drop the topmost
-/// bit, via Win32. Needed because winit's fullscreen-exit lands the window
-/// off-screen when it was hidden at fullscreen-enter, and WindowLevel(Normal)
-/// doesn't reliably clear WS_EX_TOPMOST (both observed live).
-fn restore_windowed(hwnd: isize, remembered: Option<(i32, i32, i32, i32)>) {
-    let (x, y, w, h) = remembered
-        .filter(|r| rect_is_sane(*r))
-        .unwrap_or_else(default_gallery_rect);
-    unsafe {
-        let _ = SetWindowPos(HWND(hwnd), HWND_NOTOPMOST, x, y, w, h, SWP_NOACTIVATE);
-    }
 }
 
 /// Extract the raw Win32 HWND from eframe's window handle. eframe::Frame
@@ -596,27 +343,4 @@ fn rr_contains(x: f32, y: f32, lo: f32, hi: f32, r: f32) -> bool {
     let qx = ((lo + r) - x).max(x - (hi - r)).max(0.0);
     let qy = ((lo + r) - y).max(y - (hi - r)).max(0.0);
     qx * qx + qy * qy <= r * r
-}
-
-#[cfg(test)]
-mod tests {
-    use super::rect_is_sane;
-
-    #[test]
-    fn rejects_the_observed_corrupt_restore_rect() {
-        // The exact live state winit left the window in after a region session
-        // that started from tray-hidden: a 107x19 sliver ~21k px off-screen.
-        assert!(!rect_is_sane((-21333, -21333, 107, 19)));
-    }
-
-    #[test]
-    fn accepts_a_normal_gallery_rect() {
-        assert!(rect_is_sane((680, 330, 1200, 780)));
-    }
-
-    #[test]
-    fn rejects_zero_and_tiny_slivers() {
-        assert!(!rect_is_sane((0, 0, 0, 0)));
-        assert!(!rect_is_sane((100, 100, 120, 40)));
-    }
 }

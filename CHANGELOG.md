@@ -2,6 +2,58 @@
 
 All notable changes to TrontSnap. Newest first.
 
+## v0.5.0 (2026-07-14)
+
+### Changed (architecture)
+- **Region capture is now a dedicated Win32 + GDI fullscreen overlay** (new
+  `region_win32.rs`), the ShareX approach, instead of repurposing the app's own
+  eframe/GL window. Each `Ctrl+PrtSc` spawns a thread that grabs the screen,
+  enumerates targets, and puts up a separate borderless window *born already
+  fullscreen* with the frozen frame painted in: GDI double-buffered, force-
+  foregrounded (attach-thread-input) so keyboard works regardless of focus,
+  blocking-modal, returning the crop. The gallery window is never touched.
+
+### Fixed (all consequences of no longer repurposing the main window)
+- No visible maximize / grow into the overlay — it's born fullscreen, appears instantly.
+- No black flash on close/cancel — the overlay window is just destroyed; the gallery
+  is never resized, restored, or refocused.
+- No focus-dependent behavior — the overlay is independent of the gallery, and force-
+  foreground guarantees Esc / clicks land regardless of which app was active.
+- Phantom drag on entry (the v0.4.3 regression where the picker rubber-banded a
+  rectangle before you clicked) is gone: input is driven by real
+  `WM_LBUTTONDOWN` / `WM_LBUTTONUP` messages, not raw pointer-down polling.
+
+### Removed
+- The entire in-process repurpose machinery: arming, deferred geometry restore,
+  off-screen rescue, coverage gate, and the egui `RegionPicker`. `overlay.rs` is now
+  just window enumeration, consumed by the GDI picker.
+
+## v0.4.4 (2026-07-14)
+
+### Fixed
+- **You could see the window visibly maximize into the overlay, with a delay.** The
+  entry sequence showed the window first and then went fullscreen, so the fullscreen
+  transition animated on-screen. Now the window is configured to fullscreen *while
+  hidden* and only revealed once it is already full-size (a short "arm" countdown),
+  so the overlay appears born-fullscreen with no grow animation. This is the
+  repurpose-window approximation of the dedicated born-fullscreen overlay window
+  ShareX uses.
+
+## v0.4.3 (2026-07-14)
+
+### Fixed
+- **Region overlay was confined to a small window when TrontSnap was minimized to
+  the taskbar.** The entry sequence never un-minimized the window, so
+  `Fullscreen(true)` didn't stick and the picker painted the frozen frame scaled
+  into the normal-sized window. Now sends `Minimized(false)` before fullscreen.
+- **A quick drag immediately after `Ctrl+PrtSc` flickered and failed** (a slow drag
+  worked). `Fullscreen(true)` lands a frame or two after the picker's first frame,
+  so early drag coordinates were measured against the pre-fullscreen (small) window
+  rect and then jumped. The picker now gates all selection input until the overlay
+  actually covers the captured monitor (60-frame safety valve so input is never
+  trapped), and drag tracking is manual (press / move / release) so a drag begun
+  mid-transition re-anchors cleanly instead of flickering.
+
 ## v0.4.2 (2026-07-14)
 
 ### Fixed

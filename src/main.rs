@@ -18,6 +18,7 @@ mod gallery;
 mod index;
 mod keyhook;
 mod overlay;
+mod region_win32;
 mod sound;
 mod theme;
 mod thumbs;
@@ -30,7 +31,10 @@ fn main() {
         "" | "app" => app::run(false),
         "--startup" | "tray" => app::run(true),
         "full" => capture::capture_full(),
-        "region" => overlay::run_region(),
+        "region" => {
+            region_win32::capture_region();
+            Ok(())
+        }
         "toast" => match std::env::args().nth(2) {
             Some(p) => toast::show(std::path::PathBuf::from(p)),
             None => Ok(()),
