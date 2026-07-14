@@ -125,7 +125,7 @@ struct Picker {
     w: i32,
     h: i32,
     bright_dc: HDC, // frozen frame at full brightness
-    dark_dc: HDC,   // frozen frame darkened (the "dim outside" backdrop)
+    base_dc: HDC,   // pre-composited dim backdrop + faint rect map (static; built once)
     back_dc: HDC,   // double-buffer
     targets: Vec<RECT>,
     cursor: POINT,
@@ -134,9 +134,9 @@ struct Picker {
     drag_now: POINT,
     result: Option<RECT>,
     accent_pen: HPEN,
-    faint_pen: HPEN,
     hollow: HGDIOBJ,
     label_bg: HBRUSH,
+    cross: HCURSOR,
 }
 
 /// Run the modal picker. Returns the chosen rect in physical screen px, or None on cancel.
@@ -148,13 +148,32 @@ fn pick(img: &RgbaImage, w: i32, h: i32, targets: &[RECT]) -> Option<RECT> {
         let back_dc = CreateCompatibleDC(screen);
         let back_bmp = CreateCompatibleBitmap(screen, w, h);
         SelectObject(back_dc, back_bmp);
+
+        // Pre-compose the STATIC layer once: the dim backdrop plus the faint rect map.
+        // None of that changes during a pick, so building it up front (instead of
+        // re-darkening the whole screen and re-stroking every window rect on every
+        // mouse move) keeps each frame cheap — a busy paint thread is exactly what
+        // makes Windows flash the wait cursor over the overlay.
+        let base_dc = CreateCompatibleDC(screen);
+        let base_bmp = CreateCompatibleBitmap(screen, w, h);
+        SelectObject(base_dc, base_bmp);
+        let _ = BitBlt(base_dc, 0, 0, w, h, dark_dc, 0, 0, SRCCOPY);
+        let faint = CreatePen(PS_SOLID, 1, rgb(60, 140, 175));
+        SelectObject(base_dc, GetStockObject(NULL_BRUSH));
+        SelectObject(base_dc, faint);
+        for r in targets {
+            let _ = Rectangle(base_dc, r.left, r.top, r.right, r.bottom);
+        }
         ReleaseDC(HWND(0), screen);
+        // The dark frame was only needed to build the base; drop it now.
+        let _ = DeleteDC(dark_dc);
+        let _ = DeleteObject(dark_bmp);
 
         let mut picker = Picker {
             w,
             h,
             bright_dc,
-            dark_dc,
+            base_dc,
             back_dc,
             targets: targets.to_vec(),
             cursor: POINT { x: -1, y: -1 },
@@ -163,9 +182,9 @@ fn pick(img: &RgbaImage, w: i32, h: i32, targets: &[RECT]) -> Option<RECT> {
             drag_now: POINT { x: 0, y: 0 },
             result: None,
             accent_pen: CreatePen(PS_SOLID, 2, accent()),
-            faint_pen: CreatePen(PS_SOLID, 1, rgb(60, 140, 175)),
             hollow: GetStockObject(NULL_BRUSH),
             label_bg: CreateSolidBrush(rgb(10, 12, 16)),
+            cross: LoadCursorW(None, IDC_CROSS).unwrap_or_default(),
         };
 
         let hinstance = GetModuleHandleW(None).unwrap_or_default();
@@ -190,6 +209,10 @@ fn pick(img: &RgbaImage, w: i32, h: i32, targets: &[RECT]) -> Option<RECT> {
         let _ = ShowWindow(hwnd, SW_SHOW);
         force_foreground(hwnd);
         SetCapture(hwnd);
+        // With capture held, Windows stops sending WM_SETCURSOR, so the class cursor
+        // never applies and the app-starting/wait spinner sticks. Force it here and on
+        // every WM_MOUSEMOVE (see wndproc) so it's always the crosshair.
+        SetCursor(picker.cross);
         let _ = InvalidateRect(hwnd, None, false);
 
         let mut msg = MSG::default();
@@ -198,15 +221,16 @@ fn pick(img: &RgbaImage, w: i32, h: i32, targets: &[RECT]) -> Option<RECT> {
             DispatchMessageW(&msg);
         }
 
-        // Teardown (window already destroyed by the proc).
+        // Teardown (window already destroyed by the proc). DeleteDC first so the
+        // selected pen/bitmap are released before we DeleteObject them.
         let _ = DeleteDC(back_dc);
         let _ = DeleteObject(back_bmp);
         let _ = DeleteDC(bright_dc);
         let _ = DeleteObject(bright_bmp);
-        let _ = DeleteDC(dark_dc);
-        let _ = DeleteObject(dark_bmp);
+        let _ = DeleteDC(base_dc);
+        let _ = DeleteObject(base_bmp);
+        let _ = DeleteObject(faint);
         let _ = DeleteObject(picker.accent_pen);
-        let _ = DeleteObject(picker.faint_pen);
         let _ = DeleteObject(picker.label_bg);
 
         picker.result
@@ -345,6 +369,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
 
     match msg {
         WM_MOUSEMOVE => {
+            SetCursor(p.cross); // capture suppresses WM_SETCURSOR; force crosshair here
             p.cursor = lp_point(lp);
             if p.dragging {
                 p.drag_now = p.cursor;
@@ -404,8 +429,8 @@ unsafe fn paint(p: &Picker, hwnd: HWND) {
     let mut ps = PAINTSTRUCT::default();
     let hdc = BeginPaint(hwnd, &mut ps);
 
-    // 1. Dim backdrop across the whole screen.
-    let _ = BitBlt(p.back_dc, 0, 0, p.w, p.h, p.dark_dc, 0, 0, SRCCOPY);
+    // 1. Static base: dim backdrop + faint rect map, pre-composited once.
+    let _ = BitBlt(p.back_dc, 0, 0, p.w, p.h, p.base_dc, 0, 0, SRCCOPY);
 
     let sel = current_sel(p);
 
@@ -417,24 +442,15 @@ unsafe fn paint(p: &Picker, hwnd: HWND) {
         }
     }
 
-    SelectObject(p.back_dc, p.hollow);
-
-    // 3. Faint outline of every candidate rect (hover mode only).
-    if !p.dragging {
-        SelectObject(p.back_dc, p.faint_pen);
-        for r in &p.targets {
-            let _ = Rectangle(p.back_dc, r.left, r.top, r.right, r.bottom);
-        }
-    }
-
-    // 4. Bright selection outline + live dimensions.
+    // 3. Bright selection outline + live dimensions.
     if let Some(r) = sel {
+        SelectObject(p.back_dc, p.hollow);
         SelectObject(p.back_dc, p.accent_pen);
         let _ = Rectangle(p.back_dc, r.left, r.top, r.right, r.bottom);
         draw_dimensions(p, r);
     }
 
-    // 5. Pixel-crisp loupe at the cursor.
+    // 4. Pixel-crisp loupe at the cursor.
     if p.cursor.x >= 0 {
         draw_loupe(p);
     }

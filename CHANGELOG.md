@@ -2,7 +2,17 @@
 
 All notable changes to TrontSnap. Newest first.
 
-## v0.5.0 (2026-07-14)
+## v0.5.1 (2026-07-14)
+
+### Fixed
+- **Region picker cursor flickered to the wait/hourglass spinner**, making rect
+  selection fiddly. Two causes: while the overlay holds `SetCapture`, Windows stops
+  sending `WM_SETCURSOR` so the crosshair class-cursor never applied; and the
+  per-mouse-move paint re-darkened the whole screen and re-stroked every window rect,
+  making the thread look busy. Fixes: force `SetCursor(crosshair)` on capture and on
+  every `WM_MOUSEMOVE`; and pre-compose the static layer (dim backdrop + faint rect
+  map) once so each frame only blits the base plus the small dynamic bits. Crosshair
+  now stays put and painting is cheaper.
 
 ### Changed (architecture)
 - **Region capture is now a dedicated Win32 + GDI fullscreen overlay** (new
