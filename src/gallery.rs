@@ -214,6 +214,17 @@ impl Gallery {
             if self.scanning {
                 ui.spinner();
             }
+            ui.separator();
+            // Legend: explains the little source dot on the corner of every
+            // thumbnail (cyan = shot by TrontSnap, amber = imported ShareX archive).
+            let dot = |ui: &mut egui::Ui, color: Color32, label: &str| {
+                let (rect, _) =
+                    ui.allocate_exact_size(egui::vec2(11.0, 11.0), egui::Sense::hover());
+                ui.painter().circle_filled(rect.center(), 3.5, color);
+                ui.label(egui::RichText::new(label).small().color(Color32::from_gray(170)));
+            };
+            dot(ui, ACCENT, "TrontSnap");
+            dot(ui, AMBER, "ShareX");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("⟳ Refresh").clicked() {
                     self.start_scan();
