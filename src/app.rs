@@ -107,6 +107,11 @@ impl App {
                 None
             }
         };
+        // Global LL hook is bypassed for PrintScreen when TrontSnap's own window has
+        // focus; a thread-scoped WH_KEYBOARD hook on this (UI) thread covers that gap.
+        if hotkeys.is_some() {
+            crate::keyhook::install_focused_fallback();
+        }
 
         // Tray icon + menu.
         let menu = Menu::new();

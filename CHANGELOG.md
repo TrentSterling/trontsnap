@@ -2,6 +2,25 @@
 
 All notable changes to TrontSnap. Newest first.
 
+## v0.5.8 (2026-07-15)
+
+### Fixed
+- **PrtSc / Ctrl+PrtSc did nothing while the TrontSnap window itself was focused**
+  (worked fine from any other window). Instrumented the hook and confirmed the cause:
+  Windows does not invoke a global `WH_KEYBOARD_LL` hook for PrintScreen when the
+  keystroke is destined for the hook owner's *own* foreground window. Added a
+  thread-scoped `WH_KEYBOARD` hook on the UI thread as a fallback: it fires exactly
+  when one of TrontSnap's windows has focus (debounced; fires on any snapshot event,
+  since PrtSc may deliver only a key-up to a focused app). The global hook covers
+  every other case, so the two never double-fire.
+
+## v0.5.7 (2026-07-15)
+
+### Fixed
+- **Toast "click to open" didn't work.** egui's click handling doesn't fire on the
+  toast's non-activating, always-on-top window. It now detects the click via Win32
+  (physical mouse button + cursor-over-window rect test), bypassing egui entirely.
+
 ## v0.5.6 (2026-07-15)
 
 ### Fixed

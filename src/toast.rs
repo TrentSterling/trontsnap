@@ -44,11 +44,12 @@ struct Toast {
     tex: Option<egui::TextureHandle>,
     born: Option<Instant>,
     positioned: bool,
+    was_pressed: bool,
 }
 
 impl Toast {
     fn new(path: PathBuf, thumb: Option<RgbaImage>) -> Self {
-        Self { path, thumb, tex: None, born: None, positioned: false }
+        Self { path, thumb, tex: None, born: None, positioned: false, was_pressed: false }
     }
 }
 
@@ -66,6 +67,19 @@ impl eframe::App for Toast {
         if born.elapsed() > Duration::from_millis(2600) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
+
+        // Click-to-open, detected via Win32 (poll the physical mouse button + cursor
+        // position). The toast is a non-activating always-on-top tool window, so egui's
+        // own click detection doesn't fire on it. A rising edge of the left button while
+        // the cursor is over the toast opens the capture in the default viewer.
+        let btn = left_button_down();
+        if btn && !self.was_pressed && cursor_over_window(frame) {
+            if let Err(e) = opener::open(&self.path) {
+                eprintln!("trontsnap: toast open failed: {e:#}");
+            }
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+        self.was_pressed = btn;
 
         // Upload the thumbnail once.
         if self.tex.is_none() {
@@ -120,23 +134,39 @@ impl eframe::App for Toast {
                     );
                 });
             });
-            // Full-window click target LAST, so it sits on top of the thumbnail/labels
-            // and catches a click anywhere in the toast (adding it first meant the
-            // thumbnail's hover region shadowed it and clicks there never registered).
-            let resp = ui.interact(
-                ui.max_rect(),
-                ui.id().with("toast-click"),
-                egui::Sense::click(),
-            );
-            if resp.clicked() {
-                if let Err(e) = opener::open(&self.path) {
-                    eprintln!("trontsnap: toast open failed: {e:#}");
-                }
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            }
         });
 
-        ctx.request_repaint_after(Duration::from_millis(100));
+        // Poll fairly often so the Win32 click detection above catches quick clicks.
+        ctx.request_repaint_after(Duration::from_millis(30));
+    }
+}
+
+/// Is the physical left mouse button currently down? (Global, focus-independent.)
+fn left_button_down() -> bool {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
+    unsafe { (GetAsyncKeyState(VK_LBUTTON.0 as i32) as u16 & 0x8000) != 0 }
+}
+
+/// Is the mouse cursor currently over the toast window? Win32 rect test in physical px.
+fn cursor_over_window(frame: &eframe::Frame) -> bool {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use windows::Win32::Foundation::{HWND, POINT, RECT};
+    use windows::Win32::UI::WindowsAndMessaging::{GetCursorPos, GetWindowRect};
+
+    let hwnd = match frame.window_handle().ok().map(|h| h.as_raw()) {
+        Some(RawWindowHandle::Win32(h)) => HWND(h.hwnd.get()),
+        _ => return false,
+    };
+    unsafe {
+        let mut pt = POINT::default();
+        if GetCursorPos(&mut pt).is_err() {
+            return false;
+        }
+        let mut wr = RECT::default();
+        if GetWindowRect(hwnd, &mut wr).is_err() {
+            return false;
+        }
+        pt.x >= wr.left && pt.x < wr.right && pt.y >= wr.top && pt.y < wr.bottom
     }
 }
 

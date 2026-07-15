@@ -15,7 +15,11 @@
 // hook_proc does the absolute minimum and never blocks: every keystroke on the
 // whole machine passes through it while installed.
 
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Mutex, OnceLock};
+
+// Debounce timestamp for the focused-window fallback hook (see kbd_proc).
+static LAST_THREAD_FIRE_MS: AtomicU64 = AtomicU64::new(0);
 use std::thread::JoinHandle;
 use std::time::Instant;
 
@@ -26,8 +30,8 @@ use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_CONTROL, VK_SNAPSHOT};
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, DispatchMessageW, GetMessageW, PostThreadMessageW, SetWindowsHookExW,
-    TranslateMessage, UnhookWindowsHookEx, HHOOK, KBDLLHOOKSTRUCT, MSG, WH_KEYBOARD_LL,
-    WM_KEYDOWN, WM_KEYUP, WM_QUIT, WM_SYSKEYDOWN, WM_SYSKEYUP,
+    TranslateMessage, UnhookWindowsHookEx, HC_ACTION, HHOOK, KBDLLHOOKSTRUCT, MSG, WH_KEYBOARD,
+    WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP, WM_QUIT, WM_SYSKEYDOWN, WM_SYSKEYUP,
 };
 
 /// What the hook saw: plain PrintScreen, or PrintScreen with Ctrl held.
@@ -209,6 +213,39 @@ fn fire() {
     if let Some(tx) = TX.get() {
         let _ = tx.send(if ctrl_down { HotkeyEvent::Region } else { HotkeyEvent::Full });
     }
+}
+
+/// Install a THREAD-scoped `WH_KEYBOARD` hook on the CALLING (UI) thread. This catches
+/// PrintScreen while one of this thread's windows (the gallery) has focus — the exact
+/// case where the global `WH_KEYBOARD_LL` hook is NOT invoked (a Windows quirk: an LL
+/// keyboard hook can be bypassed for keystrokes going to the hook owner's own
+/// foreground window; verified empirically). The two hooks are mutually exclusive (LL
+/// for everything else, this one only when we're focused), so no double-fire. Must be
+/// called on the UI thread. Best-effort: logs and returns on failure.
+pub fn install_focused_fallback() {
+    unsafe {
+        // hMod = NULL because the proc is in this process and threadId is our own thread.
+        if let Err(e) = SetWindowsHookExW(WH_KEYBOARD, Some(kbd_proc), HMODULE(0), GetCurrentThreadId())
+        {
+            eprintln!("trontsnap: focused-window PrtSc fallback hook unavailable: {e:#}");
+        }
+        // The hook lives for the process; it's auto-removed on exit. We intentionally
+        // don't keep the handle.
+    }
+}
+
+/// WH_KEYBOARD proc (runs on the UI thread). Fires a capture on any VK_SNAPSHOT
+/// keyboard event, debounced, because when a normal app is focused PrintScreen may
+/// deliver only a key-up (the documented quirk) — so we can't rely on seeing a keydown.
+unsafe extern "system" fn kbd_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    if code == HC_ACTION as i32 && wparam.0 as u32 == VK_SNAPSHOT.0 as u32 {
+        let now = now_ms();
+        let last = LAST_THREAD_FIRE_MS.swap(now, AtomicOrdering::Relaxed);
+        if now.saturating_sub(last) > 250 {
+            fire();
+        }
+    }
+    CallNextHookEx(HHOOK(0), code, wparam, lparam)
 }
 
 #[cfg(test)]
