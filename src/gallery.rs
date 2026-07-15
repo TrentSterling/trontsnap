@@ -225,10 +225,9 @@ impl Gallery {
             };
             dot(ui, ACCENT, "TrontSnap");
             dot(ui, AMBER, "ShareX");
+            // No manual Refresh button: the live file watcher splices new captures in
+            // automatically (see poll_watch). start_scan() still runs once on launch.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("⟳ Refresh").clicked() {
-                    self.start_scan();
-                }
                 if let Some((msg, _)) = &self.status {
                     ui.colored_label(ACCENT, msg.clone());
                 }

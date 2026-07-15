@@ -2,6 +2,64 @@
 
 All notable changes to TrontSnap. Newest first.
 
+## v0.5.6 (2026-07-15)
+
+### Fixed
+- **Toast "click to open" didn't work.** The full-window click target was added
+  *before* the thumbnail and labels, so in egui's hit-testing those sat on top of it;
+  clicking the (large, obvious) thumbnail hit its hover region and the click never
+  reached the handler. The click target is now added last, on top of everything, so a
+  click anywhere in the toast opens the capture. Open errors are logged instead of
+  silently swallowed.
+
+## v0.5.5 (2026-07-15)
+
+### Changed
+- **Removed the manual "Refresh" button** from the gallery toolbar. The live file
+  watcher already splices new captures in automatically, so it was redundant.
+  `start_scan()` still runs once on launch for the initial load.
+
+## v0.5.4 (2026-07-15)
+
+### Fixed
+- **Root cause behind all the tray flakiness: eframe never runs `update()` while the
+  window is hidden to the tray.** So anything routed through `update()` (a tray
+  left-click region capture, a menu capture, showing the window) silently *queued*
+  until the window happened to reappear, then flushed at once. Fix: every tray/menu
+  action is now performed **directly in its event handler** (which fires on the UI
+  thread when dispatched), not via `update()`:
+  - Tray left-click → region capture fires instantly, even while hidden.
+  - Menu Open → Win32 restore (cached HWND); Capture Fullscreen/Region → run directly;
+    Quit → exits directly.
+  - Only the autostart toggle still goes through `update()` (it needs `&self`; applies
+    on the next tick).
+
+## v0.5.3 (2026-07-15)
+
+### Fixed
+- **Tray "Open TrontSnap" / restore-from-minimized still didn't bring the window
+  back** (v0.5.2 woke the loop, but `show()` itself was the problem). `Visible(true)`
+  leaves a tray-hidden window stuck behind the focused app (Windows foreground lock)
+  and does nothing at all for a *minimized* window (it's iconic, not hidden). `show()`
+  now does a real Win32 restore: `ShowWindow(SW_RESTORE)` (un-hides AND un-minimizes)
+  plus an attach-thread-input force-foreground so the gallery actually pops to front.
+
+## v0.5.2 (2026-07-15)
+
+### Fixed
+- **Tray "Open TrontSnap" did not re-show the window.** The menu popped, but the
+  window stayed hidden. Cause: eframe does not reliably call `update()` on the idle
+  repaint timer while the window is hidden to the tray, so the menu event sat in its
+  global channel unread until some unrelated event woke the loop. Fix: forward tray +
+  menu events through our own channels via `set_event_handler` and call
+  `request_repaint()` on each (the same wake the single-instance acceptor uses), so
+  tray interaction is processed immediately.
+
+### Changed
+- **Tray icon: left-click now starts a region capture; right-click opens the menu**
+  (`with_menu_on_left_click(false)`). Previously double-click re-showed the window;
+  use the right-click menu's "Open TrontSnap" for that now.
+
 ## v0.5.1 (2026-07-14)
 
 ### Fixed

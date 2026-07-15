@@ -4201,7 +4201,7 @@ dependencies = [
 
 [[package]]
 name = "trontsnap"
-version = "0.5.1"
+version = "0.5.6"
 dependencies = [
  "anyhow",
  "chrono",

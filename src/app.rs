@@ -17,14 +17,20 @@ use std::io::Write as _;
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::num::NonZeroIsize;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use crossbeam_channel::Receiver;
 use eframe::egui;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
-use tray_icon::{TrayIcon, TrayIconBuilder, TrayIconEvent};
+use tray_icon::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
+use windows::Win32::Foundation::HWND;
+use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+use windows::Win32::UI::WindowsAndMessaging::{
+    GetForegroundWindow, GetWindowThreadProcessId, SetForegroundWindow, ShowWindow, SW_RESTORE,
+};
 
 use crate::autostart;
 use crate::capture;
@@ -74,14 +80,17 @@ pub struct App {
     gallery: Gallery,
     _hotkeys: Option<KeyboardHook>,
     _tray: TrayIcon,
-    open_id: MenuId,
-    full_id: MenuId,
-    region_id: MenuId,
     auto_id: MenuId,
     auto_item: CheckMenuItem,
-    quit_id: MenuId,
     show_flag: Arc<AtomicBool>,
-    want_quit: bool,
+    // Autostart toggles (which need &self) are forwarded here for update() to apply.
+    // Every other tray/menu action is done DIRECTLY in the event handlers, because
+    // eframe does not run update() at all while the window is hidden to the tray, so
+    // anything routed through it would just queue until the window happened to reappear.
+    menu_rx: Receiver<MenuId>,
+    // Last known-good main-window HWND, cached by update() so the tray menu handler can
+    // restore the window directly via Win32 while it's hidden.
+    hwnd_cell: Arc<AtomicIsize>,
 }
 
 impl App {
@@ -117,9 +126,63 @@ impl App {
 
         let tray = TrayIconBuilder::new()
             .with_menu(Box::new(menu))
-            .with_tooltip("TrontSnap  —  PrtSc = full, Ctrl+PrtSc = region")
+            // Left-click starts a region capture (handled below); the menu opens on
+            // right-click only.
+            .with_menu_on_left_click(false)
+            .with_tooltip("TrontSnap: left-click = region, right-click = menu")
             .with_icon(tray_icon_image())
             .build()?;
+
+        // Handle tray + menu actions DIRECTLY in these handlers. They fire on the UI
+        // thread when the event is dispatched, so a Win32 restore / a spawned capture
+        // works immediately even while the window is hidden. Routing them through
+        // update() does NOT work: eframe never runs update() while the window is hidden
+        // to the tray, so those actions would silently queue until the window reappeared.
+        // Only the autostart toggle (needs &self) is forwarded to update().
+        let hwnd_cell = Arc::new(AtomicIsize::new(0));
+        let (menu_tx, menu_rx) = crossbeam_channel::unbounded::<MenuId>();
+        {
+            let ctx = cc.egui_ctx.clone();
+            let cell = hwnd_cell.clone();
+            let open = open_i.id().clone();
+            let full = full_i.id().clone();
+            let region = region_i.id().clone();
+            let quit = quit_i.id().clone();
+            MenuEvent::set_event_handler(Some(move |ev: MenuEvent| {
+                if ev.id == open {
+                    let h = cell.load(Ordering::Relaxed);
+                    if h != 0 {
+                        restore_and_foreground(h);
+                    }
+                } else if ev.id == full {
+                    do_full();
+                } else if ev.id == region {
+                    std::thread::spawn(region_win32::capture_region);
+                } else if ev.id == quit {
+                    std::process::exit(0);
+                } else {
+                    // Autostart toggle -> update() (reads the check state off &self).
+                    let _ = menu_tx.send(ev.id);
+                }
+                ctx.request_repaint();
+            }));
+        }
+        {
+            let ctx = cc.egui_ctx.clone();
+            TrayIconEvent::set_event_handler(Some(move |ev: TrayIconEvent| {
+                // Left-click = instant region capture (its own window, independent of
+                // the hidden gallery). Right-click opens the menu natively.
+                if let TrayIconEvent::Click {
+                    button: MouseButton::Left,
+                    button_state: MouseButtonState::Up,
+                    ..
+                } = ev
+                {
+                    std::thread::spawn(region_win32::capture_region);
+                }
+                ctx.request_repaint();
+            }));
+        }
 
         // Single-instance acceptor: any connection means "show the window".
         let show_flag = Arc::new(AtomicBool::new(false));
@@ -140,19 +203,24 @@ impl App {
             gallery: Gallery::new(&cc.egui_ctx),
             _hotkeys: hotkeys,
             _tray: tray,
-            open_id: open_i.id().clone(),
-            full_id: full_i.id().clone(),
-            region_id: region_i.id().clone(),
             auto_id: auto_i.id().clone(),
             auto_item: auto_i,
-            quit_id: quit_i.id().clone(),
             show_flag,
-            want_quit: false,
+            menu_rx,
+            hwnd_cell,
         })
     }
 
     fn show(&mut self, ctx: &egui::Context) {
+        // Win32 restore is the reliable path (see restore_and_foreground). Use the
+        // cached last-good HWND, since the current frame's HWND may be unavailable
+        // while hidden. The viewport commands keep eframe's own state in sync.
+        let h = self.hwnd_cell.load(Ordering::Relaxed);
+        if h != 0 {
+            restore_and_foreground(h);
+        }
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
         // No rescan here: the live capture watcher keeps the gallery current, so
         // opening the window no longer flashes/reloads. Manual Refresh still exists.
@@ -168,24 +236,16 @@ impl eframe::App for App {
         // Keep ticking so tray/second-instance events are serviced even when hidden.
         ctx.request_repaint_after(Duration::from_millis(150));
 
-        while let Ok(ev) = MenuEvent::receiver().try_recv() {
-            if ev.id == self.open_id {
-                self.show(ctx);
-            } else if ev.id == self.full_id {
-                do_full();
-            } else if ev.id == self.region_id {
-                std::thread::spawn(region_win32::capture_region);
-            } else if ev.id == self.auto_id {
-                autostart::set(self.auto_item.is_checked());
-            } else if ev.id == self.quit_id {
-                self.want_quit = true;
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            }
+        let hwnd = hwnd_from_frame(frame);
+        if let Some(h) = hwnd {
+            self.hwnd_cell.store(h, Ordering::Relaxed);
         }
 
-        while let Ok(ev) = TrayIconEvent::receiver().try_recv() {
-            if let TrayIconEvent::DoubleClick { .. } = ev {
-                self.show(ctx);
+        // Only the autostart toggle comes through here (everything else is handled
+        // directly in the tray/menu handlers, since update() doesn't run while hidden).
+        while let Ok(id) = self.menu_rx.try_recv() {
+            if id == self.auto_id {
+                autostart::set(self.auto_item.is_checked());
             }
         }
 
@@ -193,13 +253,12 @@ impl eframe::App for App {
             self.show(ctx);
         }
 
-        // Closing the window hides to tray instead of quitting.
-        if ctx.input(|i| i.viewport().close_requested()) && !self.want_quit {
+        // Closing the window hides to tray instead of quitting (Quit is in the menu).
+        if ctx.input(|i| i.viewport().close_requested()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.hide(ctx);
         }
 
-        let hwnd = hwnd_from_frame(frame);
         egui::CentralPanel::default().show(ctx, |ui| {
             self.gallery.ui(ui, ctx, hwnd);
         });
@@ -234,6 +293,27 @@ fn do_full() {
         },
         Err(e) => eprintln!("trontsnap: full capture failed: {e:#}"),
     });
+}
+
+/// Reliably restore + foreground the main window via Win32. eframe's Visible(true)
+/// leaves a tray-hidden window behind the focused app and doesn't un-minimize an
+/// iconic one; SW_RESTORE handles both, and the attach-thread-input dance beats
+/// Windows' foreground lock so the gallery actually pops to the front.
+fn restore_and_foreground(hwnd: isize) {
+    unsafe {
+        let h = HWND(hwnd);
+        let _ = ShowWindow(h, SW_RESTORE);
+        let fg = GetForegroundWindow();
+        let fg_thread = GetWindowThreadProcessId(fg, None);
+        let our = GetCurrentThreadId();
+        if fg_thread != 0 && fg_thread != our {
+            let _ = AttachThreadInput(our, fg_thread, true);
+            let _ = SetForegroundWindow(h);
+            let _ = AttachThreadInput(our, fg_thread, false);
+        } else {
+            let _ = SetForegroundWindow(h);
+        }
+    }
 }
 
 /// Extract the raw Win32 HWND from eframe's window handle. eframe::Frame

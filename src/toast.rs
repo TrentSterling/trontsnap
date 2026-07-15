@@ -91,7 +91,6 @@ impl eframe::App for Toast {
             .inner_margin(10.0);
 
         egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
-            let resp = ui.interact(ui.max_rect(), ui.id().with("toast"), egui::Sense::click());
             ui.horizontal_centered(|ui| {
                 if let Some(tex) = &self.tex {
                     let sz = tex.size_vec2();
@@ -121,8 +120,18 @@ impl eframe::App for Toast {
                     );
                 });
             });
+            // Full-window click target LAST, so it sits on top of the thumbnail/labels
+            // and catches a click anywhere in the toast (adding it first meant the
+            // thumbnail's hover region shadowed it and clicks there never registered).
+            let resp = ui.interact(
+                ui.max_rect(),
+                ui.id().with("toast-click"),
+                egui::Sense::click(),
+            );
             if resp.clicked() {
-                let _ = opener::open(&self.path);
+                if let Err(e) = opener::open(&self.path) {
+                    eprintln!("trontsnap: toast open failed: {e:#}");
+                }
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
         });
