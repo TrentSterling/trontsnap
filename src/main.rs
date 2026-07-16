@@ -14,11 +14,13 @@ mod app;
 mod autostart;
 mod capture;
 mod clipboard;
+mod cursor;
 mod gallery;
 mod index;
 mod keyhook;
 mod overlay;
 mod region_win32;
+mod settings;
 mod sound;
 mod theme;
 mod thumbs;
@@ -26,6 +28,9 @@ mod toast;
 mod watcher;
 
 fn main() {
+    // Load persisted settings before any capture path can read them (all modes capture).
+    settings::load();
+
     let mode = std::env::args().nth(1).unwrap_or_default();
     let result = match mode.as_str() {
         "" | "app" => app::run(false),

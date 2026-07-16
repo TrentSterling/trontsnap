@@ -75,7 +75,9 @@ pub fn capture_region() {
     }
     let _guard = Guard;
 
-    let img = match capture::grab_primary() {
+    // Freeze the frame WITH the cursor composited in (if enabled), so the pointer is
+    // frozen where it was at Ctrl+PrtSc time and lands in the crop — ShareX behaviour.
+    let img = match capture::grab_for_shot() {
         Ok(i) => i,
         Err(e) => {
             eprintln!("trontsnap: region grab failed: {e:#}");

@@ -82,7 +82,14 @@ pub struct App {
     _tray: TrayIcon,
     auto_id: MenuId,
     auto_item: CheckMenuItem,
+    cursor_id: MenuId,
+    cursor_item: CheckMenuItem,
     show_flag: Arc<AtomicBool>,
+    // Self-heal for the intermittent restore-to-tiny desync (see update()): the last
+    // content size seen at or above the window minimum, and how many consecutive frames
+    // we've observed a sub-minimum (i.e. desynced) size.
+    good_size: egui::Vec2,
+    small_frames: u32,
     // Autostart toggles (which need &self) are forwarded here for update() to apply.
     // Every other tray/menu action is done DIRECTLY in the event handlers, because
     // eframe does not run update() at all while the window is hidden to the tray, so
@@ -118,6 +125,8 @@ impl App {
         let open_i = MenuItem::new("Open TrontSnap", true, None);
         let full_i = MenuItem::new("Capture Fullscreen   (PrtSc)", true, None);
         let region_i = MenuItem::new("Capture Region   (Ctrl+PrtSc)", true, None);
+        let cursor_i =
+            CheckMenuItem::new("Capture cursor", true, crate::settings::capture_cursor(), None);
         let auto_i = CheckMenuItem::new("Start at login", true, autostart::is_enabled(), None);
         let quit_i = MenuItem::new("Quit TrontSnap", true, None);
         menu.append(&open_i)?;
@@ -125,6 +134,7 @@ impl App {
         menu.append(&full_i)?;
         menu.append(&region_i)?;
         menu.append(&PredefinedMenuItem::separator())?;
+        menu.append(&cursor_i)?;
         menu.append(&auto_i)?;
         menu.append(&PredefinedMenuItem::separator())?;
         menu.append(&quit_i)?;
@@ -210,9 +220,13 @@ impl App {
             _tray: tray,
             auto_id: auto_i.id().clone(),
             auto_item: auto_i,
+            cursor_id: cursor_i.id().clone(),
+            cursor_item: cursor_i,
             show_flag,
             menu_rx,
             hwnd_cell,
+            good_size: egui::vec2(1180.0, 760.0),
+            small_frames: 0,
         })
     }
 
@@ -234,6 +248,41 @@ impl App {
     fn hide(&mut self, ctx: &egui::Context) {
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
     }
+
+    /// Self-heal an intermittent winit/eframe desync where the gallery comes back from a
+    /// tray/minimize restore sized far below its own minimum (observed once: it restored
+    /// tiny and only snapped right after I nudged a resize handle). winit enforces
+    /// `min_inner_size`, so the USER can never drag the content below it — a visible
+    /// sub-minimum size therefore means the OS window and eframe's cached size have
+    /// desynced. Detect that (debounced a few frames so a one-frame hide/show/DPI
+    /// transition never triggers it) and re-assert the last known-good size. It can't
+    /// fight a legitimate resize, because legitimate sizes are always >= the minimum.
+    fn heal_tiny_window(&mut self, ctx: &egui::Context) {
+        // update() doesn't run while hidden, so if we're here the window is live; still
+        // skip while minimized (its reported size is meaningless then).
+        if ctx.input(|i| i.viewport().minimized).unwrap_or(false) {
+            return;
+        }
+        // Just under the 680x420 min_inner_size, so only genuine breakage trips it.
+        const MIN_W: f32 = 670.0;
+        const MIN_H: f32 = 410.0;
+        let sz = ctx.input(|i| i.screen_rect()).size();
+        if sz.x >= MIN_W && sz.y >= MIN_H {
+            self.good_size = sz; // remember the user's actual size to restore to
+            self.small_frames = 0;
+        } else if sz.x > 1.0 && sz.y > 1.0 {
+            // Non-degenerate but sub-minimum: the desync. Confirm it persists, then fix.
+            self.small_frames += 1;
+            if self.small_frames >= 4 {
+                eprintln!(
+                    "trontsnap: window desynced to {:.0}x{:.0}, restoring to {:.0}x{:.0}",
+                    sz.x, sz.y, self.good_size.x, self.good_size.y
+                );
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(self.good_size));
+                self.small_frames = 0;
+            }
+        }
+    }
 }
 
 impl eframe::App for App {
@@ -246,11 +295,16 @@ impl eframe::App for App {
             self.hwnd_cell.store(h, Ordering::Relaxed);
         }
 
-        // Only the autostart toggle comes through here (everything else is handled
-        // directly in the tray/menu handlers, since update() doesn't run while hidden).
+        self.heal_tiny_window(ctx);
+
+        // Only the checkbox toggles come through here (they need &self to read their
+        // check state); everything else is handled directly in the tray/menu handlers,
+        // since update() doesn't run while the window is hidden to the tray.
         while let Ok(id) = self.menu_rx.try_recv() {
             if id == self.auto_id {
                 autostart::set(self.auto_item.is_checked());
+            } else if id == self.cursor_id {
+                crate::settings::set_capture_cursor(self.cursor_item.is_checked());
             }
         }
 
@@ -291,7 +345,7 @@ fn setup_hotkeys() -> anyhow::Result<KeyboardHook> {
 fn do_full() {
     // Run off the hotkey thread so PrintScreen returns instantly. deliver() saves
     // + copies to the clipboard (all formats) + plays the shutter.
-    std::thread::spawn(|| match capture::grab_primary() {
+    std::thread::spawn(|| match capture::grab_for_shot() {
         Ok(img) => match capture::deliver(&img) {
             Ok(path) => eprintln!("trontsnap: full -> {}", path.display()),
             Err(e) => eprintln!("trontsnap: full deliver failed: {e:#}"),

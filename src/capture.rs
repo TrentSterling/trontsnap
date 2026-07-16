@@ -19,9 +19,18 @@ pub fn grab_primary() -> anyhow::Result<RgbaImage> {
     Ok(monitor.capture_image()?)
 }
 
+/// Grab the primary monitor for a screenshot, compositing in the mouse cursor when the
+/// "capture cursor" setting is on. Every capture path (full, region, one-shot CLI) goes
+/// through this; `grab_primary` stays pointer-free for callers that don't want it.
+pub fn grab_for_shot() -> anyhow::Result<RgbaImage> {
+    let mut img = grab_primary()?;
+    crate::cursor::maybe_overlay(&mut img, (0, 0));
+    Ok(img)
+}
+
 /// Full-screen capture path: grab primary, deliver.
 pub fn capture_full() -> anyhow::Result<()> {
-    let img = grab_primary()?;
+    let img = grab_for_shot()?;
     let path = deliver(&img)?;
     println!("captured {}x{} -> clipboard + {}", img.width(), img.height(), path.display());
     Ok(())

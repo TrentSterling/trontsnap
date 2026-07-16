@@ -2,6 +2,26 @@
 
 All notable changes to TrontSnap. Newest first.
 
+## v0.6.0 (2026-07-15)
+
+### Added
+- **Capture the mouse cursor** (new tray toggle "Capture cursor", on by default).
+  xcap grabs the screen without the pointer, so both PrtSc and Ctrl+PrtSc were
+  silently dropping the cursor. We now composite the live system cursor into the frame
+  via GDI `DrawIconEx`, which renders every cursor style correctly (color arrows with
+  per-pixel alpha, the monochrome I-beam's AND/XOR mask, link hands, resize arrows).
+  Region capture freezes the pointer where it was at Ctrl+PrtSc time, so it lands in
+  the crop — the ShareX behaviour. The setting persists in the registry (same
+  `HKCU\Software\TrontSnap` key autostart uses).
+
+### Fixed
+- **Gallery occasionally restored from the tray/taskbar at a tiny size** (a
+  winit/eframe restore desync; it snapped back only after a manual resize). Added a
+  debounced self-heal: winit never lets you drag the content below `min_inner_size`, so
+  a visible sub-minimum size is provably the desync — it's detected and the last
+  known-good size is re-asserted automatically (and logged, to catch the trigger if it
+  recurs).
+
 ## v0.5.8 (2026-07-15)
 
 ### Fixed
