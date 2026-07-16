@@ -2,6 +2,18 @@
 
 All notable changes to TrontSnap. Newest first.
 
+## v0.7.3 (2026-07-16)
+
+### Fixed
+- **The recording HUD ate mouse hover + scroll wheel over the recorded area.**
+  Windows routes hover and the "scroll the window under the cursor" wheel by
+  hit-testing, and a layered color-key window still hit-tests as SOLID over its
+  transparent pixels on Win11 (the documented pass-through did not hold). The HUD
+  window now carries a window region (`SetWindowRgn`) shaped as exactly the frame
+  ring + the REC tab, so the interior is structurally not part of the window:
+  hover, wheel, and clicks inside the recorded region go straight to the app being
+  recorded. Clicking the red frame or the tab still stops the recording.
+
 ## v0.7.2 (2026-07-15)
 
 ### Added

@@ -36,10 +36,10 @@ use windows::Win32::Graphics::Dxgi::{
     DXGI_OUTPUT_DESC,
 };
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, CreateCompatibleDC, CreateDIBSection, CreateSolidBrush, DeleteDC, DeleteObject,
-    EndPaint, FillRect, GetDC, InvalidateRect, ReleaseDC, SelectObject, SetBkMode, SetTextColor,
-    TextOutW, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HBRUSH, HDC, PAINTSTRUCT,
-    TRANSPARENT,
+    BeginPaint, CombineRgn, CreateCompatibleDC, CreateDIBSection, CreateRectRgn, CreateSolidBrush,
+    DeleteDC, DeleteObject, EndPaint, FillRect, GetDC, InvalidateRect, ReleaseDC, SelectObject,
+    SetBkMode, SetTextColor, SetWindowRgn, TextOutW, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
+    DIB_RGB_COLORS, HBRUSH, HDC, PAINTSTRUCT, RGN_DIFF, RGN_OR, TRANSPARENT,
 };
 use windows::Win32::Media::MediaFoundation::{
     IMFAttributes, IMFMediaBuffer, IMFMediaType, IMFSample, IMFSinkWriter, MFCreateAttributes,
@@ -55,8 +55,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, DrawIconEx, GetCursorInfo,
     GetIconInfo, GetMessageW, GetSystemMetrics, GetWindowLongPtrW, KillTimer, LoadCursorW,
     PostQuitMessage, RegisterClassW, SetLayeredWindowAttributes, SetTimer,
-    SetWindowDisplayAffinity, SetWindowLongPtrW, TranslateMessage, CURSORINFO, CURSOR_SHOWING,
-    DI_NORMAL, GWLP_USERDATA, HICON, ICONINFO, IDC_ARROW, LWA_COLORKEY, MSG, SM_CYSCREEN,
+    SetWindowDisplayAffinity, SetWindowLongPtrW, TranslateMessage, CURSORINFO, CURSOR_SHOWING, DI_NORMAL, GWLP_USERDATA, HICON, ICONINFO, IDC_ARROW, LWA_COLORKEY, MSG,
+    SM_CYSCREEN,
     WDA_EXCLUDEFROMCAPTURE, WM_DESTROY, WM_LBUTTONUP, WM_PAINT, WM_TIMER, WNDCLASSW,
     WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_VISIBLE,
 };
@@ -424,10 +424,14 @@ impl CursorCache {
 }
 
 // ---------------------------------------------------------------------------------
-// The recording HUD: ONE topmost layered window drawing a blinking red outline around
-// the region plus an attached "● REC" tab. Color-key transparency makes the interior
-// literally not part of the window (clicks pass through to whatever you're recording);
-// the red frame and the tab ARE clickable — click either to stop.
+// The recording HUD: ONE topmost window drawing a blinking red outline around the
+// region plus an attached "● REC" tab. Its WINDOW REGION (SetWindowRgn) is exactly
+// the frame ring + the tab, so the interior is not merely transparent — it is NOT
+// PART OF THE WINDOW. That matters for hit-testing: Windows routes hover and the
+// "scroll the window under the cursor" wheel by hit-test, and a layered color-key
+// window still hit-tests as solid over its keyed pixels on Win11 (found live: the
+// HUD ate scroll/hover over the recorded area). With a region there is no surface
+// over the interior at all. The red frame and the tab ARE clickable — click to stop.
 //
 // The whole window is marked WDA_EXCLUDEFROMCAPTURE (the OBS trick), so the outline is
 // visible on the monitor but NEVER appears in the recorded MP4 (DXGI duplication skips
@@ -510,8 +514,31 @@ fn hud_thread(region: RECT) {
             None,
         );
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, &mut geo as *mut HudGeo as isize);
-        // Key-colored pixels become transparent + click-through.
+        // Key-colored pixels render transparent (visual only — see the region below
+        // for why hit-testing can't rely on this).
         let _ = SetLayeredWindowAttributes(hwnd, KEY, 0, LWA_COLORKEY);
+        // Shape the window to frame-ring + tab so the interior structurally does not
+        // exist: mouse hover / wheel / clicks inside the recorded area go straight to
+        // the app being recorded. SetWindowRgn takes ownership of `shape`; the
+        // temporaries must be deleted by us.
+        let shape = CreateRectRgn(
+            geo.outline.left,
+            geo.outline.top,
+            geo.outline.right,
+            geo.outline.bottom,
+        );
+        let inner = CreateRectRgn(
+            geo.outline.left + FRAME_PX,
+            geo.outline.top + FRAME_PX,
+            geo.outline.right - FRAME_PX,
+            geo.outline.bottom - FRAME_PX,
+        );
+        let tab_rgn = CreateRectRgn(geo.tab.left, geo.tab.top, geo.tab.right, geo.tab.bottom);
+        CombineRgn(shape, shape, inner, RGN_DIFF);
+        CombineRgn(shape, shape, tab_rgn, RGN_OR);
+        let _ = DeleteObject(inner);
+        let _ = DeleteObject(tab_rgn);
+        SetWindowRgn(hwnd, shape, true);
         // Exclude the HUD from ALL capture (our DXGI recording and screenshots both):
         // on failure the HUD still works, it just shows up in the video.
         if SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE).is_err() {
