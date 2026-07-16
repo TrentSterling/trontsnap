@@ -19,6 +19,7 @@
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use windows::core::{Interface, PCWSTR};
@@ -42,12 +43,15 @@ use windows::Win32::Graphics::Gdi::{
     DIB_RGB_COLORS, HBRUSH, HDC, PAINTSTRUCT, RGN_DIFF, RGN_OR, TRANSPARENT,
 };
 use windows::Win32::Media::MediaFoundation::{
-    IMFAttributes, IMFMediaBuffer, IMFMediaType, IMFSample, IMFSinkWriter, MFCreateAttributes,
-    MFCreateMediaType, MFCreateMemoryBuffer, MFCreateSample, MFCreateSinkWriterFromURL, MFShutdown,
-    MFStartup, MFVideoFormat_H264, MFVideoFormat_RGB32, MFVideoInterlace_Progressive,
-    MFMediaType_Video, MF_MT_AVG_BITRATE, MF_MT_DEFAULT_STRIDE, MF_MT_FRAME_RATE,
-    MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE, MF_MT_PIXEL_ASPECT_RATIO,
-    MF_MT_SUBTYPE, MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS,
+    IMFAttributes, IMFMediaBuffer, IMFMediaType, IMFSample, IMFSinkWriter, MFAudioFormat_AAC,
+    MFAudioFormat_PCM, MFCreateAttributes, MFCreateMediaType, MFCreateMemoryBuffer,
+    MFCreateSample, MFCreateSinkWriterFromURL, MFShutdown, MFStartup, MFVideoFormat_H264,
+    MFVideoFormat_RGB32, MFVideoInterlace_Progressive, MFMediaType_Audio, MFMediaType_Video,
+    MF_MT_AUDIO_AVG_BYTES_PER_SECOND, MF_MT_AUDIO_BITS_PER_SAMPLE, MF_MT_AUDIO_BLOCK_ALIGNMENT,
+    MF_MT_AUDIO_NUM_CHANNELS, MF_MT_AUDIO_SAMPLES_PER_SECOND, MF_MT_AVG_BITRATE,
+    MF_MT_DEFAULT_STRIDE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE,
+    MF_MT_MAJOR_TYPE, MF_MT_PIXEL_ASPECT_RATIO, MF_MT_SUBTYPE,
+    MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS,
 };
 use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -267,20 +271,71 @@ fn capture_encode(rx: i32, ry: i32, w: u32, h: u32) -> anyhow::Result<PathBuf> {
         // Positive stride = top-down RGB32, matching the DIB.
         in_type.SetUINT32(&MF_MT_DEFAULT_STRIDE, w * 4)?;
         writer.SetInputMediaType(stream, &in_type, None)?;
+
+        // --- audio track: WASAPI loopback -> AAC (optional, best-effort) ---------
+        // Shares the recording epoch so the block timestamps line up with video.
+        // Any failure (odd device rate, no endpoint) logs and records video-only.
+        let epoch = Instant::now();
+        let audio_stop = Arc::new(AtomicBool::new(false));
+        let mut audio: Option<(u32, crossbeam_channel::Receiver<crate::audio::AudioBlock>)> = None;
+        if crate::settings::record_audio() {
+            match crate::audio::start(epoch, audio_stop.clone()) {
+                Ok((fmt, rx)) => {
+                    let out_a: IMFMediaType = MFCreateMediaType()?;
+                    out_a.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Audio)?;
+                    out_a.SetGUID(&MF_MT_SUBTYPE, &MFAudioFormat_AAC)?;
+                    out_a.SetUINT32(&MF_MT_AUDIO_SAMPLES_PER_SECOND, fmt.rate)?;
+                    out_a.SetUINT32(&MF_MT_AUDIO_NUM_CHANNELS, fmt.channels as u32)?;
+                    out_a.SetUINT32(&MF_MT_AUDIO_BITS_PER_SAMPLE, 16)?;
+                    // 24000 B/s = 192kbps, the top rate the MF AAC encoder accepts.
+                    out_a.SetUINT32(&MF_MT_AUDIO_AVG_BYTES_PER_SECOND, 24_000)?;
+                    let a_stream = writer.AddStream(&out_a)?;
+
+                    let in_a: IMFMediaType = MFCreateMediaType()?;
+                    let block = 2 * fmt.channels as u32;
+                    in_a.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Audio)?;
+                    in_a.SetGUID(&MF_MT_SUBTYPE, &MFAudioFormat_PCM)?;
+                    in_a.SetUINT32(&MF_MT_AUDIO_SAMPLES_PER_SECOND, fmt.rate)?;
+                    in_a.SetUINT32(&MF_MT_AUDIO_NUM_CHANNELS, fmt.channels as u32)?;
+                    in_a.SetUINT32(&MF_MT_AUDIO_BITS_PER_SAMPLE, 16)?;
+                    in_a.SetUINT32(&MF_MT_AUDIO_BLOCK_ALIGNMENT, block)?;
+                    in_a.SetUINT32(&MF_MT_AUDIO_AVG_BYTES_PER_SECOND, fmt.rate * block)?;
+                    writer.SetInputMediaType(a_stream, &in_a, None)?;
+                    audio = Some((a_stream, rx));
+                }
+                Err(e) => eprintln!("trontsnap: recording without audio: {e:#}"),
+            }
+        }
+        // Recorder threads must never outlive the session, whatever exit path runs.
+        struct AudioStopGuard(Arc<AtomicBool>);
+        impl Drop for AudioStopGuard {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        let _audio_guard = AudioStopGuard(audio_stop.clone());
+
         writer.BeginWriting()?;
 
         // --- 30fps CFR loop ------------------------------------------------------
         // Pace against wall clock; a static screen means AcquireNextFrame times out
         // and we re-encode the previous staging content (constant frame rate).
-        let started = Instant::now();
         let mut n: u64 = 0;
         let mut have_frame = false;
         let mut cursor_cache = CursorCache::default();
 
         while !STOP.load(Ordering::SeqCst) {
             let target = Duration::from_nanos(n * 1_000_000_000 / FPS as u64);
-            if let Some(rest) = target.checked_sub(started.elapsed()) {
+            if let Some(rest) = target.checked_sub(epoch.elapsed()) {
                 std::thread::sleep(rest);
+            }
+
+            // Interleave any audio that arrived since the last tick (timestamps come
+            // from the capture thread's sample clock, same epoch as the video).
+            if let Some((a_stream, rx)) = &audio {
+                for block in rx.try_iter() {
+                    write_sample(&writer, *a_stream, &block.pcm, block.t100ns, block.dur100ns)?;
+                }
             }
 
             let mut info = DXGI_OUTDUPL_FRAME_INFO::default();
@@ -327,18 +382,25 @@ fn capture_encode(rx: i32, ry: i32, w: u32, h: u32) -> anyhow::Result<PathBuf> {
             }
 
             // DIB bits -> MF sample
-            let buffer: IMFMediaBuffer = MFCreateMemoryBuffer(frame_len as u32)?;
-            let mut ptr: *mut u8 = std::ptr::null_mut();
-            buffer.Lock(&mut ptr, None, None)?;
-            std::ptr::copy_nonoverlapping(dst_base as *const u8, ptr, frame_len);
-            buffer.Unlock()?;
-            buffer.SetCurrentLength(frame_len as u32)?;
-            let sample: IMFSample = MFCreateSample()?;
-            sample.AddBuffer(&buffer)?;
-            sample.SetSampleTime((n as i64) * 10_000_000 / FPS as i64)?;
-            sample.SetSampleDuration(10_000_000 / FPS as i64)?;
-            writer.WriteSample(stream, &sample)?;
+            let frame = std::slice::from_raw_parts(dst_base as *const u8, frame_len);
+            write_sample(
+                &writer,
+                stream,
+                frame,
+                (n as i64) * 10_000_000 / FPS as i64,
+                10_000_000 / FPS as i64,
+            )?;
             n += 1;
+        }
+
+        // Wind down audio: stop the capture thread, then flush whatever it already
+        // produced so the track doesn't end a beat before the video.
+        audio_stop.store(true, Ordering::SeqCst);
+        if let Some((a_stream, rx)) = &audio {
+            std::thread::sleep(Duration::from_millis(40));
+            for block in rx.try_iter() {
+                write_sample(&writer, *a_stream, &block.pcm, block.t100ns, block.dur100ns)?;
+            }
         }
 
         writer.Finalize()?;
@@ -348,6 +410,29 @@ fn capture_encode(rx: i32, ry: i32, w: u32, h: u32) -> anyhow::Result<PathBuf> {
         }
         Ok(path)
     }
+}
+
+/// Wrap `data` in an IMFSample with the given timestamp/duration (100ns units) and
+/// hand it to the writer. Used for both video frames and PCM audio blocks.
+unsafe fn write_sample(
+    writer: &IMFSinkWriter,
+    stream: u32,
+    data: &[u8],
+    t100ns: i64,
+    dur100ns: i64,
+) -> anyhow::Result<()> {
+    let buffer: IMFMediaBuffer = MFCreateMemoryBuffer(data.len() as u32)?;
+    let mut ptr: *mut u8 = std::ptr::null_mut();
+    buffer.Lock(&mut ptr, None, None)?;
+    std::ptr::copy_nonoverlapping(data.as_ptr(), ptr, data.len());
+    buffer.Unlock()?;
+    buffer.SetCurrentLength(data.len() as u32)?;
+    let sample: IMFSample = MFCreateSample()?;
+    sample.AddBuffer(&buffer)?;
+    sample.SetSampleTime(t100ns)?;
+    sample.SetSampleDuration(dur100ns)?;
+    writer.WriteSample(stream, &sample)?;
+    Ok(())
 }
 
 /// The DXGI output whose desktop rect contains (0,0) — the primary monitor, the same
@@ -608,6 +693,115 @@ unsafe extern "system" fn hud_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             LRESULT(0)
         }
         _ => DefWindowProcW(hwnd, msg, wp, lp),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use windows::core::PCWSTR;
+
+    /// Headless A/V mux smoke: verifies the EXACT SinkWriter configuration the
+    /// recorder uses (H.264 video out/RGB32 in + AAC audio out/PCM in) is accepted,
+    /// interleaves, finalizes, and reads back with BOTH tracks — no screen grab, no
+    /// audio device. Run manually: cargo test av_mux_smoke -- --ignored
+    #[test]
+    #[ignore]
+    fn av_mux_smoke() {
+        unsafe {
+            use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
+            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+            MFStartup(MF_VERSION, 0).unwrap();
+
+            let path = std::env::temp_dir().join("trontsnap-avmux-smoke.mp4");
+            let wide: Vec<u16> = path.to_string_lossy().encode_utf16().chain([0]).collect();
+            let writer: IMFSinkWriter =
+                MFCreateSinkWriterFromURL(PCWSTR(wide.as_ptr()), None, None).unwrap();
+
+            let (w, h, fps) = (64u32, 64u32, 30u32);
+            let out_v: IMFMediaType = MFCreateMediaType().unwrap();
+            out_v.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video).unwrap();
+            out_v.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_H264).unwrap();
+            out_v.SetUINT32(&MF_MT_AVG_BITRATE, 1_000_000).unwrap();
+            out_v.SetUINT64(&MF_MT_FRAME_SIZE, ((w as u64) << 32) | h as u64).unwrap();
+            out_v.SetUINT64(&MF_MT_FRAME_RATE, ((fps as u64) << 32) | 1).unwrap();
+            out_v.SetUINT64(&MF_MT_PIXEL_ASPECT_RATIO, (1u64 << 32) | 1).unwrap();
+            out_v
+                .SetUINT32(&MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive.0 as u32)
+                .unwrap();
+            let vs = writer.AddStream(&out_v).unwrap();
+            let in_v: IMFMediaType = MFCreateMediaType().unwrap();
+            in_v.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video).unwrap();
+            in_v.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_RGB32).unwrap();
+            in_v.SetUINT64(&MF_MT_FRAME_SIZE, ((w as u64) << 32) | h as u64).unwrap();
+            in_v.SetUINT64(&MF_MT_FRAME_RATE, ((fps as u64) << 32) | 1).unwrap();
+            in_v.SetUINT64(&MF_MT_PIXEL_ASPECT_RATIO, (1u64 << 32) | 1).unwrap();
+            in_v.SetUINT32(&MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive.0 as u32)
+                .unwrap();
+            in_v.SetUINT32(&MF_MT_DEFAULT_STRIDE, w * 4).unwrap();
+            writer.SetInputMediaType(vs, &in_v, None).unwrap();
+
+            let (rate, ch) = (48_000u32, 2u32);
+            let out_a: IMFMediaType = MFCreateMediaType().unwrap();
+            out_a.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Audio).unwrap();
+            out_a.SetGUID(&MF_MT_SUBTYPE, &MFAudioFormat_AAC).unwrap();
+            out_a.SetUINT32(&MF_MT_AUDIO_SAMPLES_PER_SECOND, rate).unwrap();
+            out_a.SetUINT32(&MF_MT_AUDIO_NUM_CHANNELS, ch).unwrap();
+            out_a.SetUINT32(&MF_MT_AUDIO_BITS_PER_SAMPLE, 16).unwrap();
+            out_a.SetUINT32(&MF_MT_AUDIO_AVG_BYTES_PER_SECOND, 24_000).unwrap();
+            let astream = writer.AddStream(&out_a).unwrap();
+            let in_a: IMFMediaType = MFCreateMediaType().unwrap();
+            in_a.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Audio).unwrap();
+            in_a.SetGUID(&MF_MT_SUBTYPE, &MFAudioFormat_PCM).unwrap();
+            in_a.SetUINT32(&MF_MT_AUDIO_SAMPLES_PER_SECOND, rate).unwrap();
+            in_a.SetUINT32(&MF_MT_AUDIO_NUM_CHANNELS, ch).unwrap();
+            in_a.SetUINT32(&MF_MT_AUDIO_BITS_PER_SAMPLE, 16).unwrap();
+            in_a.SetUINT32(&MF_MT_AUDIO_BLOCK_ALIGNMENT, ch * 2).unwrap();
+            in_a.SetUINT32(&MF_MT_AUDIO_AVG_BYTES_PER_SECOND, rate * ch * 2).unwrap();
+            writer.SetInputMediaType(astream, &in_a, None).unwrap();
+
+            writer.BeginWriting().unwrap();
+            // 0.5s of black video + 0.5s of 440Hz sine.
+            let frame = vec![0u8; (w * h * 4) as usize];
+            let samples = (rate / 2) as usize;
+            let mut sine = vec![0u8; samples * ch as usize * 2];
+            for i in 0..samples {
+                let v = ((i as f32 * 440.0 * std::f32::consts::TAU / rate as f32).sin()
+                    * 8000.0) as i16;
+                let b = v.to_le_bytes();
+                for c in 0..ch as usize {
+                    let o = (i * ch as usize + c) * 2;
+                    sine[o..o + 2].copy_from_slice(&b);
+                }
+            }
+            for n in 0..15i64 {
+                write_sample(&writer, vs, &frame, n * 10_000_000 / fps as i64, 10_000_000 / fps as i64)
+                    .unwrap();
+            }
+            write_sample(&writer, astream, &sine, 0, 5_000_000).unwrap();
+            writer.Finalize().unwrap();
+
+            // Read back: the video track decodes, and an audio track exists.
+            let img = crate::videothumb::first_frame(&path).expect("video track readable");
+            assert_eq!((img.width(), img.height()), (w, h));
+            let reader = MFCreateSinkReaderCheck(&wide);
+            reader
+                .GetCurrentMediaType(0xFFFF_FFFD) // MF_SOURCE_READER_FIRST_AUDIO_STREAM
+                .expect("audio track present");
+            drop(reader);
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
+    #[allow(non_snake_case)]
+    unsafe fn MFCreateSinkReaderCheck(
+        wide: &[u16],
+    ) -> windows::Win32::Media::MediaFoundation::IMFSourceReader {
+        windows::Win32::Media::MediaFoundation::MFCreateSourceReaderFromURL(
+            PCWSTR(wide.as_ptr()),
+            None,
+        )
+        .unwrap()
     }
 }
 

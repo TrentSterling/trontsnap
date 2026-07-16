@@ -33,6 +33,7 @@ enum Action {
     Reveal(PathBuf),
     Delete(PathBuf),
     Drag(PathBuf),
+    ExportGif(PathBuf),
 }
 
 pub struct Gallery {
@@ -46,10 +47,14 @@ pub struct Gallery {
     scanning: bool,
     status: Option<(String, u32)>,
     watcher: Option<CaptureWatcher>,
+    // Background jobs (GIF export) report completion here; drained in ui().
+    notice_tx: crossbeam_channel::Sender<String>,
+    notice_rx: Receiver<String>,
 }
 
 impl Gallery {
     pub fn new(ctx: &egui::Context) -> Self {
+        let (notice_tx, notice_rx) = crossbeam_channel::unbounded::<String>();
         let mut g = Self {
             shots: Vec::new(),
             filtered: Vec::new(),
@@ -64,6 +69,8 @@ impl Gallery {
             watcher: capture::trontsnap_dir()
                 .ok()
                 .map(|dir| CaptureWatcher::start(&dir, ctx.clone())),
+            notice_tx,
+            notice_rx,
         };
         g.start_scan();
         g
@@ -192,6 +199,9 @@ impl Gallery {
         self.poll_scan();
         self.poll_watch();
         self.thumbs.poll(ctx);
+        while let Ok(msg) = self.notice_rx.try_recv() {
+            self.set_status(msg);
+        }
         if let Some((_, n)) = &mut self.status {
             if *n == 0 {
                 self.status = None;
@@ -310,6 +320,23 @@ impl Gallery {
                     self.set_status("Dragging…");
                 }
             }
+            Action::ExportGif(path) => {
+                self.set_status("Exporting GIF…");
+                let tx = self.notice_tx.clone();
+                std::thread::spawn(move || match crate::gifexport::export(&path) {
+                    Ok(gif) => {
+                        let name = gif
+                            .file_name()
+                            .map(|s| s.to_string_lossy().into_owned())
+                            .unwrap_or_default();
+                        let _ = tx.send(format!("GIF saved: {name}"));
+                    }
+                    Err(e) => {
+                        eprintln!("trontsnap: gif export failed: {e:#}");
+                        let _ = tx.send("GIF export failed (see log)".into());
+                    }
+                });
+            }
         }
     }
 }
@@ -410,6 +437,10 @@ fn draw_cell(ui: &mut egui::Ui, shot: &Shot, thumbs: &mut ThumbCache, action: &m
         }
         if ui.button("📁 Reveal in Explorer").clicked() {
             *action = Some(Action::Reveal(shot.path.clone()));
+            ui.close_menu();
+        }
+        if shot.is_video() && ui.button("🎞 Export GIF").clicked() {
+            *action = Some(Action::ExportGif(shot.path.clone()));
             ui.close_menu();
         }
         ui.separator();

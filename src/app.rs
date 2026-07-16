@@ -84,6 +84,8 @@ pub struct App {
     auto_item: CheckMenuItem,
     cursor_id: MenuId,
     cursor_item: CheckMenuItem,
+    audio_id: MenuId,
+    audio_item: CheckMenuItem,
     show_flag: Arc<AtomicBool>,
     // Self-heal for the intermittent restore-to-tiny desync (see update()): the last
     // content size seen at or above the window minimum, and how many consecutive frames
@@ -128,6 +130,8 @@ impl App {
         let record_i = MenuItem::new("Record Region   (Ctrl+Shift+PrtSc)", true, None);
         let cursor_i =
             CheckMenuItem::new("Capture cursor", true, crate::settings::capture_cursor(), None);
+        let audio_i =
+            CheckMenuItem::new("Record audio", true, crate::settings::record_audio(), None);
         let auto_i = CheckMenuItem::new("Start at login", true, autostart::is_enabled(), None);
         let quit_i = MenuItem::new("Quit TrontSnap", true, None);
         menu.append(&open_i)?;
@@ -137,6 +141,7 @@ impl App {
         menu.append(&record_i)?;
         menu.append(&PredefinedMenuItem::separator())?;
         menu.append(&cursor_i)?;
+        menu.append(&audio_i)?;
         menu.append(&auto_i)?;
         menu.append(&PredefinedMenuItem::separator())?;
         menu.append(&quit_i)?;
@@ -224,6 +229,8 @@ impl App {
             auto_item: auto_i,
             cursor_id: cursor_i.id().clone(),
             cursor_item: cursor_i,
+            audio_id: audio_i.id().clone(),
+            audio_item: audio_i,
             show_flag,
             menu_rx,
             hwnd_cell,
@@ -307,6 +314,8 @@ impl eframe::App for App {
                 autostart::set(self.auto_item.is_checked());
             } else if id == self.cursor_id {
                 crate::settings::set_capture_cursor(self.cursor_item.is_checked());
+            } else if id == self.audio_id {
+                crate::settings::set_record_audio(self.audio_item.is_checked());
             }
         }
 

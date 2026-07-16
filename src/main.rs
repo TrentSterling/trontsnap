@@ -11,11 +11,13 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod audio;
 mod autostart;
 mod capture;
 mod clipboard;
 mod cursor;
 mod gallery;
+mod gifexport;
 mod index;
 mod keyhook;
 mod overlay;

@@ -2,6 +2,30 @@
 
 All notable changes to TrontSnap. Newest first.
 
+## v0.8.0 (2026-07-16)
+
+### Added
+- **Recordings now capture system audio** (new tray toggle "Record audio", on by
+  default, persisted like the other settings). WASAPI loopback of the default output
+  device — "record what you hear" — converted to 16-bit PCM and encoded as AAC 192kbps
+  into the same MP4 by the SinkWriter. Two classic loopback traps handled: a silence
+  keep-alive render stream (loopback produces no packets when nothing is playing, which
+  would hole the timeline), and sample-counter timestamps anchored to the recording
+  epoch so A/V stay aligned. Any audio failure (odd device rate, no endpoint) logs and
+  records video-only — audio can never lose a recording. The A/V mux path is covered by
+  a headless smoke test (synthesized frames + sine -> encode -> finalize -> reopen,
+  assert both tracks).
+- **Export GIF**: right-click any recording in the gallery -> "Export GIF". Decodes via
+  the Media Foundation reader, samples to ~12fps, caps width at 800px, quantizes with
+  the image crate's GIF encoder (no ffmpeg). Runs in the background with a status line;
+  the .gif lands next to the MP4 and pops into the timeline via the live watcher.
+  Measured on a real ~13s clip: ~35s export, 778x502, 158 frames.
+
+### Known limitations
+- Audio requires the output device at 44.1/48kHz (Windows default; exotic rates record
+  video-only). Microphone mix-in is a separate follow-up.
+- GIF export is CPU-bound (~2-3x clip length); big/long clips make big GIFs.
+
 ## v0.7.3 (2026-07-16)
 
 ### Fixed
