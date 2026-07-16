@@ -23,14 +23,30 @@ pub struct Shot {
     pub source: Source,
 }
 
-fn is_image(path: &std::path::Path) -> bool {
+impl Shot {
+    pub fn is_video(&self) -> bool {
+        is_video(&self.path)
+    }
+}
+
+/// Videos ride the same timeline as stills but are never sent to the image
+/// decoder — the gallery draws them as a film tile instead.
+pub fn is_video(path: &std::path::Path) -> bool {
     matches!(
         path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref(),
-        Some("png" | "jpg" | "jpeg" | "bmp" | "webp")
+        Some("mp4")
     )
 }
 
-/// Walk one root and collect its image files with modified-times.
+fn is_media(path: &std::path::Path) -> bool {
+    matches!(
+        path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref(),
+        Some("png" | "jpg" | "jpeg" | "bmp" | "webp" | "gif" | "mp4")
+    )
+}
+
+/// Walk one root and collect its media files (stills + recordings) with
+/// modified-times.
 pub fn scan_root(root: &std::path::Path, source: Source) -> Vec<Shot> {
     let mut out = Vec::new();
     for entry in WalkDir::new(root).into_iter().filter_map(Result::ok) {
@@ -38,7 +54,7 @@ pub fn scan_root(root: &std::path::Path, source: Source) -> Vec<Shot> {
             continue;
         }
         let path = entry.path();
-        if !is_image(path) {
+        if !is_media(path) {
             continue;
         }
         let taken = entry

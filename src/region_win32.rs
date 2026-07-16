@@ -62,10 +62,36 @@ fn rgb(r: u8, g: u8, b: u8) -> COLORREF {
 /// grab the primary monitor, enumerate smart-capture targets, run the picker, and
 /// deliver the crop (clipboard + disk + shutter). No involvement of the app's UI thread.
 pub fn capture_region() {
-    // One overlay at a time: rapid repeat presses are ignored while a pick is up.
+    let Some((img, sel)) = run_picker() else { return };
+    let w = img.width() as i32;
+    let x = sel.left.clamp(0, w) as u32;
+    let y = sel.top.clamp(0, img.height() as i32) as u32;
+    let rw = ((sel.right - sel.left).max(0) as u32).min(img.width().saturating_sub(x));
+    let rh = ((sel.bottom - sel.top).max(0) as u32).min(img.height().saturating_sub(y));
+    if rw == 0 || rh == 0 {
+        return;
+    }
+    let cropped = image::imageops::crop_imm(&img, x, y, rw, rh).to_image();
+    match capture::deliver(&cropped) {
+        Ok(path) => println!("captured {rw}x{rh} -> clipboard + {}", path.display()),
+        Err(e) => eprintln!("trontsnap: region deliver failed: {e:#}"),
+    }
+}
+
+/// Interactive rect selection only (for the video recorder): freeze the screen, run
+/// the same modal picker, return the chosen rect in physical primary-monitor px.
+/// Nothing is saved or copied. Blocks; run on a dedicated thread.
+pub fn pick_rect() -> Option<RECT> {
+    run_picker().map(|(_, sel)| sel)
+}
+
+/// Shared picker session: one at a time (rapid repeat hotkey presses while an overlay
+/// is already up are ignored), grab the frozen frame, enumerate targets, run the modal
+/// overlay. Returns the frame and the raw (unclamped) selection.
+fn run_picker() -> Option<(RgbaImage, RECT)> {
     static ACTIVE: AtomicBool = AtomicBool::new(false);
     if ACTIVE.swap(true, Ordering::SeqCst) {
-        return;
+        return None;
     }
     struct Guard;
     impl Drop for Guard {
@@ -81,27 +107,14 @@ pub fn capture_region() {
         Ok(i) => i,
         Err(e) => {
             eprintln!("trontsnap: region grab failed: {e:#}");
-            return;
+            return None;
         }
     };
     let w = img.width() as i32;
     let h = img.height() as i32;
     let targets = rect_map(&enumerate_windows_raw(), w, h);
-
-    if let Some(sel) = pick(&img, w, h, &targets) {
-        let x = sel.left.clamp(0, w) as u32;
-        let y = sel.top.clamp(0, h) as u32;
-        let rw = ((sel.right - sel.left).max(0) as u32).min(img.width().saturating_sub(x));
-        let rh = ((sel.bottom - sel.top).max(0) as u32).min(img.height().saturating_sub(y));
-        if rw == 0 || rh == 0 {
-            return;
-        }
-        let cropped = image::imageops::crop_imm(&img, x, y, rw, rh).to_image();
-        match capture::deliver(&cropped) {
-            Ok(path) => println!("captured {rw}x{rh} -> clipboard + {}", path.display()),
-            Err(e) => eprintln!("trontsnap: region deliver failed: {e:#}"),
-        }
-    }
+    let sel = pick(&img, w, h, &targets)?;
+    Some((img, sel))
 }
 
 /// Build the smart-capture rect map: every enumerated window clamped to the frame, plus

@@ -19,6 +19,7 @@ mod gallery;
 mod index;
 mod keyhook;
 mod overlay;
+mod recorder;
 mod region_win32;
 mod settings;
 mod sound;

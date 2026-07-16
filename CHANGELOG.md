@@ -2,6 +2,37 @@
 
 All notable changes to TrontSnap. Newest first.
 
+## v0.7.0 (2026-07-15)
+
+### Added
+- **Screen recording: `Ctrl+Shift+PrtSc`** (also in the tray menu). First press runs
+  the same freeze-frame region picker as screenshots (click a window or drag a rect),
+  then recording starts; press again — or click the little "● REC" pill — to stop.
+  - **Capture:** DXGI Desktop Duplication (GPU frame grabs, ~1ms) cropped to the
+    region, 30fps constant frame rate (a static screen encodes duplicated frames).
+  - **Encode:** Media Foundation `IMFSinkWriter` → H.264 MP4 straight to
+    `Pictures\TrontSnap` (hardware encoder via NVENC when available). No ffmpeg, no
+    new dependencies.
+  - **Cursor:** composited per frame with the same GDI `DrawIconEx` path as v0.6.0
+    stills, honoring the "Capture cursor" toggle (hotspot cached per cursor handle).
+  - **REC pill:** a tiny topmost, non-activating indicator parked just outside the
+    region's top-right corner (inside if the region touches the screen edge, where it
+    will appear in the recording). Blinks; click to stop.
+  - **Delivery:** finished MP4 is put on the clipboard as a file (`CF_HDROP` only), so
+    it pastes into Discord/Explorer/terminals; shutter plays; the corner toast says
+    "Recording saved" (click to play).
+- **Gallery understands videos** (and now also `.gif`): MP4s ride the same timeline as
+  stills — drawn as a film tile (accent play triangle, MP4 tag) without ever touching
+  the image decoder. Click = copy file, double-click = open in your player, drag-out /
+  reveal / delete all work. The live watcher surfaces a recording the moment its file
+  appears.
+
+### Known limitations (logged for later)
+- Video only — no audio track yet (WASAPI loopback is the follow-up).
+- Quitting TrontSnap mid-recording abandons the file un-finalized (unplayable);
+  stop first. A fragmented-MP4 mode would fix this properly.
+- Primary monitor only, same as stills.
+
 ## v0.6.0 (2026-07-15)
 
 ### Added

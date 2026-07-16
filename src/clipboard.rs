@@ -72,6 +72,25 @@ unsafe fn set_all_formats(
     Ok(())
 }
 
+/// Put just a FILE on the clipboard (CF_HDROP only) — used for video recordings,
+/// which have no pixel formats. Pasting still works everywhere that accepts a
+/// dropped/pasted file (Discord, Explorer, terminals). Same atomic session +
+/// open-retry as `set_all`.
+pub fn set_file(file_path: &Path) -> anyhow::Result<()> {
+    let dropfiles = build_dropfiles(file_path);
+    unsafe {
+        open_clipboard_with_retry()?;
+        let result = (|| {
+            EmptyClipboard().map_err(win_err)?;
+            let h = alloc_global_copy(&dropfiles)?;
+            SetClipboardData(CF_HDROP.0 as u32, HANDLE(h.0 as isize)).map_err(win_err)?;
+            Ok(())
+        })();
+        let _ = CloseClipboard();
+        result
+    }
+}
+
 /// OpenClipboard can transiently fail if another app (browsers are the usual
 /// culprit) has it open; retry briefly instead of failing the whole capture.
 unsafe fn open_clipboard_with_retry() -> anyhow::Result<()> {

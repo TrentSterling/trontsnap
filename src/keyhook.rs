@@ -27,18 +27,22 @@ use crossbeam_channel::{Receiver, Sender};
 use windows::Win32::Foundation::{HMODULE, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::GetCurrentThreadId;
-use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_CONTROL, VK_SNAPSHOT};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    GetAsyncKeyState, VK_CONTROL, VK_SHIFT, VK_SNAPSHOT,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, DispatchMessageW, GetMessageW, PostThreadMessageW, SetWindowsHookExW,
     TranslateMessage, UnhookWindowsHookEx, HC_ACTION, HHOOK, KBDLLHOOKSTRUCT, MSG, WH_KEYBOARD,
     WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP, WM_QUIT, WM_SYSKEYDOWN, WM_SYSKEYUP,
 };
 
-/// What the hook saw: plain PrintScreen, or PrintScreen with Ctrl held.
+/// What the hook saw: plain PrintScreen, PrintScreen with Ctrl held, or
+/// PrintScreen with Ctrl+Shift held (video record toggle).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HotkeyEvent {
     Full,
     Region,
+    Record,
 }
 
 // The hook callback is a bare `extern "system" fn` — no captures — so the send
@@ -206,12 +210,20 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
     CallNextHookEx(HHOOK(0), code, wparam, lparam)
 }
 
-/// Read live Ctrl state and post the right event. Called only on the confirmed
-/// leading edge of a PrintScreen press.
+/// Read live modifier state and post the right event. Called only on the confirmed
+/// leading edge of a PrintScreen press. Ctrl+Shift = record toggle, Ctrl = region,
+/// bare = fullscreen.
 fn fire() {
-    let ctrl_down = unsafe { (GetAsyncKeyState(VK_CONTROL.0 as i32) as u16 & 0x8000) != 0 };
+    let down = |vk: i32| unsafe { (GetAsyncKeyState(vk) as u16 & 0x8000) != 0 };
+    let ctrl = down(VK_CONTROL.0 as i32);
+    let shift = down(VK_SHIFT.0 as i32);
     if let Some(tx) = TX.get() {
-        let _ = tx.send(if ctrl_down { HotkeyEvent::Region } else { HotkeyEvent::Full });
+        let ev = match (ctrl, shift) {
+            (true, true) => HotkeyEvent::Record,
+            (true, false) => HotkeyEvent::Region,
+            _ => HotkeyEvent::Full,
+        };
+        let _ = tx.send(ev);
     }
 }
 

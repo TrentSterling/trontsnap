@@ -14,8 +14,13 @@ const W: f32 = 330.0;
 const H: f32 = 90.0;
 
 pub fn show(path: PathBuf) -> anyhow::Result<()> {
-    // Small thumbnail of the capture (aspect-preserving fit in 76px).
-    let thumb = image::open(&path).ok().map(|i| i.thumbnail(76, 76).to_rgba8());
+    // Small thumbnail of the capture (aspect-preserving fit in 76px). Videos skip the
+    // image decoder entirely — the toast just shows the text block for those.
+    let thumb = if crate::index::is_video(&path) {
+        None
+    } else {
+        image::open(&path).ok().map(|i| i.thumbnail(76, 76).to_rgba8())
+    };
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -104,6 +109,12 @@ impl eframe::App for Toast {
             .rounding(8.0)
             .inner_margin(10.0);
 
+        let title = if crate::index::is_video(&self.path) {
+            "Recording saved"
+        } else {
+            "Copied to clipboard"
+        };
+
         egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
             ui.horizontal_centered(|ui| {
                 if let Some(tex) = &self.tex {
@@ -121,11 +132,7 @@ impl eframe::App for Toast {
                 ui.add_space(4.0);
                 ui.vertical(|ui| {
                     ui.add_space(6.0);
-                    ui.label(
-                        egui::RichText::new("Copied to clipboard")
-                            .color(crate::theme::T.accent)
-                            .strong(),
-                    );
+                    ui.label(egui::RichText::new(title).color(crate::theme::T.accent).strong());
                     ui.label(egui::RichText::new(name).color(crate::theme::T.text_muted).small());
                     ui.label(
                         egui::RichText::new("click to open")

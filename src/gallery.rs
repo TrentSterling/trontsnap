@@ -274,7 +274,16 @@ impl Gallery {
             Action::Copy(path) => {
                 let p = path.clone();
                 std::thread::spawn(move || {
-                    let _ = capture::copy_path(&p);
+                    // Videos can't be pixel formats — copy the FILE (CF_HDROP), which
+                    // still pastes into Discord/Explorer/terminals.
+                    let r = if index::is_video(&p) {
+                        crate::clipboard::set_file(&p)
+                    } else {
+                        capture::copy_path(&p)
+                    };
+                    if let Err(e) = r {
+                        eprintln!("trontsnap: copy failed: {e:#}");
+                    }
                 });
                 self.set_status("Copied ✓");
             }
@@ -305,14 +314,39 @@ fn draw_cell(ui: &mut egui::Ui, shot: &Shot, thumbs: &mut ThumbCache, action: &m
     painter.rect_filled(rect, 6.0, crate::theme::card_bg());
     painter.rect_stroke(rect, 6.0, Stroke::new(1.0, crate::theme::stroke()));
 
-    match thumbs.request(&shot.path, shot.taken) {
-        Some((id, size)) => {
-            let fitted = fit(rect.shrink(4.0), size);
-            let uv = Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
-            painter.image(id, fitted, uv, Color32::WHITE);
-        }
-        None => {
-            painter.rect_filled(rect.shrink(4.0), 4.0, crate::theme::T.widget_bg);
+    if shot.is_video() {
+        // Recordings never go near the image decoder: draw a film tile — dark plate,
+        // accent play triangle, MP4 tag.
+        let plate = rect.shrink(4.0);
+        painter.rect_filled(plate, 4.0, crate::theme::T.widget_bg);
+        let c = plate.center();
+        let r = 22.0;
+        painter.add(egui::Shape::convex_polygon(
+            vec![
+                egui::pos2(c.x - r * 0.6, c.y - r),
+                egui::pos2(c.x + r, c.y),
+                egui::pos2(c.x - r * 0.6, c.y + r),
+            ],
+            ACCENT,
+            Stroke::NONE,
+        ));
+        painter.text(
+            plate.left_top() + egui::vec2(10.0, 10.0),
+            egui::Align2::LEFT_TOP,
+            "MP4",
+            egui::FontId::proportional(12.0),
+            Color32::from_gray(170),
+        );
+    } else {
+        match thumbs.request(&shot.path, shot.taken) {
+            Some((id, size)) => {
+                let fitted = fit(rect.shrink(4.0), size);
+                let uv = Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+                painter.image(id, fitted, uv, Color32::WHITE);
+            }
+            None => {
+                painter.rect_filled(rect.shrink(4.0), 4.0, crate::theme::T.widget_bg);
+            }
         }
     }
 

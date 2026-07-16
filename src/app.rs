@@ -125,6 +125,7 @@ impl App {
         let open_i = MenuItem::new("Open TrontSnap", true, None);
         let full_i = MenuItem::new("Capture Fullscreen   (PrtSc)", true, None);
         let region_i = MenuItem::new("Capture Region   (Ctrl+PrtSc)", true, None);
+        let record_i = MenuItem::new("Record Region   (Ctrl+Shift+PrtSc)", true, None);
         let cursor_i =
             CheckMenuItem::new("Capture cursor", true, crate::settings::capture_cursor(), None);
         let auto_i = CheckMenuItem::new("Start at login", true, autostart::is_enabled(), None);
@@ -133,6 +134,7 @@ impl App {
         menu.append(&PredefinedMenuItem::separator())?;
         menu.append(&full_i)?;
         menu.append(&region_i)?;
+        menu.append(&record_i)?;
         menu.append(&PredefinedMenuItem::separator())?;
         menu.append(&cursor_i)?;
         menu.append(&auto_i)?;
@@ -336,6 +338,8 @@ fn setup_hotkeys() -> anyhow::Result<KeyboardHook> {
                 HotkeyEvent::Region => {
                     std::thread::spawn(region_win32::capture_region);
                 }
+                // Toggle: first press picks a region + starts recording, second stops.
+                HotkeyEvent::Record => crate::recorder::toggle(),
             }
         }
     });

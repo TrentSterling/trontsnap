@@ -89,6 +89,8 @@ impl CaptureWatcher {
 fn is_image(path: &Path) -> bool {
     matches!(
         path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref(),
-        Some("png" | "jpg" | "jpeg" | "bmp" | "webp")
+        // mp4: a finished (or still-recording) capture — the gallery draws videos as
+        // film tiles without decoding, so surfacing them early is safe.
+        Some("png" | "jpg" | "jpeg" | "bmp" | "webp" | "gif" | "mp4")
     )
 }
