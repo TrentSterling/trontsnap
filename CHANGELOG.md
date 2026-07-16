@@ -2,6 +2,23 @@
 
 All notable changes to TrontSnap. Newest first.
 
+## v0.7.1 (2026-07-15)
+
+### Changed
+- **Recording HUD: the REC pill grew into a flashing red outline around the recorded
+  region** (Trent's ask), with an attached "● REC · stop" tab. One layered color-key
+  window: the interior is genuinely click-through (clicks land on whatever you're
+  recording), the red frame and the tab are clickable — click either to stop.
+- **The HUD never appears in the recording.** The window is marked
+  `WDA_EXCLUDEFROMCAPTURE` (the OBS trick): visible on your monitor, invisible to
+  DXGI duplication — and to screenshots. This also means the tab can safely sit
+  inside the region on fullscreen records.
+
+### Note
+- v0.7.0's "Ctrl+Shift+PrtSc takes a normal picture" report was the stale v0.5.8
+  binary still running (the release exe can't be replaced while the app is live) —
+  not a hotkey bug.
+
 ## v0.7.0 (2026-07-15)
 
 ### Added

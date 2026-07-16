@@ -37,8 +37,9 @@ use windows::Win32::Graphics::Dxgi::{
 };
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, CreateCompatibleDC, CreateDIBSection, CreateSolidBrush, DeleteDC, DeleteObject,
-    EndPaint, FillRect, GetDC, ReleaseDC, SelectObject, SetBkMode, SetTextColor, TextOutW,
-    BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HBRUSH, HDC, PAINTSTRUCT, TRANSPARENT,
+    EndPaint, FillRect, GetDC, InvalidateRect, ReleaseDC, SelectObject, SetBkMode, SetTextColor,
+    TextOutW, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HBRUSH, HDC, PAINTSTRUCT,
+    TRANSPARENT,
 };
 use windows::Win32::Media::MediaFoundation::{
     IMFAttributes, IMFMediaBuffer, IMFMediaType, IMFSample, IMFSinkWriter, MFCreateAttributes,
@@ -52,10 +53,12 @@ use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITH
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, DrawIconEx, GetCursorInfo,
-    GetIconInfo, GetMessageW, KillTimer, PostQuitMessage, RegisterClassW, SetTimer,
-    TranslateMessage, CURSORINFO, CURSOR_SHOWING, DI_NORMAL, HICON, ICONINFO, MSG, WM_DESTROY,
-    WM_LBUTTONUP, WM_PAINT, WM_TIMER, WNDCLASSW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-    WS_EX_TOPMOST, WS_POPUP, WS_VISIBLE,
+    GetIconInfo, GetMessageW, GetSystemMetrics, GetWindowLongPtrW, KillTimer, LoadCursorW,
+    PostQuitMessage, RegisterClassW, SetLayeredWindowAttributes, SetTimer,
+    SetWindowDisplayAffinity, SetWindowLongPtrW, TranslateMessage, CURSORINFO, CURSOR_SHOWING,
+    DI_NORMAL, GWLP_USERDATA, HICON, ICONINFO, IDC_ARROW, LWA_COLORKEY, MSG, SM_CYSCREEN,
+    WDA_EXCLUDEFROMCAPTURE, WM_DESTROY, WM_LBUTTONUP, WM_PAINT, WM_TIMER, WNDCLASSW,
+    WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_VISIBLE,
 };
 
 use crate::capture;
@@ -109,10 +112,11 @@ fn record_session() {
         return;
     }
 
-    // The REC pill lives on its own thread with its own message loop; it watches
-    // RECORDING to know when to close, and clicking it sets STOP.
+    // The recording HUD (blinking red outline + REC tab) lives on its own thread with
+    // its own message loop; it watches RECORDING to know when to close, and clicking
+    // its red parts sets STOP.
     let region = RECT { left: x, top: y, right: x + w as i32, bottom: y + h as i32 };
-    std::thread::spawn(move || pill_thread(region));
+    std::thread::spawn(move || hud_thread(region));
 
     match capture_encode(x, y, w, h) {
         Ok(path) => {
@@ -419,43 +423,101 @@ impl CursorCache {
 }
 
 // ---------------------------------------------------------------------------------
-// The "REC" pill: a tiny topmost, non-activating window near the region's top-right.
-// Clicking it stops the recording. It closes itself when the session ends. It lives
-// on its own thread because the recorder thread is busy pacing frames.
+// The recording HUD: ONE topmost layered window drawing a blinking red outline around
+// the region plus an attached "● REC" tab. Color-key transparency makes the interior
+// literally not part of the window (clicks pass through to whatever you're recording);
+// the red frame and the tab ARE clickable — click either to stop.
+//
+// The whole window is marked WDA_EXCLUDEFROMCAPTURE (the OBS trick), so the outline is
+// visible on the monitor but NEVER appears in the recorded MP4 (DXGI duplication skips
+// excluded windows) — which is also why the tab can sit inside the region when a
+// fullscreen record leaves no room outside.
 
-const PILL_W: i32 = 78;
-const PILL_H: i32 = 30;
-static PILL_BLINK: AtomicI32 = AtomicI32::new(0);
+const FRAME_PX: i32 = 3; // outline thickness, drawn just OUTSIDE the recorded region
+const TAB_W: i32 = 86;
+const TAB_H: i32 = 28;
+/// Improbable color used as the transparency key — everything painted in it is
+/// invisible AND click-through.
+const KEY: COLORREF = COLORREF(0x0003_0201);
 
-fn pill_thread(region: RECT) {
+static HUD_BLINK: AtomicI32 = AtomicI32::new(0);
+
+/// Window-local geometry, reached from the proc via GWLP_USERDATA (same pattern as
+/// the region picker; the HUD is modal to this thread so a stack ref is safe).
+struct HudGeo {
+    outline: RECT, // the region border, window-local
+    tab: RECT,     // the REC tab, window-local
+}
+
+fn hud_thread(region: RECT) {
     unsafe {
         let hinstance = GetModuleHandleW(None).unwrap_or_default();
-        let class = pill_class(hinstance.into());
+        let class = hud_class(hinstance.into());
 
-        // Prefer just above the region (outside the recorded pixels); below if the
-        // region touches the top edge; inside top-right as a last resort.
-        let x = (region.right - PILL_W).max(0);
-        let y = if region.top >= PILL_H + 6 {
-            region.top - PILL_H - 4
+        // Outline sits just outside the region. Tab: above the top-right corner if
+        // there's room, below the bottom-right otherwise, inside as a last resort
+        // (fullscreen records — invisible to the capture anyway).
+        let out = RECT {
+            left: region.left - FRAME_PX,
+            top: region.top - FRAME_PX,
+            right: region.right + FRAME_PX,
+            bottom: region.bottom + FRAME_PX,
+        };
+        let screen_h = GetSystemMetrics(SM_CYSCREEN);
+        let tab_left = (out.right - TAB_W).max(0);
+        let tab = if out.top - TAB_H - 2 >= 0 {
+            RECT { left: tab_left, top: out.top - TAB_H - 2, right: tab_left + TAB_W, bottom: out.top - 2 }
+        } else if out.bottom + TAB_H + 2 <= screen_h {
+            RECT { left: tab_left, top: out.bottom + 2, right: tab_left + TAB_W, bottom: out.bottom + TAB_H + 2 }
         } else {
-            region.bottom + 4
+            let t = region.top + 6;
+            RECT { left: region.right - 6 - TAB_W, top: t, right: region.right - 6, bottom: t + TAB_H }
+        };
+
+        // Window = union of outline and tab, in screen px.
+        let wx = out.left.min(tab.left);
+        let wy = out.top.min(tab.top);
+        let ww = out.right.max(tab.right) - wx;
+        let wh = out.bottom.max(tab.bottom) - wy;
+        let mut geo = HudGeo {
+            outline: RECT {
+                left: out.left - wx,
+                top: out.top - wy,
+                right: out.right - wx,
+                bottom: out.bottom - wy,
+            },
+            tab: RECT {
+                left: tab.left - wx,
+                top: tab.top - wy,
+                right: tab.right - wx,
+                bottom: tab.bottom - wy,
+            },
         };
 
         let hwnd = CreateWindowExW(
-            WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+            WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED,
             PCWSTR(class.as_ptr()),
             PCWSTR::null(),
             WS_POPUP | WS_VISIBLE,
-            x,
-            y,
-            PILL_W,
-            PILL_H,
+            wx,
+            wy,
+            ww,
+            wh,
             HWND(0),
             None,
             hinstance,
             None,
         );
-        SetTimer(hwnd, 1, 400, None); // blink + session-end watchdog
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, &mut geo as *mut HudGeo as isize);
+        // Key-colored pixels become transparent + click-through.
+        let _ = SetLayeredWindowAttributes(hwnd, KEY, 0, LWA_COLORKEY);
+        // Exclude the HUD from ALL capture (our DXGI recording and screenshots both):
+        // on failure the HUD still works, it just shows up in the video.
+        if SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE).is_err() {
+            eprintln!("trontsnap: HUD capture-exclusion unavailable (will appear in the video)");
+        }
+        SetTimer(hwnd, 1, 500, None); // blink + session-end watchdog
+        let _ = InvalidateRect(hwnd, None, true);
 
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, HWND(0), 0, 0).as_bool() {
@@ -465,16 +527,19 @@ fn pill_thread(region: RECT) {
     }
 }
 
-fn pill_class(hinstance: windows::Win32::Foundation::HINSTANCE) -> &'static Vec<u16> {
+fn hud_class(hinstance: windows::Win32::Foundation::HINSTANCE) -> &'static Vec<u16> {
     static CLASS: std::sync::OnceLock<Vec<u16>> = std::sync::OnceLock::new();
     CLASS.get_or_init(|| {
-        let name: Vec<u16> = "TrontSnapRecPill\0".encode_utf16().collect();
+        let name: Vec<u16> = "TrontSnapRecHud\0".encode_utf16().collect();
         unsafe {
             let wc = WNDCLASSW {
-                lpfnWndProc: Some(pill_proc),
+                lpfnWndProc: Some(hud_proc),
                 hInstance: hinstance,
                 lpszClassName: PCWSTR(name.as_ptr()),
-                hbrBackground: HBRUSH(0),
+                // Class background = the key color, so every un-painted pixel is
+                // transparent by default and erase never flashes a solid rect.
+                hbrBackground: CreateSolidBrush(KEY),
+                hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
                 ..Default::default()
             };
             RegisterClassW(&wc);
@@ -483,9 +548,10 @@ fn pill_class(hinstance: windows::Win32::Foundation::HINSTANCE) -> &'static Vec<
     })
 }
 
-unsafe extern "system" fn pill_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+unsafe extern "system" fn hud_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     match msg {
         WM_LBUTTONUP => {
+            // Only reachable via the red frame or the tab (key pixels are click-through).
             STOP.store(true, Ordering::SeqCst);
             LRESULT(0)
         }
@@ -494,29 +560,18 @@ unsafe extern "system" fn pill_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
                 let _ = KillTimer(hwnd, 1);
                 let _ = DestroyWindow(hwnd);
             } else {
-                PILL_BLINK.fetch_add(1, Ordering::Relaxed);
-                let _ = windows::Win32::Graphics::Gdi::InvalidateRect(hwnd, None, false);
+                HUD_BLINK.fetch_add(1, Ordering::Relaxed);
+                let _ = InvalidateRect(hwnd, None, true);
             }
             LRESULT(0)
         }
         WM_PAINT => {
+            let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const HudGeo;
             let mut ps = PAINTSTRUCT::default();
             let hdc = BeginPaint(hwnd, &mut ps);
-            let bg = CreateSolidBrush(COLORREF(0x00100c0a)); // dark, BGR
-            let full = RECT { left: 0, top: 0, right: PILL_W, bottom: PILL_H };
-            FillRect(hdc, &full, bg);
-            let _ = DeleteObject(bg);
-            // Blinking red dot.
-            if PILL_BLINK.load(Ordering::Relaxed) % 2 == 0 {
-                let dot = CreateSolidBrush(COLORREF(0x002020e8)); // red-ish, BGR
-                let r = RECT { left: 9, top: 10, right: 19, bottom: 20 };
-                FillRect(hdc, &r, dot);
-                let _ = DeleteObject(dot);
+            if !ptr.is_null() {
+                paint_hud(hdc, &*ptr);
             }
-            SetBkMode(hdc, TRANSPARENT);
-            SetTextColor(hdc, COLORREF(0x00f5faff));
-            let text: Vec<u16> = "REC".encode_utf16().collect();
-            let _ = TextOutW(hdc, 26, 7, &text);
             let _ = EndPaint(hwnd, &ps);
             LRESULT(0)
         }
@@ -526,4 +581,39 @@ unsafe extern "system" fn pill_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
         }
         _ => DefWindowProcW(hwnd, msg, wp, lp),
     }
+}
+
+unsafe fn paint_hud(hdc: HDC, geo: &HudGeo) {
+    // Flash the outline bright <-> dim red (never fully off, so the recorded area
+    // always reads at a glance).
+    let bright = HUD_BLINK.load(Ordering::Relaxed) % 2 == 0;
+    let red = if bright { COLORREF(0x0040_30ff) } else { COLORREF(0x0028_2080) }; // BGR
+    let frame = CreateSolidBrush(red);
+    let o = geo.outline;
+    let strips = [
+        RECT { left: o.left, top: o.top, right: o.right, bottom: o.top + FRAME_PX },
+        RECT { left: o.left, top: o.bottom - FRAME_PX, right: o.right, bottom: o.bottom },
+        RECT { left: o.left, top: o.top, right: o.left + FRAME_PX, bottom: o.bottom },
+        RECT { left: o.right - FRAME_PX, top: o.top, right: o.right, bottom: o.bottom },
+    ];
+    for s in &strips {
+        FillRect(hdc, s, frame);
+    }
+    let _ = DeleteObject(frame);
+
+    // The REC tab: dark plate, blinking red dot, label.
+    let t = geo.tab;
+    let plate = CreateSolidBrush(COLORREF(0x0010_0c0a));
+    FillRect(hdc, &t, plate);
+    let _ = DeleteObject(plate);
+    if bright {
+        let dot = CreateSolidBrush(COLORREF(0x0020_20e8));
+        let r = RECT { left: t.left + 10, top: t.top + 9, right: t.left + 20, bottom: t.top + 19 };
+        FillRect(hdc, &r, dot);
+        let _ = DeleteObject(dot);
+    }
+    SetBkMode(hdc, TRANSPARENT);
+    SetTextColor(hdc, COLORREF(0x00f5_faff));
+    let text: Vec<u16> = "REC · stop".encode_utf16().collect();
+    let _ = TextOutW(hdc, t.left + 26, t.top + 6, &text);
 }
