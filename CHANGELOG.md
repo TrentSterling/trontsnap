@@ -2,6 +2,18 @@
 
 All notable changes to TrontSnap. Newest first.
 
+## v0.7.2 (2026-07-15)
+
+### Added
+- **Real video thumbnails.** Gallery MP4 tiles now show the recording's first frame
+  (with a small play badge) instead of the generic film plate, and the capture toast
+  shows it too. Decoding is Media Foundation's Source Reader — the read-side twin of
+  the recorder's SinkWriter, so still no ffmpeg and no new dependencies. Verified
+  against a real recording (orientation + colors correct, cursor visible in-frame).
+- Thumbs for a **recording still in progress** show the film plate, then swap to the
+  real first frame when the file finalizes: the watcher's mtime refresh drops the
+  stale texture and the mtime-keyed disk cache re-decodes automatically.
+
 ## v0.7.1 (2026-07-15)
 
 ### Changed

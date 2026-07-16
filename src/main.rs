@@ -26,6 +26,7 @@ mod sound;
 mod theme;
 mod thumbs;
 mod toast;
+mod videothumb;
 mod watcher;
 
 fn main() {

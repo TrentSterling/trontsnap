@@ -142,15 +142,22 @@ impl Gallery {
     }
 
     /// Insert one freshly-captured TrontSnap shot and keep the list sorted
-    /// newest-first. Skips anything already present (a Create and a Modify event
-    /// can both surface the same path).
+    /// newest-first. If the path is already present but its file has since been
+    /// rewritten (a recording that just finalized), refresh its timestamp and drop
+    /// the stale thumbnail so the real one gets decoded — the thumb disk-cache key
+    /// includes mtime, so the refresh naturally re-keys it.
     fn insert_shot(&mut self, path: PathBuf) {
-        if self.shots.iter().any(|s| s.path == path) {
-            return;
-        }
         let taken = std::fs::metadata(&path)
             .and_then(|m| m.modified())
             .unwrap_or_else(|_| std::time::SystemTime::now());
+        if let Some(i) = self.shots.iter().position(|s| s.path == path) {
+            if self.shots[i].taken != taken {
+                self.shots[i].taken = taken;
+                self.thumbs.forget(&path);
+                index::sort_newest_first(&mut self.shots);
+            }
+            return;
+        }
         self.shots.push(Shot { path, taken, source: Source::TrontSnap });
         index::sort_newest_first(&mut self.shots);
     }
@@ -315,27 +322,50 @@ fn draw_cell(ui: &mut egui::Ui, shot: &Shot, thumbs: &mut ThumbCache, action: &m
     painter.rect_stroke(rect, 6.0, Stroke::new(1.0, crate::theme::stroke()));
 
     if shot.is_video() {
-        // Recordings never go near the image decoder: draw a film tile — dark plate,
-        // accent play triangle, MP4 tag.
-        let plate = rect.shrink(4.0);
-        painter.rect_filled(plate, 4.0, crate::theme::T.widget_bg);
-        let c = plate.center();
-        let r = 22.0;
-        painter.add(egui::Shape::convex_polygon(
-            vec![
-                egui::pos2(c.x - r * 0.6, c.y - r),
-                egui::pos2(c.x + r, c.y),
-                egui::pos2(c.x - r * 0.6, c.y + r),
-            ],
-            ACCENT,
-            Stroke::NONE,
-        ));
+        // Videos: first-frame thumbnail (decoded via Media Foundation in the same
+        // worker pool) with a play badge; a film plate while it's pending.
+        match thumbs.request(&shot.path, shot.taken) {
+            Some((id, size)) => {
+                let fitted = fit(rect.shrink(4.0), size);
+                let uv = Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+                painter.image(id, fitted, uv, Color32::WHITE);
+                // Play badge over the frame.
+                let c = fitted.center();
+                painter.circle_filled(c, 19.0, Color32::from_black_alpha(150));
+                painter.circle_stroke(c, 19.0, Stroke::new(1.0, ACCENT));
+                let r = 10.0;
+                painter.add(egui::Shape::convex_polygon(
+                    vec![
+                        egui::pos2(c.x - r * 0.55, c.y - r),
+                        egui::pos2(c.x + r, c.y),
+                        egui::pos2(c.x - r * 0.55, c.y + r),
+                    ],
+                    ACCENT,
+                    Stroke::NONE,
+                ));
+            }
+            None => {
+                let plate = rect.shrink(4.0);
+                painter.rect_filled(plate, 4.0, crate::theme::T.widget_bg);
+                let c = plate.center();
+                let r = 22.0;
+                painter.add(egui::Shape::convex_polygon(
+                    vec![
+                        egui::pos2(c.x - r * 0.6, c.y - r),
+                        egui::pos2(c.x + r, c.y),
+                        egui::pos2(c.x - r * 0.6, c.y + r),
+                    ],
+                    ACCENT,
+                    Stroke::NONE,
+                ));
+            }
+        }
         painter.text(
-            plate.left_top() + egui::vec2(10.0, 10.0),
+            rect.shrink(4.0).left_top() + egui::vec2(6.0, 6.0),
             egui::Align2::LEFT_TOP,
             "MP4",
             egui::FontId::proportional(12.0),
-            Color32::from_gray(170),
+            Color32::from_gray(200),
         );
     } else {
         match thumbs.request(&shot.path, shot.taken) {

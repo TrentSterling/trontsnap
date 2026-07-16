@@ -175,8 +175,16 @@ fn build_thumb(job: &Job, cache_dir: &Path) -> Done {
     }
 
     // Slow path: decode the original, downscale, persist the thumb for next time.
-    match image::open(&job.path) {
-        Ok(full) => {
+    // Videos decode their first frame via Media Foundation; stills via image::open.
+    let decoded = if crate::index::is_video(&job.path) {
+        crate::videothumb::first_frame(&job.path)
+            .ok()
+            .map(image::DynamicImage::ImageRgba8)
+    } else {
+        image::open(&job.path).ok()
+    };
+    match decoded {
+        Some(full) => {
             let thumb = full.thumbnail(THUMB_PX, THUMB_PX);
             let rgb = image::DynamicImage::ImageRgb8(thumb.to_rgb8());
             let _ = rgb.save(&cache_file);
@@ -187,8 +195,10 @@ fn build_thumb(job: &Job, cache_dir: &Path) -> Done {
                 rgba: rgba.into_raw(),
             }
         }
-        // Unreadable file: hand back a tiny gray tile so we stop retrying it.
-        Err(_) => Done {
+        // Unreadable file (or a recording still in progress): a tiny gray tile so we
+        // stop retrying. Finished recordings recover because the watcher's mtime
+        // refresh forgets this texture and re-requests under a new disk-cache key.
+        None => Done {
             path: job.path.clone(),
             size: [2, 2],
             rgba: std::iter::repeat([40u8, 44, 52, 255]).take(4).flatten().collect(),

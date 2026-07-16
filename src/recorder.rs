@@ -67,7 +67,8 @@ use crate::settings;
 
 const FPS: u32 = 30;
 // windows 0.56 doesn't re-export MF_VERSION; this is MF_SDK_VERSION << 16 | MF_API_VERSION.
-const MF_VERSION: u32 = 0x0002_0070;
+// Shared with videothumb.rs (the Source Reader side).
+pub(crate) const MF_VERSION: u32 = 0x0002_0070;
 
 /// A recording session is live (pick may still be up, or frames are flowing).
 static RECORDING: AtomicBool = AtomicBool::new(false);

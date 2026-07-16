@@ -14,10 +14,13 @@ const W: f32 = 330.0;
 const H: f32 = 90.0;
 
 pub fn show(path: PathBuf) -> anyhow::Result<()> {
-    // Small thumbnail of the capture (aspect-preserving fit in 76px). Videos skip the
-    // image decoder entirely — the toast just shows the text block for those.
+    // Small thumbnail of the capture (aspect-preserving fit in 76px). Videos decode
+    // their first frame via Media Foundation (file is finalized by the time the toast
+    // spawns); failures just mean a text-only toast.
     let thumb = if crate::index::is_video(&path) {
-        None
+        crate::videothumb::first_frame(&path)
+            .ok()
+            .map(|i| image::DynamicImage::ImageRgba8(i).thumbnail(76, 76).to_rgba8())
     } else {
         image::open(&path).ok().map(|i| i.thumbnail(76, 76).to_rgba8())
     };
