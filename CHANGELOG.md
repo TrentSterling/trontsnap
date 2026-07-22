@@ -2,6 +2,23 @@
 
 All notable changes to TrontSnap. Newest first.
 
+## v0.10.0 (2026-07-22)
+
+### Changed
+- **Portable rework: TrontSnap is a plain, unsigned, single exe again.** Switched
+  the global hotkeys from a `WH_KEYBOARD_LL` keyboard hook to `RegisterHotKey`,
+  the same mechanism ShareX uses: it frees the PrintScreen key from Windows'
+  own "PrintScreen opens Snipping Tool" binding via the per-user, no-admin
+  registry flag `PrintScreenKeyForSnippingEnabled` (set automatically at
+  startup, no admin prompt), then registers PrtSc / Ctrl+PrtSc / Ctrl+Shift+PrtSc
+  directly. RegisterHotKey is never UIPI-blocked, so it still fires over
+  elevated windows (TrontEQ, Task Manager, elevated terminals) at plain Medium
+  integrity: no uiAccess manifest needed.
+- **Dropped the uiAccess manifest, code-signing, and the Program Files
+  installer entirely.** There's no `uiaccess` cargo feature anymore, no signed
+  build, no `bootstrap.ps1` install step: TrontSnap is now a portable single exe
+  you can run from anywhere and uninstall by deleting the file.
+
 ## v0.9.0 (2026-07-22)
 
 ### Added

@@ -125,7 +125,7 @@
   <a class="brand" href="#top"><img src="assets/icon.png" alt=""> Tront<b>Snap</b></a>
   <div class="links">
     <a href="#features">Features</a>
-    <a href="#download">Install</a>
+    <a href="#download">Download</a>
     <a href="https://github.com/TrentSterling/trontsnap">GitHub</a>
     <a class="btn primary" href="https://github.com/TrentSterling/trontsnap/releases/latest">Download</a>
   </div>
@@ -187,7 +187,7 @@
       <div class="card wide">
         <span class="kbd">new</span>
         <h3>It can screenshot the things other tools can't</h3>
-        <p>Most capture tools go blind the moment an elevated window has focus. A normal app is not allowed to see keystrokes headed for an administrator window, so PrintScreen simply does nothing. TrontSnap ships as a signed uiAccess app, the same approach accessibility tools use, so its hotkeys keep firing over elevated windows, Task Manager, and admin terminals, without itself becoming an administrator and without giving up its drag-out.</p>
+        <p>Most capture tools go blind the moment an elevated window has focus, because a global keyboard hook is blocked from seeing keystrokes headed for that window, so PrintScreen simply does nothing. TrontSnap registers PrtSc as a system hotkey with RegisterHotKey, the same approach ShareX uses, so it keeps firing over elevated windows, Task Manager, and elevated terminals, all as a plain portable app that never has to run elevated itself.</p>
       </div>
 
     </div>
@@ -198,16 +198,17 @@
 
 <section class="dl" id="download">
   <div class="wrap">
-    <h2>Install it</h2>
-    <p class="lede">A single click, one administrator prompt, no reboot. TrontSnap is self-signed, so it installs into Program Files where Windows will trust it, and that is the whole reason for the prompt.</p>
+    <h2>Download and run</h2>
+    <p class="lede">TrontSnap is a portable single exe: no installer, nothing to approve, no reboot. Download it, run it, and it's already in your tray.</p>
     <div class="steps">
-      <div class="step"><div class="n">01</div><h3>Grab the build</h3><p>Download <code>TrontSnap.zip</code> from the latest release and extract it.</p></div>
-      <div class="step"><div class="n">02</div><h3>Install</h3><p>Double-click <code>Install&nbsp;TrontSnap.cmd</code> and approve the one prompt. No reboot.</p></div>
-      <div class="step"><div class="n">03</div><h3>Press PrtSc</h3><p>It sits in the tray and starts on login. Left-click the icon or hit a hotkey to capture.</p></div>
+      <div class="step"><div class="n">01</div><h3>Download</h3><p>Grab <code>trontsnap.exe</code> from the latest release.</p></div>
+      <div class="step"><div class="n">02</div><h3>Run it</h3><p>It drops into the tray and applies your hotkeys. Nothing to install.</p></div>
+      <div class="step"><div class="n">03</div><h3>Press PrtSc</h3><p>Or left-click the tray icon. That's it, you're capturing.</p></div>
     </div>
+    <p style="text-align:center;color:var(--muted);font-size:14.5px;margin:-16px 0 38px">To uninstall: delete the exe (untick "Start at login" in the tray menu first if you had it on).</p>
     <div class="note">
-      <b>Why the one prompt</b>
-      <p>For its hotkeys to reach elevated windows, Windows needs TrontSnap to be a code-signed app living in a protected folder. The installer signs it with a self-signed developer certificate and copies it into Program Files, which needs administrator rights exactly once. It never asks again, it does not run as an administrator afterwards, and everything is open source.</p>
+      <b>Portable, no admin</b>
+      <p>TrontSnap takes over the PrtSc key using <code>PrintScreenKeyForSnippingEnabled</code>, a per-user, reversible Windows setting, the same one ShareX uses, so it can grab your screenshots. That is the only system change it makes, aside from an optional "Start at login" entry it writes for you. No signing, no elevation, no install directory.</p>
     </div>
     <div class="cta-row">
       <a class="btn primary" href="https://github.com/TrentSterling/trontsnap/releases/latest">Download TrontSnap</a>

@@ -48,8 +48,8 @@ pub fn deliver(img: &RgbaImage) -> anyhow::Result<PathBuf> {
     }
     crate::sound::play_shutter();
     // Corner toast (ShareX-style) as its own tiny process, so it never touches the main
-    // app's window/loop. Launched via ShellExecute (toast::launch) because our uiAccess exe
-    // can't be started with a bare CreateProcess.
+    // app's window/loop. A plain std::process::Command spawn (inside toast::launch) is all
+    // it takes now that TrontSnap is a portable, non-uiAccess, Medium-integrity exe.
     crate::toast::launch(&path);
     Ok(path)
 }

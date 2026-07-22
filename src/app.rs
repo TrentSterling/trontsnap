@@ -4,7 +4,7 @@
 // Threads:
 //   - eframe/winit (this thread): draws the gallery, pumps the tray message window,
 //     handles tray clicks.
-//   - keyboard hook (see keyhook.rs): a WH_KEYBOARD_LL hook that catches
+//   - hotkey pump (see keyhook.rs): RegisterHotKey-based, catches
 //     PrintScreen / Ctrl+PrintScreen system-wide even while the gallery is hidden.
 //   - single-instance acceptor: a second launch pokes us to show the window.
 //   - region overlay (see region_win32.rs): each Ctrl+PrintScreen spawns a thread
@@ -106,9 +106,8 @@ impl App {
     fn new(cc: &eframe::CreationContext<'_>, listener: TcpListener) -> anyhow::Result<Self> {
         crate::theme::apply(&cc.egui_ctx);
 
-        // Global hotkeys via a low-level keyboard hook (best-effort — if it can't
-        // install, the gallery still works). See keyhook.rs for why RegisterHotkey
-        // was unreliable for bare PrintScreen.
+        // Global hotkeys via RegisterHotKey (best-effort — if it can't install, the
+        // gallery still works). See keyhook.rs.
         let hotkeys = match setup_hotkeys() {
             Ok(m) => Some(m),
             Err(e) => {
@@ -116,11 +115,6 @@ impl App {
                 None
             }
         };
-        // Global LL hook is bypassed for PrintScreen when TrontSnap's own window has
-        // focus; a thread-scoped WH_KEYBOARD hook on this (UI) thread covers that gap.
-        if hotkeys.is_some() {
-            crate::keyhook::install_focused_fallback();
-        }
 
         // Tray icon + menu.
         let menu = Menu::new();
@@ -339,8 +333,8 @@ impl eframe::App for App {
     }
 }
 
-/// Install the WH_KEYBOARD_LL hook and start the consumer thread. PrintScreen runs
-/// do_full(); Ctrl+PrintScreen spawns the dedicated Win32 region overlay on its own
+/// Register the RegisterHotKey-based hotkeys and start the consumer thread. PrintScreen
+/// runs do_full(); Ctrl+PrintScreen spawns the dedicated Win32 region overlay on its own
 /// thread (it blocks in a modal message loop until you pick or cancel).
 fn setup_hotkeys() -> anyhow::Result<KeyboardHook> {
     let (hook, rx) = KeyboardHook::install()?;

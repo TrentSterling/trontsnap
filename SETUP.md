@@ -1,44 +1,43 @@
 # TrontSnap setup
 
-## Install (recommended)
+TrontSnap is a portable single exe. There is no installer.
 
-Double-click **`packaging\Install TrontSnap.cmd`**, approve the one admin prompt.
+## Run it
 
-It signs `trontsnap.exe`, installs it to `%ProgramFiles%\TrontSnap`, points autostart
-there, and launches it. TrontSnap then starts on every login; open it any time with
-**`packaging\Launch TrontSnap.cmd`** or the tray icon.
+Download `trontsnap.exe` from the latest release and run it. It drops into the
+system tray and applies your hotkeys right away. Nothing is copied anywhere and
+nothing asks for elevation.
 
-No reboot. One UAC (just to write into Program Files).
+Press `PrtSc` for a full screenshot, `Ctrl+PrtSc` for a freeze-frame region, or
+`Ctrl+Shift+PrtSc` to record a clip. You can also left-click the tray icon.
 
-## Why an installer at all?
+## Start at login
 
-TrontSnap catches PrtSc with a global keyboard hook. Windows blocks a normal
-(Medium-integrity) process's hook from seeing keystrokes sent to an **elevated** window
-(like TrontEQ) — an anti-keylogger rule. The fix is **uiAccess**: TrontSnap stays a
-normal Medium-integrity app (so drag-out into Discord/browser keeps working and it never
-prompts UAC at runtime), but Windows exempts it from that hook restriction. This is the
-same mechanism AutoHotkey's uiAccess build uses.
+Right-click the tray icon and toggle "Start at login" if you want TrontSnap
+running automatically. This writes a normal per-user autostart entry; nothing
+else on the system changes.
 
-Windows only grants uiAccess to an exe that is **Authenticode-signed** and lives in a
-**secure location** (`%ProgramFiles%`). That's the whole job of the installer: sign +
-copy there. It reuses the already-trusted TrontEQ dev cert if present, otherwise it
-generates and trusts a machine-local one. The private key never ships.
+## Why it works over elevated windows
 
-## Developing
+TrontSnap catches its hotkeys with `RegisterHotKey`, the same approach ShareX
+uses, so PrtSc keeps firing even when an elevated window (Task Manager, an
+admin terminal) has focus. It runs at normal (Medium) integrity the whole
+time, it never elevates itself, and drag-out into other apps keeps working.
 
-`cargo run` / `cargo build` build a plain `asInvoker` binary (no uiAccess) that runs
-straight from `target\`, so normal dev iteration works. uiAccess is opt-in behind the
-`uiaccess` cargo feature and only the installer turns it on:
+## PrintScreen setting
 
-```
-cargo build --release --features uiaccess
-```
-
-A `uiAccess=true` exe cannot be launched by bare `cargo run`/CreateProcess (it fails with
-`ERROR_ELEVATION_REQUIRED`), and it only gets uiAccess when signed + in Program Files —
-which is exactly why the feature is off by default.
+The first time it needs to, TrontSnap turns on
+`PrintScreenKeyForSnippingEnabled`, a per-user Windows setting that routes the
+PrtSc key to snipping-style tools instead of the OS default. It is the exact
+setting ShareX turns on too, it only affects your user account, and it is
+fully reversible.
 
 ## Uninstall
 
-Delete the HKCU `...\Run` value `TrontSnap`, remove `%ProgramFiles%\TrontSnap`, and quit
-the tray app.
+Untick "Start at login" in the tray menu if you had it on, quit TrontSnap from
+the tray, then delete `trontsnap.exe`. That's the whole uninstall.
+
+## Developing
+
+`cargo run` / `cargo build` build and run the plain portable exe straight from
+`target\`, no extra steps or feature flags needed.

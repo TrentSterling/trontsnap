@@ -21,6 +21,7 @@ mod gifexport;
 mod index;
 mod keyhook;
 mod overlay;
+mod printscreen;
 mod recorder;
 mod region_win32;
 mod settings;
@@ -34,6 +35,13 @@ mod watcher;
 fn main() {
     // Load persisted settings before any capture path can read them (all modes capture).
     settings::load();
+
+    // Free the PrintScreen key from Windows' own Snipping Tool binding (per-user,
+    // no-admin registry flag) before any mode that installs the RegisterHotKey
+    // hotkeys runs. Idempotent + best-effort: never blocks startup.
+    if printscreen::free_printscreen_key() {
+        eprintln!("trontsnap: freed PrintScreen key from Windows' Snipping Tool binding");
+    }
 
     let mode = std::env::args().nth(1).unwrap_or_default();
     let result = match mode.as_str() {

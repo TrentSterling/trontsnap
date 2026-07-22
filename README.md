@@ -4,11 +4,11 @@ Fast Windows screenshot tool with a lazy-loading gallery over your entire captur
 
 ## What it is
 
-TrontSnap sits in the system tray, owns two global hotkeys, and copies every capture straight to the clipboard in every format a paste target might look for (terminals, Explorer, Discord/Slack, image editors). It also saves a PNG to `Pictures\TrontSnap` and, if you have a ShareX screenshot folder, shows both histories merged into one scrolling timeline.
+TrontSnap sits in the system tray, owns its global hotkeys, and copies every capture straight to the clipboard in every format a paste target might look for (terminals, Explorer, Discord/Slack, image editors). It also saves a PNG to `Pictures\TrontSnap` and, if you have a ShareX screenshot folder, shows both histories merged into one scrolling timeline.
 
 ### Key features
 
-- **Global hotkeys that actually work**: PrintScreen = fullscreen grab, Ctrl+PrintScreen = freeze-frame region picker. Bare PrintScreen is contested by Windows' own Snipping Tool binding since Win10 1809, so TrontSnap uses a `WH_KEYBOARD_LL` low-level keyboard hook (plus a thread-scoped `WH_KEYBOARD` fallback for when its own window has focus) instead of `RegisterHotKey`.
+- **Global hotkeys that work even over elevated windows**: PrintScreen = fullscreen grab, Ctrl+PrintScreen = freeze-frame region picker, Ctrl+Shift+PrintScreen = record. TrontSnap uses `RegisterHotKey` (the same approach ShareX takes), which keeps firing even when an elevated window like Task Manager has focus, without the app itself needing any elevation. Bare PrintScreen is contested by Windows' own Snipping Tool binding since Win10 1809, so on first run TrontSnap frees it via the per-user `PrintScreenKeyForSnippingEnabled` registry flag, exactly like ShareX.
 - **Dedicated GDI region picker**: a separate Win32/GDI overlay window, born already fullscreen with the frozen frame painted in, the same approach ShareX uses. No GL context to warm, no flash, no borrowing the main window.
 - **Multi-format clipboard writer**: one atomic Open/Empty/SetClipboardData/Close session writes CF_DIB, CF_DIBV5 (with alpha), a registered "PNG" format, and CF_HDROP (the saved file itself) so pasting works everywhere, including dropping the file into apps that only accept a dropped/pasted file.
 - **Virtualized history gallery**: a lazy-loading thumbnail grid over your whole timeline (new TrontSnap shots on top, legacy ShareX archive scrolling in below). Only visible cells decode; a LIFO job queue means the current viewport always fills in first, even at 17k+ shots.
