@@ -1,6 +1,6 @@
 [package]
 name = "trontsnap"
-version = "0.8.0"
+version = "0.9.0"
 edition = "2021"
 description = "Fast screenshot tool: global-hotkey capture (full + freeze-frame region) straight to clipboard, plus a lazy-loading gallery over your whole screenshot history"
 
@@ -44,6 +44,19 @@ windows = { version = "0.56", features = [
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
+
+[build-dependencies]
+# Embeds the distinct rainbow icon + a Win32 manifest (asInvoker; uiAccess only
+# under the `uiaccess` feature, which the installer build turns on).
+winresource = "0.1"
+
+[features]
+# uiAccess=true so the keyboard hook can see keystrokes over ELEVATED windows
+# (e.g. TrontEQ) without the process itself being elevated. Opt-in: only the
+# signed, Program-Files-installed build enables it (a uiAccess exe won't launch
+# via bare `cargo run`/CreateProcess, and needs a trusted signature + secure
+# location to actually be granted uiAccess). Dev builds stay plain asInvoker.
+uiaccess = []
 
 [profile.release]
 opt-level = 3        # speed over size: this app decodes a lot of images

@@ -4,11 +4,45 @@
 //! process (`trontsnap toast <path>`) per capture so it never touches the main
 //! app's window/loop.
 
-use std::path::PathBuf;
+use std::os::windows::ffi::OsStrExt;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use eframe::egui;
 use image::RgbaImage;
+use windows::core::PCWSTR;
+use windows::Win32::Foundation::HWND;
+use windows::Win32::UI::Shell::ShellExecuteW;
+use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+/// Spawn the corner-toast subprocess (`trontsnap toast <path>`).
+///
+/// MUST go through ShellExecute, NOT `std::process::Command`: the installed build carries a
+/// uiAccess manifest, and Windows refuses to launch a uiAccess exe via bare CreateProcess
+/// (`ERROR_ELEVATION_REQUIRED` / 740) — which silently broke the toasts once we moved to the
+/// signed Program Files build. ShellExecute goes through the AppInfo service, which launches
+/// it (and grants uiAccess). Best-effort: the capture is already saved + on the clipboard, so
+/// a failed toast never loses anything.
+pub fn launch(path: &Path) {
+    let Ok(exe) = std::env::current_exe() else { return };
+    let file: Vec<u16> = exe.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    let op: Vec<u16> = "open".encode_utf16().chain(std::iter::once(0)).collect();
+    let params: Vec<u16> = format!("toast \"{}\"", path.display())
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    // The Vecs stay alive across the call; ShellExecuteW copies what it needs.
+    let _ = unsafe {
+        ShellExecuteW(
+            HWND(0),
+            PCWSTR(op.as_ptr()),
+            PCWSTR(file.as_ptr()),
+            PCWSTR(params.as_ptr()),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+}
 
 const W: f32 = 330.0;
 const H: f32 = 90.0;

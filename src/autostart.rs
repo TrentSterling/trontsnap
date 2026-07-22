@@ -18,7 +18,17 @@ pub fn is_enabled() -> bool {
     let Ok(key) = RegKey::predef(HKEY_CURRENT_USER).open_subkey_with_flags(RUN_PATH, KEY_READ) else {
         return false;
     };
-    key.get_value::<String, _>(VALUE).is_ok()
+    let Ok(stored) = key.get_value::<String, _>(VALUE) else {
+        return false;
+    };
+    // Only "enabled" if the Run value points at THIS exe. A stale value from an
+    // earlier build/location (e.g. a dev target\release copy after the installer
+    // moved us to Program Files) reads as disabled, so the tray toggle rewrites it
+    // correctly instead of falsely showing "on". Paths are case-insensitive on Windows.
+    match command() {
+        Some(cmd) => stored.eq_ignore_ascii_case(&cmd),
+        None => !stored.is_empty(),
+    }
 }
 
 pub fn enable() -> anyhow::Result<()> {

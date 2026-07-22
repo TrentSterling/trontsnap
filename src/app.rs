@@ -169,6 +169,7 @@ impl App {
             let open = open_i.id().clone();
             let full = full_i.id().clone();
             let region = region_i.id().clone();
+            let record = record_i.id().clone();
             let quit = quit_i.id().clone();
             MenuEvent::set_event_handler(Some(move |ev: MenuEvent| {
                 if ev.id == open {
@@ -180,6 +181,9 @@ impl App {
                     do_full();
                 } else if ev.id == region {
                     std::thread::spawn(region_win32::capture_region);
+                } else if ev.id == record {
+                    // Toggle: first click picks a region + records, second stops.
+                    crate::recorder::toggle();
                 } else if ev.id == quit {
                     std::process::exit(0);
                 } else {
@@ -439,9 +443,10 @@ impl HasWindowHandle for RawHwnd {
     }
 }
 
-/// Decode the embedded face (Trent's avatar) resized to `size`, or None on failure.
+/// Decode the embedded TrontSnap icon (the face in its rainbow capture-frame,
+/// distinct from TrontEQ's bare face) resized to `size`, or None on failure.
 fn face_rgba(size: u32) -> Option<Vec<u8>> {
-    let bytes = include_bytes!("../assets/tront.png");
+    let bytes = include_bytes!("../assets/trontsnap.png");
     let img = image::load_from_memory(bytes).ok()?;
     let resized = img.resize_exact(size, size, image::imageops::FilterType::Lanczos3);
     Some(resized.to_rgba8().into_raw())

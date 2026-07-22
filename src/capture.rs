@@ -47,11 +47,10 @@ pub fn deliver(img: &RgbaImage) -> anyhow::Result<PathBuf> {
         eprintln!("trontsnap: clipboard set failed: {e:#}");
     }
     crate::sound::play_shutter();
-    // Corner toast (ShareX-style) as its own tiny process, so it never touches
-    // the main app's window/loop.
-    if let Ok(exe) = std::env::current_exe() {
-        let _ = std::process::Command::new(exe).arg("toast").arg(&path).spawn();
-    }
+    // Corner toast (ShareX-style) as its own tiny process, so it never touches the main
+    // app's window/loop. Launched via ShellExecute (toast::launch) because our uiAccess exe
+    // can't be started with a bare CreateProcess.
+    crate::toast::launch(&path);
     Ok(path)
 }
 

@@ -2,6 +2,28 @@
 
 All notable changes to TrontSnap. Newest first.
 
+## v0.9.0 (2026-07-22)
+
+### Added
+- **Hotkeys now fire over elevated windows** (TrontEQ, Task Manager, elevated
+  terminals). Previously PrtSc silently did nothing while an admin window had focus:
+  a Medium-integrity `WH_KEYBOARD_LL` hook is blocked by Windows UIPI from seeing
+  keystrokes headed to a higher-integrity window. Fix = a **uiAccess** build, the same
+  trick AutoHotkey's uiAccess build uses: TrontSnap stays Medium integrity (so drag-out
+  keeps working and there's no per-launch UAC) but is UIPI-exempt for input. Needs a
+  signed exe in a secure location, so there's a one-time installer.
+- **One-click installer** (`Install TrontSnap.cmd` + `bootstrap.ps1`): signs the exe and
+  installs it to `%ProgramFiles%\TrontSnap`, points autostart there, and launches it at
+  Medium so Windows grants uiAccess. One UAC, no reboot. `Launch TrontSnap.cmd` opens it
+  any time (it also starts on login). Dev builds (`cargo run`) stay plain asInvoker via
+  the opt-in `uiaccess` cargo feature.
+- **Distinct rainbow icon.** TrontSnap's icon (tray + window + exe) is now the face inside
+  a rainbow capture-frame, so it no longer twins with TrontEQ's bare face.
+
+### Fixed
+- The tray "Record Region" item was a dead no-op (its menu id was never handled); it now
+  toggles recording, matching the Ctrl+Shift+PrtSc hotkey.
+
 ## v0.8.0 (2026-07-16)
 
 ### Added

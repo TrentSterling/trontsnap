@@ -132,9 +132,7 @@ fn record_session() {
             }
             crate::sound::play_shutter();
             eprintln!("trontsnap: recorded {w}x{h} -> {}", path.display());
-            if let Ok(exe) = std::env::current_exe() {
-                let _ = std::process::Command::new(exe).arg("toast").arg(&path).spawn();
-            }
+            crate::toast::launch(&path);
         }
         Err(e) => eprintln!("trontsnap: recording failed: {e:#}"),
     }
