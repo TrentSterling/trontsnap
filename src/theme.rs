@@ -45,6 +45,9 @@ pub const T: Tokens = Tokens {
 pub fn card_bg() -> Color32 { T.card_bg }
 pub fn stroke() -> Color32 { T.stroke }
 /// Dark text to sit on the light cyan accent (readable on the accent fill).
+/// Wired into `selection.stroke` (selected tab/chip text sits on the cyan fill).
+/// Deliberately NOT used for `widgets.active.fg_stroke`, where the pressed-widget
+/// label sits over the DARK panel and would turn dark-on-dark — see `apply()`.
 pub fn on_accent() -> Color32 { T.window_bg }
 
 pub fn rounding() -> Rounding {
@@ -116,6 +119,11 @@ pub fn apply(ctx: &egui::Context) {
     v.indent_has_left_vline = false;
 
     v.selection.bg_fill = T.accent;
+    // Text color for a SELECTED SelectableLabel/tab. interact_selectable overrides
+    // fg_stroke with this whenever the widget is selected — and a selected chip is
+    // painted ON the bright cyan bg_fill, so this text needs to be DARK for contrast
+    // (light-on-cyan washes out). This is the opposite of `widgets.active` below,
+    // where the pressed-widget label sits over the DARK panel and must stay light.
     v.selection.stroke = Stroke::new(1.0, on_accent());
     v.hyperlink_color = T.accent;
     v.warn_fg_color = T.accent;
@@ -141,7 +149,9 @@ pub fn apply(ctx: &egui::Context) {
     let w = &mut v.widgets.hovered;
     w.bg_fill = T.widget_hover;
     w.weak_bg_fill = T.widget_hover;
-    w.bg_stroke = Stroke::new(1.0, T.accent_dim);
+    // Full accent (not the dimmed variant) so hover reads as a crisp, deliberate
+    // edge on tabs/chips/buttons/menu items — everything sharing this token.
+    w.bg_stroke = Stroke::new(1.2, T.accent);
     w.fg_stroke = Stroke::new(1.5, T.text_primary);
     w.rounding = r;
     w.expansion = 1.0;
@@ -150,7 +160,12 @@ pub fn apply(ctx: &egui::Context) {
     w.bg_fill = T.accent;
     w.weak_bg_fill = T.accent_dim;
     w.bg_stroke = Stroke::new(1.0, T.accent);
-    w.fg_stroke = Stroke::new(1.0, on_accent());
+    // Was on_accent() (dark) — but egui only fills bg_fill for a handful of
+    // widgets (e.g. a pressed Button). Checkbox/SelectableLabel/RadioButton read
+    // this same fg_stroke for their label text while pressed, painted straight
+    // over the (dark) panel background, not over bg_fill — that dark-on-dark is
+    // the invisible-text bug. Light text stays readable in every case.
+    w.fg_stroke = Stroke::new(1.0, T.text_primary);
     w.rounding = r;
     w.expansion = 1.0;
 

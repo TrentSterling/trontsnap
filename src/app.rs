@@ -61,7 +61,10 @@ pub fn run(start_hidden: bool) -> anyhow::Result<()> {
             .with_inner_size([1180.0, 760.0])
             .with_min_inner_size([680.0, 420.0])
             .with_visible(!start_hidden)
-            .with_icon(Arc::new(app_icon())),
+            .with_icon(Arc::new(app_icon()))
+            // Custom chrome: we draw our own title bar (tabs + window buttons) and
+            // handle move/resize ourselves (see App::title_bar / App::edge_resize).
+            .with_decorations(false),
         ..Default::default()
     };
 
@@ -76,8 +79,82 @@ pub fn run(start_hidden: bool) -> anyhow::Result<()> {
     .map_err(|e| anyhow::anyhow!("app failed: {e}"))
 }
 
+/// The top-level tabs in the custom title bar's tab strip. Capture used to be a
+/// tab of its own (three lonely buttons in an otherwise empty page); it's now a
+/// quick-menu in the chrome instead (see `title_bar`), so it isn't one of these.
+#[derive(Clone, Copy, PartialEq)]
+enum Tab {
+    Gallery,
+    Settings,
+    About,
+}
+
+/// Which glyph a painted window button draws. The real four-button set (min /
+/// max / restore / close) always renders crisp lines/rects instead of relying
+/// on font glyphs — "🗖"/"❐"/"✕" render as tofu on some systems.
+#[derive(Clone, Copy, PartialEq)]
+enum WinBtn {
+    Minimize,
+    Maximize,
+    Restore,
+    Close,
+}
+
+/// Paint one window-chrome button: a rounded hover fill (reddish for close,
+/// theme hover tint otherwise) plus a hand-drawn glyph, so it never depends on
+/// the font having the right symbol. Returns the Response so the caller can
+/// still do `.on_hover_text(...).clicked()`.
+fn window_button(ui: &mut egui::Ui, kind: WinBtn) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(40.0, 30.0), egui::Sense::click());
+    let painter = ui.painter();
+
+    if resp.hovered() {
+        let fill = match kind {
+            WinBtn::Close => egui::Color32::from_rgb(200, 60, 60),
+            _ => crate::theme::T.widget_hover,
+        };
+        painter.rect_filled(rect, 4.0, fill);
+    }
+
+    let stroke = egui::Stroke::new(1.3, crate::theme::T.text_primary);
+    let c = rect.center();
+    match kind {
+        WinBtn::Minimize => {
+            painter.line_segment(
+                [egui::pos2(c.x - 5.0, c.y), egui::pos2(c.x + 5.0, c.y)],
+                stroke,
+            );
+        }
+        WinBtn::Maximize => {
+            let r = egui::Rect::from_center_size(c, egui::vec2(10.0, 10.0));
+            painter.rect_stroke(r, 1.0, stroke);
+        }
+        WinBtn::Restore => {
+            let back = egui::Rect::from_center_size(c + egui::vec2(2.5, -2.5), egui::vec2(8.0, 8.0));
+            let front = egui::Rect::from_center_size(c + egui::vec2(-2.0, 2.0), egui::vec2(8.0, 8.0));
+            painter.rect_stroke(back, 1.0, stroke);
+            painter.rect_stroke(front, 1.0, stroke);
+        }
+        WinBtn::Close => {
+            painter.line_segment(
+                [egui::pos2(c.x - 5.0, c.y - 5.0), egui::pos2(c.x + 5.0, c.y + 5.0)],
+                stroke,
+            );
+            painter.line_segment(
+                [egui::pos2(c.x - 5.0, c.y + 5.0), egui::pos2(c.x + 5.0, c.y - 5.0)],
+                stroke,
+            );
+        }
+    }
+    resp
+}
+
 pub struct App {
     gallery: Gallery,
+    tab: Tab,
+    // Small app-icon texture for the title bar wordmark and the About tab; loaded
+    // once at startup (egui textures must not be re-uploaded every frame).
+    icon_tex: egui::TextureHandle,
     _hotkeys: Option<KeyboardHook>,
     _tray: TrayIcon,
     auto_id: MenuId,
@@ -105,6 +182,9 @@ pub struct App {
 impl App {
     fn new(cc: &eframe::CreationContext<'_>, listener: TcpListener) -> anyhow::Result<Self> {
         crate::theme::apply(&cc.egui_ctx);
+        // Chrome text (wordmark, tabs, labels) shouldn't show an I-beam or highlight
+        // like an edit field — this is a native app chrome, not a document.
+        cc.egui_ctx.style_mut(|s| s.interaction.selectable_labels = false);
 
         // Global hotkeys via RegisterHotKey (best-effort — if it can't install, the
         // gallery still works). See keyhook.rs.
@@ -219,8 +299,29 @@ impl App {
             });
         }
 
+        let icon_tex = {
+            let size = 64u32;
+            let rgba = face_rgba(size).unwrap_or_else(|| make_icon_rgba(size));
+            let img = egui::ColorImage::from_rgba_unmultiplied([size as usize, size as usize], &rgba);
+            cc.egui_ctx.load_texture("trontsnap-icon", img, egui::TextureOptions::default())
+        };
+
+        // First run EVER opens on About (welcome + author credit), then flips a flag so
+        // every launch after opens on Gallery — unless the user opted into "Show this tab
+        // on launch". About stays one click away in the tab strip regardless.
+        let tab = if !crate::settings::has_run_before() {
+            crate::settings::set_has_run();
+            Tab::About
+        } else if crate::settings::show_about_on_launch() {
+            Tab::About
+        } else {
+            Tab::Gallery
+        };
+
         Ok(Self {
             gallery: Gallery::new(&cc.egui_ctx),
+            tab,
+            icon_tex,
             _hotkeys: hotkeys,
             _tray: tray,
             auto_id: auto_i.id().clone(),
@@ -290,12 +391,227 @@ impl App {
             }
         }
     }
+
+    /// Draw the single top chrome: app icon + wordmark, the Capture quick-menu, the
+    /// tab strip, (on the Gallery tab) the filter chips/count/legend inline, a
+    /// draggable middle strip, and minimize/maximize/close buttons — all in ONE
+    /// row / one `TopBottomPanel`. This replaces the OS title bar entirely, so it
+    /// also owns window move (StartDrag / double-click-to-maximize) and the
+    /// close-hides-to-tray behavior. No separate header strip inside the gallery
+    /// body, no bottom bar — everything lives in this single chrome row.
+    fn title_bar(&mut self, ctx: &egui::Context) {
+        let maximized = ctx.input(|i| i.viewport().maximized).unwrap_or(false);
+        let on_gallery = self.tab == Tab::Gallery;
+
+        egui::TopBottomPanel::top("trontsnap_chrome_main")
+            .exact_height(40.0)
+            .frame(
+                egui::Frame::none()
+                    .fill(crate::theme::T.panel_bg)
+                    .inner_margin(egui::Margin::symmetric(10.0, 0.0)),
+            )
+            .show(ctx, |ui| {
+                ui.horizontal_centered(|ui| {
+                    ui.add(
+                        egui::Image::new(&self.icon_tex).fit_to_exact_size(egui::vec2(22.0, 22.0)),
+                    );
+                    ui.add_space(6.0);
+                    ui.label(
+                        egui::RichText::new("TrontSnap")
+                            .color(crate::theme::T.accent)
+                            .strong()
+                            .size(16.0),
+                    );
+                    ui.add_space(16.0);
+
+                    // Uniform nav strip: the Capture action-menu and the three view tabs
+                    // share one spacing + one visual treatment, so the row reads as a
+                    // single clean group instead of a boxed button next to plain tabs.
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    ui.scope(|ui| {
+                        // Frameless at rest so the menu button matches the borderless
+                        // tabs; hover + open still use the shared accent visuals below.
+                        let v = ui.visuals_mut();
+                        v.widgets.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
+                        v.widgets.inactive.bg_fill = egui::Color32::TRANSPARENT;
+                        v.widgets.inactive.bg_stroke = egui::Stroke::NONE;
+                        ui.menu_button("Capture", |ui| {
+                            if ui.button("Fullscreen   (PrtSc)").clicked() {
+                                do_full();
+                                ui.close_menu();
+                            }
+                            if ui.button("Region   (Ctrl+PrtSc)").clicked() {
+                                std::thread::spawn(region_win32::capture_region);
+                                ui.close_menu();
+                            }
+                            if ui.button("Record   (Ctrl+Shift+PrtSc)").clicked() {
+                                crate::recorder::toggle();
+                                ui.close_menu();
+                            }
+                        });
+                    });
+
+                    ui.selectable_value(&mut self.tab, Tab::Gallery, "Gallery");
+                    ui.selectable_value(&mut self.tab, Tab::Settings, "Settings");
+                    ui.selectable_value(&mut self.tab, Tab::About, "About");
+
+                    // Filter chips + count + legend, inline in the same row (Gallery only).
+                    // May clip on very narrow windows — acceptable, the window buttons
+                    // below stay right-aligned and always visible.
+                    if on_gallery {
+                        ui.add_space(14.0);
+                        ui.separator();
+                        self.gallery.filter_bar_ui(ui);
+                    }
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if window_button(ui, WinBtn::Close).on_hover_text("Close to tray").clicked()
+                        {
+                            self.hide(ctx);
+                        }
+                        let max_kind = if maximized { WinBtn::Restore } else { WinBtn::Maximize };
+                        if window_button(ui, max_kind)
+                            .on_hover_text("Maximize / restore")
+                            .clicked()
+                        {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+                        }
+                        if window_button(ui, WinBtn::Minimize).on_hover_text("Minimize").clicked()
+                        {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                        }
+
+                        // Whatever's left between the tabs (+ filters) and the buttons is
+                        // the window's drag handle (move on drag, maximize on double-click).
+                        let (_, drag) = ui.allocate_exact_size(
+                            ui.available_size(),
+                            egui::Sense::click_and_drag(),
+                        );
+                        if drag.drag_started() {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                        } else if drag.double_clicked() {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+                        }
+                    });
+                });
+            });
+    }
+
+    /// Thin invisible interact strips along the 4 edges + 4 corners, so the window
+    /// can still be resized by dragging even though `.with_decorations(false)`
+    /// removed the OS resize border. Each strip is its own foreground `Area` so it
+    /// takes priority over whatever tab content sits underneath it. Skipped while
+    /// maximized (nothing to resize against).
+    fn edge_resize(&self, ctx: &egui::Context) {
+        if ctx.input(|i| i.viewport().maximized).unwrap_or(false) {
+            return;
+        }
+        use egui::viewport::ResizeDirection as Dir;
+        use egui::CursorIcon as Cur;
+
+        let screen = ctx.input(|i| i.screen_rect());
+        const EDGE: f32 = 6.0;
+        const CORNER: f32 = 10.0;
+
+        let strips: [(egui::Rect, Dir, Cur); 8] = [
+            (
+                egui::Rect::from_min_max(
+                    egui::pos2(screen.left() + CORNER, screen.top()),
+                    egui::pos2(screen.right() - CORNER, screen.top() + EDGE),
+                ),
+                Dir::North,
+                Cur::ResizeVertical,
+            ),
+            (
+                egui::Rect::from_min_max(
+                    egui::pos2(screen.left() + CORNER, screen.bottom() - EDGE),
+                    egui::pos2(screen.right() - CORNER, screen.bottom()),
+                ),
+                Dir::South,
+                Cur::ResizeVertical,
+            ),
+            (
+                egui::Rect::from_min_max(
+                    egui::pos2(screen.left(), screen.top() + CORNER),
+                    egui::pos2(screen.left() + EDGE, screen.bottom() - CORNER),
+                ),
+                Dir::West,
+                Cur::ResizeHorizontal,
+            ),
+            (
+                egui::Rect::from_min_max(
+                    egui::pos2(screen.right() - EDGE, screen.top() + CORNER),
+                    egui::pos2(screen.right(), screen.bottom() - CORNER),
+                ),
+                Dir::East,
+                Cur::ResizeHorizontal,
+            ),
+            (
+                egui::Rect::from_min_size(screen.left_top(), egui::vec2(CORNER, CORNER)),
+                Dir::NorthWest,
+                Cur::ResizeNwSe,
+            ),
+            (
+                egui::Rect::from_min_size(
+                    egui::pos2(screen.right() - CORNER, screen.top()),
+                    egui::vec2(CORNER, CORNER),
+                ),
+                Dir::NorthEast,
+                Cur::ResizeNeSw,
+            ),
+            (
+                egui::Rect::from_min_size(
+                    egui::pos2(screen.left(), screen.bottom() - CORNER),
+                    egui::vec2(CORNER, CORNER),
+                ),
+                Dir::SouthWest,
+                Cur::ResizeNeSw,
+            ),
+            (
+                egui::Rect::from_min_size(
+                    egui::pos2(screen.right() - CORNER, screen.bottom() - CORNER),
+                    egui::vec2(CORNER, CORNER),
+                ),
+                Dir::SouthEast,
+                Cur::ResizeNwSe,
+            ),
+        ];
+
+        for (i, (rect, dir, cursor)) in strips.into_iter().enumerate() {
+            if rect.width() <= 0.0 || rect.height() <= 0.0 {
+                continue; // window smaller than 2*CORNER while animating/restoring
+            }
+            let id = egui::Id::new("trontsnap_resize_edge").with(i);
+            egui::Area::new(id)
+                .order(egui::Order::Foreground)
+                .fixed_pos(rect.min)
+                .show(ctx, |ui| {
+                    let (_, resp) =
+                        ui.allocate_exact_size(rect.size(), egui::Sense::click_and_drag());
+                    if resp.hovered() {
+                        ui.output_mut(|o| o.cursor_icon = cursor);
+                    }
+                    if resp.drag_started() {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::BeginResize(dir));
+                    }
+                });
+        }
+    }
 }
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         // Keep ticking so tray/second-instance events are serviced even when hidden.
         ctx.request_repaint_after(Duration::from_millis(150));
+
+        // Clamp UI zoom to a usable range. Extreme zoom-out makes the huge virtualized
+        // gallery grid thrash and flicker; extreme zoom-in lets the min content size push
+        // the OS window bigger. Ctrl+scroll and Ctrl +/- still work inside this range.
+        let zoom = ctx.zoom_factor();
+        let clamped = zoom.clamp(0.5, 2.0);
+        if (clamped - zoom).abs() > f32::EPSILON {
+            ctx.set_zoom_factor(clamped);
+        }
 
         let hwnd = hwnd_from_frame(frame);
         if let Some(h) = hwnd {
@@ -327,8 +643,301 @@ impl eframe::App for App {
             self.hide(ctx);
         }
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            self.gallery.ui(ui, ctx, hwnd);
+        self.title_bar(ctx);
+
+        egui::CentralPanel::default().show(ctx, |ui| match self.tab {
+            Tab::Gallery => self.gallery.ui(ui, ctx, hwnd),
+            Tab::Settings => settings_tab_ui(ui),
+            Tab::About => self.about_tab_ui(ui),
+        });
+
+        self.edge_resize(ctx);
+    }
+}
+
+/// Settings tab: sectioned toggle rows backed directly by the same functions the
+/// tray menu checkboxes use (settings.rs / autostart.rs / printscreen.rs): the
+/// tray menu and this tab read/write the same state, so either one stays in sync
+/// with the other. Scrollable because the Hotkeys section makes it taller than
+/// the window on smaller sizes.
+fn settings_tab_ui(ui: &mut egui::Ui) {
+    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+        egui::Frame::none().inner_margin(egui::Margin::symmetric(24.0, 16.0)).show(ui, |ui| {
+            ui.vertical(|ui| {
+                ui.set_max_width(560.0);
+
+                settings_section_header(ui, "Capture");
+                settings_toggle(
+                    ui,
+                    "Capture cursor",
+                    "Include the mouse pointer in screenshots and recordings.",
+                    crate::settings::capture_cursor(),
+                    crate::settings::set_capture_cursor,
+                );
+                ui.add_space(14.0);
+                settings_toggle(
+                    ui,
+                    "Use the PrintScreen key",
+                    "Toggles the per-user Windows PrintScreenKeyForSnippingEnabled flag; when \
+                     off, use the tray icon, the Capture menu, or Ctrl+PrtSc instead.",
+                    crate::printscreen::is_free(),
+                    crate::printscreen::set_free,
+                );
+
+                ui.add_space(22.0);
+                settings_section_header(ui, "Recording");
+                settings_toggle(
+                    ui,
+                    "Record audio",
+                    "Recordings include a WASAPI loopback track of what you hear.",
+                    crate::settings::record_audio(),
+                    crate::settings::set_record_audio,
+                );
+
+                ui.add_space(22.0);
+                settings_section_header(ui, "Region picker");
+                let mut loupe = crate::settings::loupe_size();
+                if ui
+                    .add(
+                        egui::Slider::new(&mut loupe, 96..=528)
+                            .step_by(48.0)
+                            .text("Zoom loupe size"),
+                    )
+                    .changed()
+                {
+                    crate::settings::set_loupe_size(loupe);
+                }
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new(
+                        "Size of the magnifier that follows the cursor while selecting a \
+                         region. You can also scroll the wheel during a region capture to \
+                         change it.",
+                    )
+                    .small()
+                    .color(crate::theme::T.text_muted),
+                );
+
+                ui.add_space(22.0);
+                settings_section_header(ui, "Hotkeys");
+                hotkey_row(ui, "Fullscreen", crate::settings::HotkeyAction::Full);
+                ui.add_space(14.0);
+                hotkey_row(ui, "Region", crate::settings::HotkeyAction::Region);
+                ui.add_space(14.0);
+                hotkey_row(ui, "Record", crate::settings::HotkeyAction::Record);
+                ui.add_space(10.0);
+                if ui.button("Reset hotkeys to defaults").clicked() {
+                    crate::settings::reset_hotkeys();
+                    crate::keyhook::reload();
+                }
+                ui.add_space(6.0);
+                ui.label(
+                    egui::RichText::new(
+                        "Changes apply instantly. If a combo does not work, another app may \
+                         already own it.",
+                    )
+                    .small()
+                    .color(crate::theme::T.text_muted),
+                );
+
+                ui.add_space(22.0);
+                settings_section_header(ui, "Startup");
+                settings_toggle(
+                    ui,
+                    "Start at login",
+                    "Launch TrontSnap hidden in the tray when you sign in to Windows.",
+                    autostart::is_enabled(),
+                    autostart::set,
+                );
+                ui.add_space(8.0);
+            });
+        });
+    });
+}
+
+/// Small accent section header, matching the About tab's "Shortcuts" heading style.
+fn settings_section_header(ui: &mut egui::Ui, title: &str) {
+    ui.label(egui::RichText::new(title).strong().color(crate::theme::T.accent));
+    ui.add_space(8.0);
+}
+
+fn settings_toggle(ui: &mut egui::Ui, label: &str, desc: &str, current: bool, set: fn(bool)) {
+    let mut value = current;
+    if ui.checkbox(&mut value, label).changed() {
+        set(value);
+    }
+    ui.add_space(4.0);
+    ui.label(egui::RichText::new(desc).small().color(crate::theme::T.text_muted));
+}
+
+/// (label, virtual-key) options for the Hotkeys section's key ComboBox. All three
+/// binds default to PrintScreen; the rest are picked because Windows/apps rarely
+/// claim them globally, unlike letters/numbers.
+const HOTKEY_KEYS: &[(&str, u32)] = &[
+    ("PrintScreen", 0x2C),
+    ("Pause", 0x13),
+    ("Scroll Lock", 0x91),
+    ("Insert", 0x2D),
+    ("Home", 0x24),
+    ("End", 0x23),
+    ("Page Up", 0x21),
+    ("Page Down", 0x22),
+    ("F1", 0x70),
+    ("F2", 0x71),
+    ("F3", 0x72),
+    ("F4", 0x73),
+    ("F5", 0x74),
+    ("F6", 0x75),
+    ("F7", 0x76),
+    ("F8", 0x77),
+    ("F9", 0x78),
+    ("F10", 0x79),
+    ("F11", 0x7A),
+    ("F12", 0x7B),
+];
+
+// Raw HOT_KEY_MODIFIERS bits (see windows::Win32::UI::Input::KeyboardAndMouse),
+// duplicated here as plain u32s so this UI code doesn't need the windows crate.
+const HK_MOD_ALT: u32 = 0x0001;
+const HK_MOD_CONTROL: u32 = 0x0002;
+const HK_MOD_SHIFT: u32 = 0x0004;
+const HK_MOD_WIN: u32 = 0x0008;
+
+/// One rebindable-hotkey row: modifier checkboxes + a main-key ComboBox, both
+/// seeded from the persisted bind every frame. Any change writes the new bind to
+/// settings AND tells the hotkey pump thread to re-register (see keyhook::reload);
+/// nothing is written back to storage unless the user actually changes something.
+fn hotkey_row(ui: &mut egui::Ui, label: &str, action: crate::settings::HotkeyAction) {
+    let (mods, vk) = crate::settings::hotkey(action);
+    let mut ctrl = mods & HK_MOD_CONTROL != 0;
+    let mut shift = mods & HK_MOD_SHIFT != 0;
+    let mut alt = mods & HK_MOD_ALT != 0;
+    let mut win = mods & HK_MOD_WIN != 0;
+
+    // Fall back to showing "PrintScreen" if the stored vk isn't one of the known
+    // combo options (display-only; this never overwrites storage on its own).
+    let current_label =
+        HOTKEY_KEYS.iter().find(|(_, v)| *v == vk).map(|(name, _)| *name).unwrap_or("PrintScreen");
+
+    let mut changed = false;
+    let mut new_vk = vk;
+
+    ui.label(egui::RichText::new(label).strong().color(crate::theme::T.text_primary));
+    ui.horizontal(|ui| {
+        changed |= ui.checkbox(&mut ctrl, "Ctrl").changed();
+        changed |= ui.checkbox(&mut shift, "Shift").changed();
+        changed |= ui.checkbox(&mut alt, "Alt").changed();
+        changed |= ui.checkbox(&mut win, "Win").changed();
+
+        egui::ComboBox::from_id_salt(("trontsnap-hotkey-key", label))
+            .selected_text(current_label)
+            .show_ui(ui, |ui| {
+                for (name, v) in HOTKEY_KEYS {
+                    if ui.selectable_label(*v == vk, *name).clicked() {
+                        new_vk = *v;
+                        changed = true;
+                    }
+                }
+            });
+    });
+
+    if changed {
+        let new_mods = (ctrl as u32 * HK_MOD_CONTROL)
+            | (shift as u32 * HK_MOD_SHIFT)
+            | (alt as u32 * HK_MOD_ALT)
+            | (win as u32 * HK_MOD_WIN);
+        crate::settings::set_hotkey(action, new_mods, new_vk);
+        crate::keyhook::reload();
+    }
+}
+
+/// One About-tab shortcut line: the key combo in accent, the action in muted, on a
+/// single two-tone line. Clean and centered, no keycap chrome.
+fn shortcut_row(ui: &mut egui::Ui, key: &str, desc: &str) {
+    use egui::text::{LayoutJob, TextFormat};
+    let mut job = LayoutJob::default();
+    job.append(
+        key,
+        0.0,
+        TextFormat {
+            color: crate::theme::T.accent,
+            font_id: egui::FontId::proportional(14.0),
+            ..Default::default()
+        },
+    );
+    job.append(
+        &format!("    {desc}"),
+        0.0,
+        TextFormat {
+            color: crate::theme::T.text_muted,
+            font_id: egui::FontId::proportional(14.0),
+            ..Default::default()
+        },
+    );
+    ui.label(job);
+    ui.add_space(6.0);
+}
+
+impl App {
+    /// About tab: scrollable + width-clamped so it stays readable at any window
+    /// size (the old Boxel-style fixed About window broke under zoom/resize).
+    fn about_tab_ui(&mut self, ui: &mut egui::Ui) {
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.set_max_width(520.0);
+                ui.add_space(26.0);
+                ui.add(
+                    egui::Image::new(&self.icon_tex).fit_to_exact_size(egui::vec2(72.0, 72.0)),
+                );
+                ui.add_space(10.0);
+                ui.heading(
+                    egui::RichText::new("TrontSnap").color(crate::theme::T.accent).size(26.0),
+                );
+                ui.add_space(2.0);
+                ui.label(
+                    egui::RichText::new("Fast screenshots, full history, no cloud.")
+                        .size(15.0)
+                        .color(crate::theme::T.text_muted),
+                );
+                ui.add_space(18.0);
+                ui.separator();
+                ui.add_space(14.0);
+
+                ui.label(egui::RichText::new("Shortcuts").strong().color(crate::theme::T.accent));
+                ui.add_space(10.0);
+                shortcut_row(ui, "PrtSc", "Grab the full screen");
+                shortcut_row(ui, "Ctrl + PrtSc", "Freeze, then click a window or drag a region");
+                shortcut_row(ui, "Ctrl + Shift + PrtSc", "Start or stop a screen recording");
+                shortcut_row(ui, "Tray icon", "Left-click for an instant region capture");
+                ui.add_space(18.0);
+                ui.separator();
+                ui.add_space(14.0);
+
+                ui.label(egui::RichText::new("Trent Sterling").strong());
+                ui.add_space(2.0);
+                ui.hyperlink_to("tront.xyz", "https://tront.xyz");
+                ui.hyperlink_to(
+                    "github.com/TrentSterling/trontsnap",
+                    "https://github.com/TrentSterling/trontsnap",
+                );
+                ui.add_space(8.0);
+                ui.label(
+                    egui::RichText::new("Portable single exe. Delete to uninstall.")
+                        .small()
+                        .color(crate::theme::T.text_muted),
+                );
+                ui.label(egui::RichText::new("MIT License").small().color(crate::theme::T.text_muted));
+                ui.add_space(22.0);
+
+                let mut show_on_launch = crate::settings::show_about_on_launch();
+                if ui
+                    .checkbox(&mut show_on_launch, "Show this tab when TrontSnap starts")
+                    .changed()
+                {
+                    crate::settings::set_show_about_on_launch(show_on_launch);
+                }
+                ui.add_space(20.0);
+            });
         });
     }
 }

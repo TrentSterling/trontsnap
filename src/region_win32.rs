@@ -38,18 +38,25 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetMessageW, GetWindowLongPtrW, GetWindowThreadProcessId, LoadCursorW, PostQuitMessage,
     RegisterClassW, SetCursor, SetForegroundWindow, SetWindowLongPtrW, ShowWindow, TranslateMessage,
     GWLP_USERDATA, HCURSOR, IDC_CROSS, MSG, SW_SHOW, WM_DESTROY, WM_KEYDOWN, WM_LBUTTONDOWN,
-    WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_RBUTTONDOWN, WM_SETCURSOR, WNDCLASSW, WS_EX_TOOLWINDOW,
-    WS_EX_TOPMOST, WS_POPUP, WS_VISIBLE,
+    WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONDOWN, WM_SETCURSOR, WNDCLASSW,
+    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_VISIBLE,
 };
 
 use crate::capture;
 use crate::overlay::enumerate_windows_raw;
+use crate::settings;
 
 /// Below this pointer travel (px) a press+release is a click (smart-rect pick), not a drag.
 const CLICK_SLOP: i32 = 5;
-const LOUPE_SIZE: i32 = 132;
 const LOUPE_ZOOM: i32 = 8;
 const LOUPE_MARGIN: i32 = 26;
+// The loupe box size is scrollwheel-adjustable during a pick and persisted via
+// settings::loupe_size(). Bounds + per-notch step are multiples of LOUPE_ZOOM so
+// src = size / zoom stays exact. Zoom is held constant, so a bigger box shows MORE
+// magnified area (a larger viewer), not chunkier pixels.
+const LOUPE_MIN: i32 = 96;
+const LOUPE_MAX: i32 = 528;
+const LOUPE_STEP: i32 = 48;
 
 fn accent() -> COLORREF {
     rgb(90, 209, 255)
@@ -144,6 +151,7 @@ struct Picker {
     back_dc: HDC,   // double-buffer
     targets: Vec<RECT>,
     cursor: POINT,
+    loupe_size: i32, // scrollwheel-adjustable on-screen loupe box (px); persisted
     dragging: bool,
     drag_start: POINT,
     drag_now: POINT,
@@ -192,6 +200,7 @@ fn pick(img: &RgbaImage, w: i32, h: i32, targets: &[RECT]) -> Option<RECT> {
             back_dc,
             targets: targets.to_vec(),
             cursor: POINT { x: -1, y: -1 },
+            loupe_size: settings::loupe_size().clamp(LOUPE_MIN, LOUPE_MAX),
             dragging: false,
             drag_start: POINT { x: 0, y: 0 },
             drag_now: POINT { x: 0, y: 0 },
@@ -424,6 +433,22 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             let _ = DestroyWindow(hwnd);
             LRESULT(0)
         }
+        WM_MOUSEWHEEL => {
+            // Grow/shrink the loupe box a notch at a time; persist so it sticks across
+            // captures and restarts. Zoom is constant, so this changes how much magnified
+            // area the viewer shows, not the pixel scale.
+            let delta = ((wp.0 >> 16) & 0xFFFF) as i16 as i32;
+            let notches = delta / 120;
+            if notches != 0 {
+                let new = (p.loupe_size + notches * LOUPE_STEP).clamp(LOUPE_MIN, LOUPE_MAX);
+                if new != p.loupe_size {
+                    p.loupe_size = new;
+                    settings::set_loupe_size(new);
+                    let _ = InvalidateRect(hwnd, None, false);
+                }
+            }
+            LRESULT(0)
+        }
         WM_SETCURSOR => {
             SetCursor(LoadCursorW(None, IDC_CROSS).unwrap_or_default());
             LRESULT(1)
@@ -494,22 +519,23 @@ unsafe fn draw_dimensions(p: &Picker, r: RECT) {
 }
 
 unsafe fn draw_loupe(p: &Picker) {
+    let size = p.loupe_size;
     let mut ox = p.cursor.x + LOUPE_MARGIN;
     let mut oy = p.cursor.y + LOUPE_MARGIN;
-    if ox + LOUPE_SIZE > p.w {
-        ox = p.cursor.x - LOUPE_MARGIN - LOUPE_SIZE;
+    if ox + size > p.w {
+        ox = p.cursor.x - LOUPE_MARGIN - size;
     }
-    if oy + LOUPE_SIZE > p.h {
-        oy = p.cursor.y - LOUPE_MARGIN - LOUPE_SIZE;
+    if oy + size > p.h {
+        oy = p.cursor.y - LOUPE_MARGIN - size;
     }
-    let src = LOUPE_SIZE / LOUPE_ZOOM;
+    let src = size / LOUPE_ZOOM;
     SetStretchBltMode(p.back_dc, COLORONCOLOR);
     let _ = StretchBlt(
         p.back_dc,
         ox,
         oy,
-        LOUPE_SIZE,
-        LOUPE_SIZE,
+        size,
+        size,
         p.bright_dc,
         p.cursor.x - src / 2,
         p.cursor.y - src / 2,
@@ -517,13 +543,13 @@ unsafe fn draw_loupe(p: &Picker) {
         src,
         SRCCOPY,
     );
-    let box_r = RECT { left: ox, top: oy, right: ox + LOUPE_SIZE, bottom: oy + LOUPE_SIZE };
+    let box_r = RECT { left: ox, top: oy, right: ox + size, bottom: oy + size };
     SelectObject(p.back_dc, p.hollow);
     SelectObject(p.back_dc, p.accent_pen);
     let _ = Rectangle(p.back_dc, box_r.left, box_r.top, box_r.right, box_r.bottom);
     // Crosshair.
-    let cx = ox + LOUPE_SIZE / 2;
-    let cy = oy + LOUPE_SIZE / 2;
+    let cx = ox + size / 2;
+    let cy = oy + size / 2;
     let _ = Rectangle(p.back_dc, cx - 1, box_r.top, cx + 1, box_r.bottom);
     let _ = Rectangle(p.back_dc, box_r.left, cy - 1, box_r.right, cy + 1);
 }

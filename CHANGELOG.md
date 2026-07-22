@@ -2,6 +2,82 @@
 
 All notable changes to TrontSnap. Newest first.
 
+## v0.11.0 (2026-07-22)
+
+### Added
+- **Tabbed UI with custom, frameless window chrome.** The single gallery window is
+  now four tabs (Gallery / Capture / Settings / About) under a hand-drawn title bar:
+  wordmark + tab strip + minimize/maximize/close, since `.with_decorations(false)`
+  drops the OS chrome entirely. Window move is a drag on the title bar's empty space
+  (double-click to maximize); resize is 8 thin interact strips along the edges and
+  corners (`ViewportCommand::StartDrag` / `BeginResize`), since decorations-off also
+  removes the OS resize border.
+- **Capture tab**: three big buttons (Fullscreen / Region / Record) that trigger the
+  exact same paths as the hotkeys. They're a universal fallback for windows that
+  block a bare PrintScreen key: elevated apps, fullscreen games, anything eating
+  input before the OS hotkey ever fires. A mouse click on this tab, or the tray icon,
+  always lands.
+- **Settings tab**: the same four toggles the tray menu already had (capture cursor,
+  record audio, start at login), plus a new one, "Use the PrintScreen key" — flips
+  the per-user `PrintScreenKeyForSnippingEnabled` registry flag live, so you can hand
+  PrintScreen back to Windows' Snipping Tool without editing the registry yourself.
+- **About tab**: replaces the old idea of a fixed-size About window (the kind that
+  breaks under zoom/resize) with a scrollable, width-clamped tab that always stays
+  readable. Explains the hotkeys, the Capture menu, the elevated-window edge case, and
+  that it's a portable single exe; links to tront.xyz and the GitHub repo. Auto-opens
+  on first launch (and stays on until you turn off "Show this tab when TrontSnap
+  starts").
+
+### Rebindable hotkeys
+- **The three global hotkeys are now rebindable.** Settings has a Hotkeys section
+  with a row per action (Fullscreen / Region / Record): Ctrl/Shift/Alt/Win
+  checkboxes plus a key dropdown (PrintScreen, Pause, Insert, Home/End,
+  PageUp/Down, F1-F12). Changes apply instantly (the pump thread re-registers
+  live, no restart) and there's a "Reset hotkeys to defaults" button. Binds
+  persist in `HKCU\Software\TrontSnap` alongside the other settings.
+
+### Region loupe
+- **Scrollwheel-resizable magnifier.** During a region capture, scroll the wheel
+  to grow or shrink the pixel loupe (96-528px, 8x zoom held constant so a bigger
+  box shows more area). The size persists across captures and restarts, and it's
+  also a slider in Settings > Region picker.
+
+### UI: one clean chrome, sectioned Settings, focused About
+- **Single-row chrome.** Icon + wordmark + Capture menu + Gallery/Settings/About
+  tabs + (on Gallery) the filter chips / shot count / source legend inline + the
+  window buttons, all in ONE row. No second header strip, no bottom bar, no
+  duplicate "TrontSnap".
+- **Uniform tab strip.** Capture is a frameless quick-menu (Fullscreen / Region /
+  Record) that matches the tabs instead of a boxed accent button; even spacing
+  across the whole nav.
+- **Painter-drawn window buttons** (crisp min/max/restore/close lines and rects,
+  never a tofu glyph; close hovers reddish), and **chrome text is not selectable**.
+- **Sectioned Settings**: Capture (cursor, PrintScreen key), Recording (audio),
+  Region picker (loupe-size slider), Hotkeys (rebind rows), Startup (start at
+  login) - each under an accent header, in a scroll area.
+- **Focused About**: hero (icon + name + tagline), a two-tone Shortcuts list, and
+  a short author footer. Dropped the "over elevated windows" plumbing and other
+  filler.
+- **Gallery grid fills and centers** (accounts for the reserved scrollbar width);
+  the vertical scrollbar stays on the right, thin and themed.
+- **Richer thumbnail hover tooltip**: filename, full path, capture date/time,
+  pixel dimensions (decoded lazily, only on hover), file size, and source; plus
+  "Copy path" in the right-click menu. The tooltip no longer clips at the window
+  edge.
+
+### Contrast + rendering fixes
+- **Smart contrast on selected chips.** A selected tab/chip sits on the bright
+  cyan accent fill, so its text is dark for readability; every other state (rest,
+  hover, and the pressed state that was the old invisible-text bug) stays light on
+  the dark panel. No dark-on-dark, no washed-out light-on-cyan.
+- **Emoji purged from rendered text.** egui's bundled font only covers a tiny
+  emoji subset, so the `Copied` check-glyph and the right-click menu icons
+  rendered as tofu boxes; all replaced with plain text.
+- **UI zoom is clamped** to a usable range (Ctrl+scroll / Ctrl +/-) so extreme
+  zoom no longer thrashes the virtualized grid or resizes the OS window.
+- **First run opens on About once**, then every launch after opens on Gallery
+  unless you tick "Show this tab when TrontSnap starts".
+
 ## v0.10.0 (2026-07-22)
 
 ### Changed

@@ -16,16 +16,25 @@
 // (hwnd = NULL), so we spawn one dedicated thread that registers all three
 // hotkeys and runs its own GetMessageW pump.
 
+use std::sync::OnceLock;
 use std::thread::JoinHandle;
 
 use crossbeam_channel::{Receiver, Sender};
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT,
-    VK_SNAPSHOT,
+    RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS, MOD_NOREPEAT,
 };
-use windows::Win32::UI::WindowsAndMessaging::{GetMessageW, PostThreadMessageW, MSG, WM_HOTKEY, WM_QUIT};
+use windows::Win32::UI::WindowsAndMessaging::{
+    GetMessageW, PostThreadMessageW, MSG, WM_APP, WM_HOTKEY, WM_QUIT,
+};
+
+use crate::settings::HotkeyAction;
+
+/// Custom thread message telling the pump to unregister + re-register all three
+/// hotkeys from the current settings (posted by `reload()` after a rebind). This
+/// is a thread message (hwnd == NULL), which GetMessageW still returns normally.
+const WM_RELOAD: u32 = WM_APP + 1;
 
 /// What the hotkey pump saw: plain PrintScreen, PrintScreen with Ctrl held, or
 /// PrintScreen with Ctrl+Shift held (video record toggle).
@@ -42,7 +51,13 @@ const ID_RECORD: i32 = 3;
 
 // The pump thread is the only place these ids are registered/unregistered, but the
 // send side of the channel is set once at install time and read from there.
-static TX: std::sync::OnceLock<Sender<HotkeyEvent>> = std::sync::OnceLock::new();
+static TX: OnceLock<Sender<HotkeyEvent>> = OnceLock::new();
+
+// The hotkey pump thread's OS thread id, set once at the top of `pump_thread`. Any
+// thread can read this to post it a message (RegisterHotKey/UnregisterHotKey must
+// run on the thread that owns the registration, so a rebind from the UI thread has
+// to ask the pump thread to do the actual re-register via WM_RELOAD).
+static PUMP_TID: OnceLock<u32> = OnceLock::new();
 
 /// Owns the hotkey pump thread's lifetime. Dropping it posts WM_QUIT to the pump
 /// thread (which unregisters the hotkeys and exits) and joins it.
@@ -88,11 +103,10 @@ impl Drop for KeyboardHook {
 fn pump_thread(tid_tx: std::sync::mpsc::Sender<u32>) {
     unsafe {
         let tid = GetCurrentThreadId();
+        let _ = PUMP_TID.set(tid);
         let _ = tid_tx.send(tid);
 
-        register_or_log(ID_FULL, MOD_NOREPEAT, "PrtSc");
-        register_or_log(ID_REGION, MOD_CONTROL | MOD_NOREPEAT, "Ctrl+PrtSc");
-        register_or_log(ID_RECORD, MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, "Ctrl+Shift+PrtSc");
+        register_all();
 
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, HWND(0), 0, 0).as_bool() {
@@ -106,6 +120,8 @@ fn pump_thread(tid_tx: std::sync::mpsc::Sender<u32>) {
                 if let (Some(ev), Some(tx)) = (ev, TX.get()) {
                     let _ = tx.send(ev);
                 }
+            } else if msg.message == WM_RELOAD {
+                register_all();
             }
         }
 
@@ -115,12 +131,45 @@ fn pump_thread(tid_tx: std::sync::mpsc::Sender<u32>) {
     }
 }
 
+/// (Re)registers all three hotkeys from the persisted settings binds. Always
+/// unregisters first (best-effort: nothing may be registered yet, e.g. on first
+/// call at startup) so a changed bind doesn't leave the old combo also active.
+/// Must run on the pump thread: RegisterHotKey/UnregisterHotKey bind to whichever
+/// thread calls them, and that's the thread whose message queue gets WM_HOTKEY.
+unsafe fn register_all() {
+    let _ = UnregisterHotKey(HWND(0), ID_FULL);
+    let _ = UnregisterHotKey(HWND(0), ID_REGION);
+    let _ = UnregisterHotKey(HWND(0), ID_RECORD);
+
+    let (mods, vk) = crate::settings::hotkey(HotkeyAction::Full);
+    register_or_log(ID_FULL, HOT_KEY_MODIFIERS(mods | MOD_NOREPEAT.0), vk, "Fullscreen");
+
+    let (mods, vk) = crate::settings::hotkey(HotkeyAction::Region);
+    register_or_log(ID_REGION, HOT_KEY_MODIFIERS(mods | MOD_NOREPEAT.0), vk, "Region");
+
+    let (mods, vk) = crate::settings::hotkey(HotkeyAction::Record);
+    register_or_log(ID_RECORD, HOT_KEY_MODIFIERS(mods | MOD_NOREPEAT.0), vk, "Record");
+}
+
 /// Best-effort RegisterHotKey: logs and continues on failure (e.g. another app
 /// already owns that combo) instead of aborting the whole hotkey setup.
-unsafe fn register_or_log(id: i32, mods: HOT_KEY_MODIFIERS, label: &str) {
-    if let Err(e) = RegisterHotKey(HWND(0), id, mods, VK_SNAPSHOT.0 as u32) {
+unsafe fn register_or_log(id: i32, mods: HOT_KEY_MODIFIERS, vk: u32, label: &str) {
+    if let Err(e) = RegisterHotKey(HWND(0), id, mods, vk) {
         eprintln!(
             "trontsnap: {label} hotkey unavailable ({e:#}) — another app may own it"
         );
+    }
+}
+
+/// Tell the hotkey pump thread to unregister + re-register all three hotkeys from
+/// the current settings. Call this from the UI thread after a rebind (settings::
+/// set_hotkey / reset_hotkeys already persisted the new bind): the actual
+/// RegisterHotKey call has to happen on the pump thread, so this just posts it a
+/// message rather than registering directly.
+pub fn reload() {
+    if let Some(tid) = PUMP_TID.get() {
+        unsafe {
+            let _ = PostThreadMessageW(*tid, WM_RELOAD, WPARAM(0), LPARAM(0));
+        }
     }
 }

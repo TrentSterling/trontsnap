@@ -1,6 +1,6 @@
 [package]
 name = "trontsnap"
-version = "0.10.0"
+version = "0.11.0"
 edition = "2021"
 description = "Fast screenshot tool: global-hotkey capture (full + freeze-frame region) straight to clipboard, plus a lazy-loading gallery over your whole screenshot history"
 

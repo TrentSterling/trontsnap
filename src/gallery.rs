@@ -7,6 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
+use chrono::{DateTime, Local};
 use crossbeam_channel::Receiver;
 use eframe::egui::{self, Color32, Rect, Sense, Stroke};
 
@@ -29,6 +30,7 @@ enum Filter {
 
 enum Action {
     Copy(PathBuf),
+    CopyPath(PathBuf),
     Open(PathBuf),
     Reveal(PathBuf),
     Delete(PathBuf),
@@ -195,25 +197,11 @@ impl Gallery {
         }
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, hwnd: Option<isize>) {
-        self.poll_scan();
-        self.poll_watch();
-        self.thumbs.poll(ctx);
-        while let Ok(msg) = self.notice_rx.try_recv() {
-            self.set_status(msg);
-        }
-        if let Some((_, n)) = &mut self.status {
-            if *n == 0 {
-                self.status = None;
-            } else {
-                *n -= 1;
-            }
-        }
-
-        // Toolbar.
-        ui.horizontal(|ui| {
-            ui.heading("TrontSnap");
-            ui.separator();
+    /// Filter chips + shot count + spinner + source legend + status message. Drawn
+    /// inline in the app's single top chrome row (gallery tab only) instead of a
+    /// separate header strip inside the gallery body — see `App::title_bar`.
+    pub fn filter_bar_ui(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_centered(|ui| {
             if ui.selectable_label(self.filter == Filter::All, "All").clicked() {
                 self.filter = Filter::All;
                 self.rebuild_filtered();
@@ -244,16 +232,48 @@ impl Gallery {
             dot(ui, AMBER, "ShareX");
             // No manual Refresh button: the live file watcher splices new captures in
             // automatically (see poll_watch). start_scan() still runs once on launch.
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if let Some((msg, _)) = &self.status {
-                    ui.colored_label(ACCENT, msg.clone());
-                }
-            });
+            // Plain inline label (not right-to-left) now that this bar shares its row
+            // with the window buttons — a right-aligned child here would fight theirs.
+            if let Some((msg, _)) = &self.status {
+                ui.separator();
+                ui.colored_label(ACCENT, msg.clone());
+            }
         });
-        ui.separator();
+    }
 
-        // Grid.
-        let cols = (((ui.available_width() + GAP) / (CELL + GAP)).floor() as usize).max(1);
+    pub fn ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, hwnd: Option<isize>) {
+        self.poll_scan();
+        self.poll_watch();
+        self.thumbs.poll(ctx);
+        while let Ok(msg) = self.notice_rx.try_recv() {
+            self.set_status(msg);
+        }
+        if let Some((_, n)) = &mut self.status {
+            if *n == 0 {
+                self.status = None;
+            } else {
+                *n -= 1;
+            }
+        }
+
+        // Grid. Thin, right-anchored (egui's default), themed scrollbar — set it
+        // locally so this is the source of truth regardless of the global style.
+        let scroll_style = egui::style::ScrollStyle {
+            bar_width: 8.0,
+            floating: false,
+            ..egui::style::ScrollStyle::solid()
+        };
+        ui.style_mut().spacing.scroll = scroll_style;
+
+        // Compute columns against the width actually left over ONCE the vertical
+        // scrollbar reserves its own strip (egui shrinks the ScrollArea's content
+        // area by exactly `allocated_width()`) — using the pre-reservation width
+        // here is what left a ragged, non-centered gap on the right before.
+        let avail = (ui.available_width() - scroll_style.allocated_width()).max(CELL);
+        let cols = (((avail + GAP) / (CELL + GAP)).floor() as usize).max(1);
+        let content_w = cols as f32 * CELL + cols.saturating_sub(1) as f32 * GAP;
+        let side_margin = ((avail - content_w) / 2.0).max(0.0);
+
         let n = self.filtered.len();
         let rows = n.div_ceil(cols);
         let row_h = CELL + GAP;
@@ -269,6 +289,7 @@ impl Gallery {
                 ui.spacing_mut().item_spacing = egui::vec2(GAP, GAP);
                 for row in range {
                     ui.horizontal(|ui| {
+                        ui.add_space(side_margin); // centers the block (equal L/R margins)
                         for c in 0..cols {
                             let fi = row * cols + c;
                             if fi >= n {
@@ -302,7 +323,12 @@ impl Gallery {
                         eprintln!("trontsnap: copy failed: {e:#}");
                     }
                 });
-                self.set_status("Copied ✓");
+                self.set_status("Copied");
+            }
+            Action::CopyPath(_path) => {
+                // The actual clipboard write happens right at the menu click (needs
+                // `ui.ctx()`, not available here) — this just surfaces the toast.
+                self.set_status("Path copied");
             }
             Action::Open(path) => {
                 let _ = opener::open(&path);
@@ -317,11 +343,11 @@ impl Gallery {
             }
             Action::Drag(path) => {
                 if crate::app::start_file_drag(hwnd, &path) {
-                    self.set_status("Dragging…");
+                    self.set_status("Dragging...");
                 }
             }
             Action::ExportGif(path) => {
-                self.set_status("Exporting GIF…");
+                self.set_status("Exporting GIF...");
                 let tx = self.notice_tx.clone();
                 std::thread::spawn(move || match crate::gifexport::export(&path) {
                     Ok(gif) => {
@@ -412,11 +438,19 @@ fn draw_cell(ui: &mut egui::Ui, shot: &Shot, thumbs: &mut ThumbCache, action: &m
     painter.circle_filled(rect.left_bottom() + egui::vec2(10.0, -10.0), 3.5, color);
 
     if resp.hovered() {
+        // Subtle lift: a faint accent wash + soft outer glow under the crisp
+        // inner outline, so hover reads as "raised" without shouting.
+        painter.rect_filled(rect, 6.0, Color32::from_rgba_unmultiplied(90, 209, 255, 12));
+        painter.rect_stroke(
+            rect.expand(1.5),
+            7.0,
+            Stroke::new(1.0, Color32::from_rgba_unmultiplied(90, 209, 255, 70)),
+        );
         painter.rect_stroke(rect, 6.0, Stroke::new(1.5, ACCENT));
     }
 
     let name = shot.path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-    let resp = resp.on_hover_text(&name);
+    let resp = resp.on_hover_ui(|ui| hover_tooltip(ui, shot, &name));
 
     if resp.drag_started() {
         *action = Some(Action::Drag(shot.path.clone()));
@@ -427,28 +461,88 @@ fn draw_cell(ui: &mut egui::Ui, shot: &Shot, thumbs: &mut ThumbCache, action: &m
     }
 
     resp.context_menu(|ui| {
-        if ui.button("📋 Copy to clipboard").clicked() {
+        if ui.button("Copy to clipboard").clicked() {
             *action = Some(Action::Copy(shot.path.clone()));
             ui.close_menu();
         }
-        if ui.button("🔍 Open").clicked() {
+        if ui.button("Copy path").clicked() {
+            // Written straight to the OS clipboard here (needs `ui.ctx()`); the
+            // Action only drives the status toast.
+            ui.ctx().copy_text(shot.path.display().to_string());
+            *action = Some(Action::CopyPath(shot.path.clone()));
+            ui.close_menu();
+        }
+        if ui.button("Open").clicked() {
             *action = Some(Action::Open(shot.path.clone()));
             ui.close_menu();
         }
-        if ui.button("📁 Reveal in Explorer").clicked() {
+        if ui.button("Reveal in Explorer").clicked() {
             *action = Some(Action::Reveal(shot.path.clone()));
             ui.close_menu();
         }
-        if shot.is_video() && ui.button("🎞 Export GIF").clicked() {
+        if shot.is_video() && ui.button("Export GIF").clicked() {
             *action = Some(Action::ExportGif(shot.path.clone()));
             ui.close_menu();
         }
         ui.separator();
-        if ui.button("🗑 Delete (Recycle Bin)").clicked() {
+        if ui.button("Delete (Recycle Bin)").clicked() {
             *action = Some(Action::Delete(shot.path.clone()));
             ui.close_menu();
         }
     });
+}
+
+/// Compact multi-line hover tooltip: name, full path, capture time, pixel
+/// dimensions (decoded lazily, on hover only — never during the scan), file
+/// size, and source. Metadata/dimension reads are best-effort; any failure
+/// just omits that line rather than showing an error.
+fn hover_tooltip(ui: &mut egui::Ui, shot: &Shot, name: &str) {
+    // Bounded + wrapping so egui can keep the whole tooltip inside the window
+    // instead of a super-wide strip that overflows past the right/bottom edge
+    // when hovering a cell near it.
+    ui.set_max_width(320.0);
+    ui.label(egui::RichText::new(name).strong());
+    ui.add(egui::Label::new(
+        egui::RichText::new(shot.path.display().to_string())
+            .small()
+            .color(Color32::from_gray(150)),
+    )
+    .wrap());
+    ui.add_space(3.0);
+
+    if let Ok(meta) = std::fs::metadata(&shot.path) {
+        if let Ok(modified) = meta.modified() {
+            let dt: DateTime<Local> = modified.into();
+            ui.label(format!("Captured: {}", dt.format("%b %-d, %Y %-I:%M %p")));
+        }
+        ui.label(format!("Size: {}", human_size(meta.len())));
+    }
+    if !shot.is_video() {
+        if let Ok((w, h)) = image::image_dimensions(&shot.path) {
+            ui.label(format!("Dimensions: {w} x {h} px"));
+        }
+    }
+
+    let source = match shot.source {
+        Source::TrontSnap => "TrontSnap",
+        Source::ShareX => "ShareX",
+    };
+    ui.label(egui::RichText::new(format!("Source: {source}")).color(crate::theme::T.text_muted));
+}
+
+/// `1.2 MB` / `340 KB` / `812 B` style formatting — no dependency needed for
+/// three branches of arithmetic.
+fn human_size(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    let b = bytes as f64;
+    if b >= MB {
+        format!("{:.1} MB", b / MB)
+    } else if b >= KB {
+        format!("{:.1} KB", b / KB)
+    } else {
+        format!("{bytes} B")
+    }
 }
 
 fn fit(rect: Rect, size: [usize; 2]) -> Rect {
