@@ -4,3 +4,6 @@
 # Backups / editor cruft
 **/*.rs.bk
 *.pdb
+
+# release staging
+dist/
