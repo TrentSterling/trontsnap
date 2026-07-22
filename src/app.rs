@@ -111,12 +111,12 @@ fn window_button(ui: &mut egui::Ui, kind: WinBtn) -> egui::Response {
     if resp.hovered() {
         let fill = match kind {
             WinBtn::Close => egui::Color32::from_rgb(200, 60, 60),
-            _ => crate::theme::T.widget_hover,
+            _ => crate::theme::t().widget_hover,
         };
         painter.rect_filled(rect, 4.0, fill);
     }
 
-    let stroke = egui::Stroke::new(1.3, crate::theme::T.text_primary);
+    let stroke = egui::Stroke::new(1.3, crate::theme::t().text_primary);
     let c = rect.center();
     match kind {
         WinBtn::Minimize => {
@@ -407,7 +407,7 @@ impl App {
             .exact_height(40.0)
             .frame(
                 egui::Frame::none()
-                    .fill(crate::theme::T.panel_bg)
+                    .fill(crate::theme::t().panel_bg)
                     .inner_margin(egui::Margin::symmetric(10.0, 0.0)),
             )
             .show(ctx, |ui| {
@@ -418,7 +418,7 @@ impl App {
                     ui.add_space(6.0);
                     ui.label(
                         egui::RichText::new("TrontSnap")
-                            .color(crate::theme::T.accent)
+                            .color(crate::theme::t().accent)
                             .strong()
                             .size(16.0),
                     );
@@ -666,6 +666,72 @@ fn settings_tab_ui(ui: &mut egui::Ui) {
             ui.vertical(|ui| {
                 ui.set_max_width(560.0);
 
+                settings_section_header(ui, "Appearance");
+                ui.label(
+                    egui::RichText::new(format!("Current theme: {}", crate::settings::theme_name()))
+                        .small()
+                        .color(crate::theme::t().text_muted),
+                );
+                ui.add_space(10.0);
+
+                let mut accent = crate::theme::t().accent;
+                ui.horizontal(|ui| {
+                    ui.label("Accent color");
+                    ui.add_space(8.0);
+                    // The default color swatch renders as a thin sliver (it's sized to
+                    // interact_size); bump it to a proper, obviously-clickable box.
+                    let changed = ui
+                        .scope(|ui| {
+                            ui.spacing_mut().interact_size = egui::vec2(96.0, 30.0);
+                            ui.color_edit_button_srgba(&mut accent).changed()
+                        })
+                        .inner;
+                    if changed {
+                        let rgb = [accent.r(), accent.g(), accent.b()];
+                        let tokens = crate::theme::from_accent(rgb);
+                        crate::theme::set_theme(ui.ctx(), tokens);
+                        crate::settings::set_theme("Custom", &[crate::color::rgb_to_hex(rgb)]);
+                    }
+                });
+                ui.add_space(10.0);
+
+                let current_name = crate::settings::theme_name();
+                egui::ComboBox::from_id_salt("trontsnap-premade-theme")
+                    .selected_text(current_name.clone())
+                    .show_ui(ui, |ui| {
+                        for p in crate::color::PREMADE_PALETTES {
+                            if ui.selectable_label(current_name == p.name, p.name).clicked() {
+                                if let Some((tokens, source)) = crate::theme::premade_tokens(p.name) {
+                                    crate::theme::set_theme(ui.ctx(), tokens);
+                                    crate::settings::set_theme(p.name, &source);
+                                }
+                            }
+                        }
+                    });
+                ui.add_space(10.0);
+
+                ui.horizontal(|ui| {
+                    if ui.button("Randomize").clicked() {
+                        let (tokens, name, source) = crate::theme::randomize();
+                        crate::theme::set_theme(ui.ctx(), tokens);
+                        crate::settings::set_theme(&name, &source);
+                    }
+                    if ui.button("Reset to default").clicked() {
+                        let tokens = crate::theme::resolve("Cyan", &[]);
+                        crate::theme::set_theme(ui.ctx(), tokens);
+                        crate::settings::set_theme("Cyan", &[]);
+                    }
+                });
+                ui.add_space(6.0);
+                ui.label(
+                    egui::RichText::new(
+                        "Themes are generated with smart contrast, so text stays readable on any color.",
+                    )
+                    .small()
+                    .color(crate::theme::t().text_muted),
+                );
+
+                ui.add_space(22.0);
                 settings_section_header(ui, "Capture");
                 settings_toggle(
                     ui,
@@ -715,7 +781,7 @@ fn settings_tab_ui(ui: &mut egui::Ui) {
                          change it.",
                     )
                     .small()
-                    .color(crate::theme::T.text_muted),
+                    .color(crate::theme::t().text_muted),
                 );
 
                 ui.add_space(22.0);
@@ -737,7 +803,7 @@ fn settings_tab_ui(ui: &mut egui::Ui) {
                          already own it.",
                     )
                     .small()
-                    .color(crate::theme::T.text_muted),
+                    .color(crate::theme::t().text_muted),
                 );
 
                 ui.add_space(22.0);
@@ -757,7 +823,7 @@ fn settings_tab_ui(ui: &mut egui::Ui) {
 
 /// Small accent section header, matching the About tab's "Shortcuts" heading style.
 fn settings_section_header(ui: &mut egui::Ui, title: &str) {
-    ui.label(egui::RichText::new(title).strong().color(crate::theme::T.accent));
+    ui.label(egui::RichText::new(title).strong().color(crate::theme::t().accent));
     ui.add_space(8.0);
 }
 
@@ -767,7 +833,7 @@ fn settings_toggle(ui: &mut egui::Ui, label: &str, desc: &str, current: bool, se
         set(value);
     }
     ui.add_space(4.0);
-    ui.label(egui::RichText::new(desc).small().color(crate::theme::T.text_muted));
+    ui.label(egui::RichText::new(desc).small().color(crate::theme::t().text_muted));
 }
 
 /// (label, virtual-key) options for the Hotkeys section's key ComboBox. All three
@@ -822,7 +888,7 @@ fn hotkey_row(ui: &mut egui::Ui, label: &str, action: crate::settings::HotkeyAct
     let mut changed = false;
     let mut new_vk = vk;
 
-    ui.label(egui::RichText::new(label).strong().color(crate::theme::T.text_primary));
+    ui.label(egui::RichText::new(label).strong().color(crate::theme::t().text_primary));
     ui.horizontal(|ui| {
         changed |= ui.checkbox(&mut ctrl, "Ctrl").changed();
         changed |= ui.checkbox(&mut shift, "Shift").changed();
@@ -860,7 +926,7 @@ fn shortcut_row(ui: &mut egui::Ui, key: &str, desc: &str) {
         key,
         0.0,
         TextFormat {
-            color: crate::theme::T.accent,
+            color: crate::theme::t().accent,
             font_id: egui::FontId::proportional(14.0),
             ..Default::default()
         },
@@ -869,7 +935,7 @@ fn shortcut_row(ui: &mut egui::Ui, key: &str, desc: &str) {
         &format!("    {desc}"),
         0.0,
         TextFormat {
-            color: crate::theme::T.text_muted,
+            color: crate::theme::t().text_muted,
             font_id: egui::FontId::proportional(14.0),
             ..Default::default()
         },
@@ -891,19 +957,19 @@ impl App {
                 );
                 ui.add_space(10.0);
                 ui.heading(
-                    egui::RichText::new("TrontSnap").color(crate::theme::T.accent).size(26.0),
+                    egui::RichText::new("TrontSnap").color(crate::theme::t().accent).size(26.0),
                 );
                 ui.add_space(2.0);
                 ui.label(
                     egui::RichText::new("Fast screenshots, full history, no cloud.")
                         .size(15.0)
-                        .color(crate::theme::T.text_muted),
+                        .color(crate::theme::t().text_muted),
                 );
                 ui.add_space(18.0);
                 ui.separator();
                 ui.add_space(14.0);
 
-                ui.label(egui::RichText::new("Shortcuts").strong().color(crate::theme::T.accent));
+                ui.label(egui::RichText::new("Shortcuts").strong().color(crate::theme::t().accent));
                 ui.add_space(10.0);
                 shortcut_row(ui, "PrtSc", "Grab the full screen");
                 shortcut_row(ui, "Ctrl + PrtSc", "Freeze, then click a window or drag a region");
@@ -924,9 +990,9 @@ impl App {
                 ui.label(
                     egui::RichText::new("Portable single exe. Delete to uninstall.")
                         .small()
-                        .color(crate::theme::T.text_muted),
+                        .color(crate::theme::t().text_muted),
                 );
-                ui.label(egui::RichText::new("MIT License").small().color(crate::theme::T.text_muted));
+                ui.label(egui::RichText::new("MIT License").small().color(crate::theme::t().text_muted));
                 ui.add_space(22.0);
 
                 let mut show_on_launch = crate::settings::show_about_on_launch();

@@ -58,8 +58,12 @@ const LOUPE_MIN: i32 = 96;
 const LOUPE_MAX: i32 = 528;
 const LOUPE_STEP: i32 = 48;
 
+/// Reads the live theme's accent so the picker outline/loupe match whatever
+/// theme is active, not a hardcoded cyan. Runs on the picker's own worker
+/// thread; a RwLock read there is fine.
 fn accent() -> COLORREF {
-    rgb(90, 209, 255)
+    let a = crate::theme::t().accent;
+    rgb(a.r(), a.g(), a.b())
 }
 fn rgb(r: u8, g: u8, b: u8) -> COLORREF {
     COLORREF((r as u32) | ((g as u32) << 8) | ((b as u32) << 16))

@@ -2,6 +2,20 @@
 
 All notable changes to TrontSnap. Newest first.
 
+## v0.12.0 (2026-07-22)
+
+### Added
+- **Dynamic color themes (colormagic).** A new Appearance section in Settings:
+  pick a custom **accent color**, choose from **32 premade palettes**, or hit
+  **Randomize** for a fresh one. Every theme is generated with **smart WCAG
+  contrast**, so text stays readable on any color (dark text on light grounds,
+  light on dark, accents nudged until they pop), and the whole app restyles
+  live: chrome, tabs, gallery cells, source legend dots, and the region-picker
+  loupe outline. The default stays the classic TrontSnap cyan; your pick
+  persists across restarts. Ported from the TrontColors / colormagic engine
+  (HSL/RGB/OKLCH math, WCAG luminance + contrast, harmony rules, random palette
+  flavors, `generate_auto_theme`) shared across the other projects.
+
 ## v0.11.0 (2026-07-22)
 
 ### Added

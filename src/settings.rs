@@ -4,6 +4,7 @@
 // without touching the registry on the hot path.
 
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
+use std::sync::{LazyLock, RwLock};
 
 use winreg::enums::{HKEY_CURRENT_USER, KEY_READ};
 use winreg::RegKey;
@@ -20,6 +21,8 @@ const HOTKEY_REGION_MODS_VALUE: &str = "HotkeyRegionMods";
 const HOTKEY_REGION_VK_VALUE: &str = "HotkeyRegionVk";
 const HOTKEY_RECORD_MODS_VALUE: &str = "HotkeyRecordMods";
 const HOTKEY_RECORD_VK_VALUE: &str = "HotkeyRecordVk";
+const THEME_NAME_VALUE: &str = "ThemeName";
+const THEME_SOURCE_VALUE: &str = "ThemeSource";
 
 // On-screen size (px) of the region-picker magnifier loupe, scrollwheel-adjustable
 // during a pick. 132 is the original fixed size; region_win32 clamps to its own
@@ -61,6 +64,13 @@ static HOTKEY_REGION_VK: AtomicU32 = AtomicU32::new(0x2C);
 static HOTKEY_RECORD_MODS: AtomicU32 = AtomicU32::new(0x0002 | 0x0004);
 static HOTKEY_RECORD_VK: AtomicU32 = AtomicU32::new(0x2C);
 
+// Persisted theme selection: a name ("Cyan" = the hardcoded default built-in,
+// a premade palette name, "Custom" for a picked accent, or "Random <flavor>")
+// plus the source hex list it was derived from (empty for "Cyan"). Mirrors
+// theme::resolve()'s inputs exactly, so a restart reproduces the same theme.
+static THEME_NAME: LazyLock<RwLock<String>> = LazyLock::new(|| RwLock::new("Cyan".to_string()));
+static THEME_SOURCE: LazyLock<RwLock<Vec<String>>> = LazyLock::new(|| RwLock::new(Vec::new()));
+
 /// Load persisted settings into the atomics. Call once at process start — every mode
 /// captures (the one-shot `full` / `region` launches too), so all of them need it.
 pub fn load() {
@@ -99,6 +109,14 @@ pub fn load() {
         }
         if let Ok(v) = key.get_value::<u32, _>(HOTKEY_RECORD_VK_VALUE) {
             HOTKEY_RECORD_VK.store(v, Ordering::Relaxed);
+        }
+        if let Ok(v) = key.get_value::<String, _>(THEME_NAME_VALUE) {
+            *THEME_NAME.write().unwrap() = v;
+        }
+        if let Ok(v) = key.get_value::<String, _>(THEME_SOURCE_VALUE) {
+            let list: Vec<String> =
+                if v.is_empty() { Vec::new() } else { v.split(',').map(|s| s.trim().to_string()).collect() };
+            *THEME_SOURCE.write().unwrap() = list;
         }
     }
 }
@@ -197,6 +215,32 @@ fn persist_u32(value: &str, v: u32) {
     if let Ok((key, _)) = RegKey::predef(HKEY_CURRENT_USER).create_subkey(APP_KEY) {
         let _ = key.set_value(value, &v);
     }
+}
+
+fn persist_str(value: &str, s: &str) {
+    if let Ok((key, _)) = RegKey::predef(HKEY_CURRENT_USER).create_subkey(APP_KEY) {
+        let _ = key.set_value(value, &s.to_string());
+    }
+}
+
+/// Current persisted theme name ("Cyan" by default).
+pub fn theme_name() -> String {
+    THEME_NAME.read().unwrap().clone()
+}
+
+/// Current persisted theme source hex list (empty for the "Cyan" built-in).
+pub fn theme_source() -> Vec<String> {
+    THEME_SOURCE.read().unwrap().clone()
+}
+
+/// Persist a theme selection: name + the color list it was derived from.
+/// Mirrored into the in-memory statics AND `HKCU\Software\TrontSnap` (ThemeName
+/// REG_SZ + ThemeSource REG_SZ, comma-joined lowercase hex).
+pub fn set_theme(name: &str, source: &[String]) {
+    *THEME_NAME.write().unwrap() = name.to_string();
+    *THEME_SOURCE.write().unwrap() = source.to_vec();
+    persist_str(THEME_NAME_VALUE, name);
+    persist_str(THEME_SOURCE_VALUE, &source.join(","));
 }
 
 pub fn has_run_before() -> bool {

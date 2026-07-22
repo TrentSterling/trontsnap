@@ -117,8 +117,8 @@ impl eframe::App for Toast {
             .unwrap_or_default();
 
         let frame = egui::Frame::none()
-            .fill(crate::theme::T.panel_bg)
-            .stroke(egui::Stroke::new(1.0, crate::theme::T.accent))
+            .fill(crate::theme::t().panel_bg)
+            .stroke(egui::Stroke::new(1.0, crate::theme::t().accent))
             .rounding(8.0)
             .inner_margin(10.0);
 
@@ -140,16 +140,16 @@ impl eframe::App for Toast {
                         egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
                         egui::Color32::WHITE,
                     );
-                    ui.painter().rect_stroke(rect, 3.0, egui::Stroke::new(1.0, crate::theme::T.stroke));
+                    ui.painter().rect_stroke(rect, 3.0, egui::Stroke::new(1.0, crate::theme::t().stroke));
                 }
                 ui.add_space(4.0);
                 ui.vertical(|ui| {
                     ui.add_space(6.0);
-                    ui.label(egui::RichText::new(title).color(crate::theme::T.accent).strong());
-                    ui.label(egui::RichText::new(name).color(crate::theme::T.text_muted).small());
+                    ui.label(egui::RichText::new(title).color(crate::theme::t().accent).strong());
+                    ui.label(egui::RichText::new(name).color(crate::theme::t().text_muted).small());
                     ui.label(
                         egui::RichText::new("click to open")
-                            .color(crate::theme::T.text_muted)
+                            .color(crate::theme::t().text_muted)
                             .small(),
                     );
                 });

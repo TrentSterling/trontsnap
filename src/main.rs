@@ -15,6 +15,7 @@ mod audio;
 mod autostart;
 mod capture;
 mod clipboard;
+mod color;
 mod cursor;
 mod gallery;
 mod gifexport;

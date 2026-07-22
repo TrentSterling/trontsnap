@@ -18,8 +18,14 @@ use crate::watcher::CaptureWatcher;
 
 const CELL: f32 = 172.0;
 const GAP: f32 = 10.0;
-const ACCENT: Color32 = Color32::from_rgb(90, 209, 255);
-const AMBER: Color32 = Color32::from_rgb(255, 183, 77);
+// Source colors follow the live theme (accent = TrontSnap, amber = ShareX archive)
+// so the legend dots, cell badges, and hover glow restyle with the palette.
+fn accent() -> Color32 {
+    crate::theme::t().accent
+}
+fn amber() -> Color32 {
+    crate::theme::t().amber
+}
 
 #[derive(PartialEq, Clone, Copy)]
 enum Filter {
@@ -228,15 +234,15 @@ impl Gallery {
                 ui.painter().circle_filled(rect.center(), 3.5, color);
                 ui.label(egui::RichText::new(label).small().color(Color32::from_gray(170)));
             };
-            dot(ui, ACCENT, "TrontSnap");
-            dot(ui, AMBER, "ShareX");
+            dot(ui, accent(), "TrontSnap");
+            dot(ui, amber(), "ShareX");
             // No manual Refresh button: the live file watcher splices new captures in
             // automatically (see poll_watch). start_scan() still runs once on launch.
             // Plain inline label (not right-to-left) now that this bar shares its row
             // with the window buttons — a right-aligned child here would fight theirs.
             if let Some((msg, _)) = &self.status {
                 ui.separator();
-                ui.colored_label(ACCENT, msg.clone());
+                ui.colored_label(accent(), msg.clone());
             }
         });
     }
@@ -385,7 +391,7 @@ fn draw_cell(ui: &mut egui::Ui, shot: &Shot, thumbs: &mut ThumbCache, action: &m
                 // Play badge over the frame.
                 let c = fitted.center();
                 painter.circle_filled(c, 19.0, Color32::from_black_alpha(150));
-                painter.circle_stroke(c, 19.0, Stroke::new(1.0, ACCENT));
+                painter.circle_stroke(c, 19.0, Stroke::new(1.0, accent()));
                 let r = 10.0;
                 painter.add(egui::Shape::convex_polygon(
                     vec![
@@ -393,13 +399,13 @@ fn draw_cell(ui: &mut egui::Ui, shot: &Shot, thumbs: &mut ThumbCache, action: &m
                         egui::pos2(c.x + r, c.y),
                         egui::pos2(c.x - r * 0.55, c.y + r),
                     ],
-                    ACCENT,
+                    accent(),
                     Stroke::NONE,
                 ));
             }
             None => {
                 let plate = rect.shrink(4.0);
-                painter.rect_filled(plate, 4.0, crate::theme::T.widget_bg);
+                painter.rect_filled(plate, 4.0, crate::theme::t().widget_bg);
                 let c = plate.center();
                 let r = 22.0;
                 painter.add(egui::Shape::convex_polygon(
@@ -408,7 +414,7 @@ fn draw_cell(ui: &mut egui::Ui, shot: &Shot, thumbs: &mut ThumbCache, action: &m
                         egui::pos2(c.x + r, c.y),
                         egui::pos2(c.x - r * 0.6, c.y + r),
                     ],
-                    ACCENT,
+                    accent(),
                     Stroke::NONE,
                 ));
             }
@@ -428,13 +434,13 @@ fn draw_cell(ui: &mut egui::Ui, shot: &Shot, thumbs: &mut ThumbCache, action: &m
                 painter.image(id, fitted, uv, Color32::WHITE);
             }
             None => {
-                painter.rect_filled(rect.shrink(4.0), 4.0, crate::theme::T.widget_bg);
+                painter.rect_filled(rect.shrink(4.0), 4.0, crate::theme::t().widget_bg);
             }
         }
     }
 
     // Source dot: accent = new TrontSnap shot, amber = ShareX archive.
-    let color = if shot.source == Source::TrontSnap { ACCENT } else { AMBER };
+    let color = if shot.source == Source::TrontSnap { accent() } else { amber() };
     painter.circle_filled(rect.left_bottom() + egui::vec2(10.0, -10.0), 3.5, color);
 
     if resp.hovered() {
@@ -446,7 +452,7 @@ fn draw_cell(ui: &mut egui::Ui, shot: &Shot, thumbs: &mut ThumbCache, action: &m
             7.0,
             Stroke::new(1.0, Color32::from_rgba_unmultiplied(90, 209, 255, 70)),
         );
-        painter.rect_stroke(rect, 6.0, Stroke::new(1.5, ACCENT));
+        painter.rect_stroke(rect, 6.0, Stroke::new(1.5, accent()));
     }
 
     let name = shot.path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
@@ -527,7 +533,7 @@ fn hover_tooltip(ui: &mut egui::Ui, shot: &Shot, name: &str) {
         Source::TrontSnap => "TrontSnap",
         Source::ShareX => "ShareX",
     };
-    ui.label(egui::RichText::new(format!("Source: {source}")).color(crate::theme::T.text_muted));
+    ui.label(egui::RichText::new(format!("Source: {source}")).color(crate::theme::t().text_muted));
 }
 
 /// `1.2 MB` / `340 KB` / `812 B` style formatting — no dependency needed for
