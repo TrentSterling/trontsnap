@@ -180,8 +180,16 @@ fn build_visuals(tk: Tokens) -> egui::Visuals {
     let mut v = egui::Visuals::dark();
     v.dark_mode = true;
 
-    v.window_fill = tk.panel_bg;
-    v.panel_fill = tk.panel_bg;
+    // Discord-style background wash (see `paint_gradient` below): when it's on,
+    // panel/window fills go slightly translucent so the wash reads through the
+    // chrome instead of being hidden under a fully opaque panel. Same panel_alpha
+    // SpaceView's `build_visuals` uses (216/255) — TrontSnap's chrome is the same
+    // full-bleed top-bar + central-panel shape, so the same tuning applies.
+    let panel_alpha: u8 = if crate::settings::gradient() { 216 } else { 255 };
+    let panel = Color32::from_rgba_unmultiplied(tk.panel_bg.r(), tk.panel_bg.g(), tk.panel_bg.b(), panel_alpha);
+
+    v.window_fill = panel;
+    v.panel_fill = panel;
     v.faint_bg_color = tk.header_strip;
     v.extreme_bg_color = tk.window_bg;
     v.code_bg_color = tk.widget_bg;
@@ -221,8 +229,8 @@ fn build_visuals(tk: Tokens) -> egui::Visuals {
     let txt = Stroke::new(1.0, tk.text_primary);
 
     let w = &mut v.widgets.noninteractive;
-    w.bg_fill = tk.panel_bg;
-    w.weak_bg_fill = tk.panel_bg;
+    w.bg_fill = panel;
+    w.weak_bg_fill = panel;
     w.bg_stroke = Stroke::new(1.0, tk.stroke);
     w.fg_stroke = txt;
     w.rounding = r;
@@ -431,4 +439,55 @@ fn load_from_settings() {
     let name = crate::settings::theme_name();
     let source = crate::settings::theme_source();
     *CURRENT.write().unwrap() = resolve(&name, &source);
+}
+
+// ---- background gradient ---------------------------------------------------
+
+/// Discord-style dynamic background wash, derived from the live tokens.
+/// TrontStack canonical recipe (same shape across every app; ported verbatim
+/// from SpaceView's `theme::gradient_colors`, the reference implementation):
+///   top-left = bg -> toward accent (strongest)
+///   top-right = bg -> toward accent (half as strong)
+///   bottom-left = bg -> toward a deeper/darker accent (hue +40deg, value halved)
+///   bottom-right = bg darkened
+/// TrontSnap is always-dark (no light theme), so only that one branch is
+/// needed. BLEND matches SpaceView's tuned constant (doubled from the 4.0
+/// baseline per Trent: "a bit subtle, I'd like stronger") — TrontSnap's chrome
+/// is the same full-bleed top-bar + central-panel shape that diluted the
+/// un-scaled recipe down to nothing there too, so the same boost applies.
+const BLEND: f32 = 8.0;
+
+pub fn gradient_colors(tk: &Tokens) -> [Color32; 4] {
+    let bg = rgb_of(tk.window_bg);
+    let accent = rgb_of(tk.accent);
+    let a = color::rgb_to_hsl(accent);
+    let deep = color::hsl_to_rgb((a.h + 40.0).rem_euclid(360.0), a.s, (a.l * 0.5).max(6.0));
+    [
+        c32(color::mix_colors(bg, accent, (0.14 * BLEND).min(0.85))), // top-left
+        c32(color::mix_colors(bg, accent, (0.07 * BLEND).min(0.85))), // top-right
+        c32(color::mix_colors(bg, deep, (0.08 * BLEND).min(0.85))),   // bottom-left
+        c32(color::mix_colors(bg, [0, 0, 0], (0.06 * BLEND).min(0.85))), // bottom-right
+    ]
+}
+
+/// Paint the gradient as one 4-vertex mesh into the background layer, before
+/// any panel draws. Cost is a single quad — negligible. Call every frame
+/// (`app.rs`'s `update()`, before `title_bar()`) while `settings::gradient()`
+/// is on; the caller owns that check so a disabled gradient costs nothing.
+pub fn paint_gradient(ctx: &egui::Context, tk: &Tokens) {
+    let rect = ctx.screen_rect();
+    if rect.width() <= 0.0 || rect.height() <= 0.0 {
+        return;
+    }
+    let [tl, tr, bl, br] = gradient_colors(tk);
+
+    let mut mesh = egui::Mesh::default();
+    mesh.colored_vertex(rect.left_top(), tl);
+    mesh.colored_vertex(rect.right_top(), tr);
+    mesh.colored_vertex(rect.left_bottom(), bl);
+    mesh.colored_vertex(rect.right_bottom(), br);
+    mesh.add_triangle(0, 1, 2);
+    mesh.add_triangle(1, 3, 2);
+
+    ctx.layer_painter(egui::LayerId::background()).add(egui::Shape::mesh(mesh));
 }

@@ -412,7 +412,10 @@ impl App {
             .exact_height(40.0)
             .frame(
                 egui::Frame::none()
-                    .fill(crate::theme::t().panel_bg)
+                    // Derived from visuals (translucent when the gradient wash is
+                    // on, see theme::build_visuals) rather than the raw solid
+                    // token, so the wash reads through the top chrome too.
+                    .fill(ctx.style().visuals.panel_fill)
                     .inner_margin(egui::Margin::symmetric(10.0, 0.0)),
             )
             .show(ctx, |ui| {
@@ -503,7 +506,8 @@ impl App {
             .anchor(egui::Align2::RIGHT_TOP, egui::vec2(0.0, 0.0))
             .show(ctx, |ui| {
                 egui::Frame::none()
-                    .fill(crate::theme::t().panel_bg)
+                    // Same translucent-when-gradient fill as the chrome row above.
+                    .fill(ui.visuals().panel_fill)
                     .rounding(egui::Rounding { sw: 6.0, ..Default::default() })
                     .inner_margin(egui::Margin {
                         left: 6.0,
@@ -687,6 +691,14 @@ impl eframe::App for App {
             self.hide(ctx);
         }
 
+        // Discord-style background wash: one quad painted into the background
+        // layer before any panel draws (panel fills go translucent to let it
+        // read through — see theme::build_visuals). Default ON; the Settings >
+        // Appearance checkbox flips crate::settings::gradient().
+        if crate::settings::gradient() {
+            crate::theme::paint_gradient(ctx, &crate::theme::t());
+        }
+
         self.title_bar(ctx);
 
         egui::CentralPanel::default().show(ctx, |ui| match self.tab {
@@ -773,6 +785,22 @@ fn settings_tab_ui(ui: &mut egui::Ui) {
                     )
                     .small()
                     .color(crate::theme::t().text_muted),
+                );
+
+                ui.add_space(14.0);
+                let mut gradient = crate::settings::gradient();
+                if ui.checkbox(&mut gradient, "Gradient").changed() {
+                    crate::settings::set_gradient(gradient);
+                    // Panel-fill translucency lives in build_visuals and is keyed
+                    // off settings::gradient(), so re-derive visuals from the
+                    // current tokens to pick up the flip immediately.
+                    crate::theme::set_theme(ui.ctx(), crate::theme::t());
+                }
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new("Discord-style background wash behind the panels.")
+                        .small()
+                        .color(crate::theme::t().text_muted),
                 );
 
                 ui.add_space(22.0);

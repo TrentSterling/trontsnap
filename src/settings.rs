@@ -23,6 +23,7 @@ const HOTKEY_RECORD_MODS_VALUE: &str = "HotkeyRecordMods";
 const HOTKEY_RECORD_VK_VALUE: &str = "HotkeyRecordVk";
 const THEME_NAME_VALUE: &str = "ThemeName";
 const THEME_SOURCE_VALUE: &str = "ThemeSource";
+const GRADIENT_VALUE: &str = "Gradient";
 
 // On-screen size (px) of the region-picker magnifier loupe, scrollwheel-adjustable
 // during a pick. 132 is the original fixed size; region_win32 clamps to its own
@@ -71,6 +72,11 @@ static HOTKEY_RECORD_VK: AtomicU32 = AtomicU32::new(0x2C);
 static THEME_NAME: LazyLock<RwLock<String>> = LazyLock::new(|| RwLock::new("Cyan".to_string()));
 static THEME_SOURCE: LazyLock<RwLock<Vec<String>>> = LazyLock::new(|| RwLock::new(Vec::new()));
 
+// Discord-style background wash (theme::paint_gradient). Default ON; the
+// checkbox in Settings > Appearance flips it and forces an immediate visuals
+// rebuild (see app.rs) since it also governs panel-fill translucency.
+static GRADIENT: AtomicBool = AtomicBool::new(true);
+
 /// Load persisted settings into the atomics. Call once at process start — every mode
 /// captures (the one-shot `full` / `region` launches too), so all of them need it.
 pub fn load() {
@@ -117,6 +123,9 @@ pub fn load() {
             let list: Vec<String> =
                 if v.is_empty() { Vec::new() } else { v.split(',').map(|s| s.trim().to_string()).collect() };
             *THEME_SOURCE.write().unwrap() = list;
+        }
+        if let Ok(v) = key.get_value::<u32, _>(GRADIENT_VALUE) {
+            GRADIENT.store(v != 0, Ordering::Relaxed);
         }
     }
 }
@@ -241,6 +250,18 @@ pub fn set_theme(name: &str, source: &[String]) {
     *THEME_SOURCE.write().unwrap() = source.to_vec();
     persist_str(THEME_NAME_VALUE, name);
     persist_str(THEME_SOURCE_VALUE, &source.join(","));
+}
+
+/// Discord-style background wash toggle (default ON). Read by
+/// `theme::build_visuals` (panel-fill translucency) and `app.rs`'s per-frame
+/// `theme::paint_gradient` call.
+pub fn gradient() -> bool {
+    GRADIENT.load(Ordering::Relaxed)
+}
+
+pub fn set_gradient(on: bool) {
+    GRADIENT.store(on, Ordering::Relaxed);
+    persist(GRADIENT_VALUE, on);
 }
 
 pub fn has_run_before() -> bool {

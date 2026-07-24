@@ -1,3 +1,9 @@
+﻿## v0.12.2
+
+- Discord-style background gradient behind the chrome (same canonical wash as
+  SpaceView/TrontEQ), derived live from the colormagic theme. Gradient toggle
+  in Settings > Appearance, persisted. Gallery thumbnail cells stay near-solid
+  so shots read clean.
 # Changelog
 
 All notable changes to TrontSnap. Newest first.
@@ -32,7 +38,7 @@ All notable changes to TrontSnap. Newest first.
   input before the OS hotkey ever fires. A mouse click on this tab, or the tray icon,
   always lands.
 - **Settings tab**: the same four toggles the tray menu already had (capture cursor,
-  record audio, start at login), plus a new one, "Use the PrintScreen key" — flips
+  record audio, start at login), plus a new one, "Use the PrintScreen key" â€” flips
   the per-user `PrintScreenKeyForSnippingEnabled` registry flag live, so you can hand
   PrintScreen back to Windows' Snipping Tool without editing the registry yourself.
 - **About tab**: replaces the old idea of a fixed-size About window (the kind that
@@ -136,12 +142,12 @@ All notable changes to TrontSnap. Newest first.
 ### Added
 - **Recordings now capture system audio** (new tray toggle "Record audio", on by
   default, persisted like the other settings). WASAPI loopback of the default output
-  device — "record what you hear" — converted to 16-bit PCM and encoded as AAC 192kbps
+  device â€” "record what you hear" â€” converted to 16-bit PCM and encoded as AAC 192kbps
   into the same MP4 by the SinkWriter. Two classic loopback traps handled: a silence
   keep-alive render stream (loopback produces no packets when nothing is playing, which
   would hole the timeline), and sample-counter timestamps anchored to the recording
   epoch so A/V stay aligned. Any audio failure (odd device rate, no endpoint) logs and
-  records video-only — audio can never lose a recording. The A/V mux path is covered by
+  records video-only â€” audio can never lose a recording. The A/V mux path is covered by
   a headless smoke test (synthesized frames + sine -> encode -> finalize -> reopen,
   assert both tracks).
 - **Export GIF**: right-click any recording in the gallery -> "Export GIF". Decodes via
@@ -172,7 +178,7 @@ All notable changes to TrontSnap. Newest first.
 ### Added
 - **Real video thumbnails.** Gallery MP4 tiles now show the recording's first frame
   (with a small play badge) instead of the generic film plate, and the capture toast
-  shows it too. Decoding is Media Foundation's Source Reader — the read-side twin of
+  shows it too. Decoding is Media Foundation's Source Reader â€” the read-side twin of
   the recorder's SinkWriter, so still no ffmpeg and no new dependencies. Verified
   against a real recording (orientation + colors correct, cursor visible in-frame).
 - Thumbs for a **recording still in progress** show the film plate, then swap to the
@@ -183,17 +189,17 @@ All notable changes to TrontSnap. Newest first.
 
 ### Changed
 - **Recording HUD: the REC pill grew into a flashing red outline around the recorded
-  region** (Trent's ask), with an attached "● REC · stop" tab. One layered color-key
+  region** (Trent's ask), with an attached "â— REC Â· stop" tab. One layered color-key
   window: the interior is genuinely click-through (clicks land on whatever you're
-  recording), the red frame and the tab are clickable — click either to stop.
+  recording), the red frame and the tab are clickable â€” click either to stop.
 - **The HUD never appears in the recording.** The window is marked
   `WDA_EXCLUDEFROMCAPTURE` (the OBS trick): visible on your monitor, invisible to
-  DXGI duplication — and to screenshots. This also means the tab can safely sit
+  DXGI duplication â€” and to screenshots. This also means the tab can safely sit
   inside the region on fullscreen records.
 
 ### Note
 - v0.7.0's "Ctrl+Shift+PrtSc takes a normal picture" report was the stale v0.5.8
-  binary still running (the release exe can't be replaced while the app is live) —
+  binary still running (the release exe can't be replaced while the app is live) â€”
   not a hotkey bug.
 
 ## v0.7.0 (2026-07-15)
@@ -201,10 +207,10 @@ All notable changes to TrontSnap. Newest first.
 ### Added
 - **Screen recording: `Ctrl+Shift+PrtSc`** (also in the tray menu). First press runs
   the same freeze-frame region picker as screenshots (click a window or drag a rect),
-  then recording starts; press again — or click the little "● REC" pill — to stop.
+  then recording starts; press again â€” or click the little "â— REC" pill â€” to stop.
   - **Capture:** DXGI Desktop Duplication (GPU frame grabs, ~1ms) cropped to the
     region, 30fps constant frame rate (a static screen encodes duplicated frames).
-  - **Encode:** Media Foundation `IMFSinkWriter` → H.264 MP4 straight to
+  - **Encode:** Media Foundation `IMFSinkWriter` â†’ H.264 MP4 straight to
     `Pictures\TrontSnap` (hardware encoder via NVENC when available). No ffmpeg, no
     new dependencies.
   - **Cursor:** composited per frame with the same GDI `DrawIconEx` path as v0.6.0
@@ -216,13 +222,13 @@ All notable changes to TrontSnap. Newest first.
     it pastes into Discord/Explorer/terminals; shutter plays; the corner toast says
     "Recording saved" (click to play).
 - **Gallery understands videos** (and now also `.gif`): MP4s ride the same timeline as
-  stills — drawn as a film tile (accent play triangle, MP4 tag) without ever touching
+  stills â€” drawn as a film tile (accent play triangle, MP4 tag) without ever touching
   the image decoder. Click = copy file, double-click = open in your player, drag-out /
   reveal / delete all work. The live watcher surfaces a recording the moment its file
   appears.
 
 ### Known limitations (logged for later)
-- Video only — no audio track yet (WASAPI loopback is the follow-up).
+- Video only â€” no audio track yet (WASAPI loopback is the follow-up).
 - Quitting TrontSnap mid-recording abandons the file un-finalized (unplayable);
   stop first. A fragmented-MP4 mode would fix this properly.
 - Primary monitor only, same as stills.
@@ -236,14 +242,14 @@ All notable changes to TrontSnap. Newest first.
   via GDI `DrawIconEx`, which renders every cursor style correctly (color arrows with
   per-pixel alpha, the monochrome I-beam's AND/XOR mask, link hands, resize arrows).
   Region capture freezes the pointer where it was at Ctrl+PrtSc time, so it lands in
-  the crop — the ShareX behaviour. The setting persists in the registry (same
+  the crop â€” the ShareX behaviour. The setting persists in the registry (same
   `HKCU\Software\TrontSnap` key autostart uses).
 
 ### Fixed
 - **Gallery occasionally restored from the tray/taskbar at a tiny size** (a
   winit/eframe restore desync; it snapped back only after a manual resize). Added a
   debounced self-heal: winit never lets you drag the content below `min_inner_size`, so
-  a visible sub-minimum size is provably the desync — it's detected and the last
+  a visible sub-minimum size is provably the desync â€” it's detected and the last
   known-good size is re-asserted automatically (and logged, to catch the trigger if it
   recurs).
 
@@ -292,9 +298,9 @@ All notable changes to TrontSnap. Newest first.
   until the window happened to reappear, then flushed at once. Fix: every tray/menu
   action is now performed **directly in its event handler** (which fires on the UI
   thread when dispatched), not via `update()`:
-  - Tray left-click → region capture fires instantly, even while hidden.
-  - Menu Open → Win32 restore (cached HWND); Capture Fullscreen/Region → run directly;
-    Quit → exits directly.
+  - Tray left-click â†’ region capture fires instantly, even while hidden.
+  - Menu Open â†’ Win32 restore (cached HWND); Capture Fullscreen/Region â†’ run directly;
+    Quit â†’ exits directly.
   - Only the autostart toggle still goes through `update()` (it needs `&self`; applies
     on the next tick).
 
@@ -346,10 +352,10 @@ All notable changes to TrontSnap. Newest first.
   blocking-modal, returning the crop. The gallery window is never touched.
 
 ### Fixed (all consequences of no longer repurposing the main window)
-- No visible maximize / grow into the overlay — it's born fullscreen, appears instantly.
-- No black flash on close/cancel — the overlay window is just destroyed; the gallery
+- No visible maximize / grow into the overlay â€” it's born fullscreen, appears instantly.
+- No black flash on close/cancel â€” the overlay window is just destroyed; the gallery
   is never resized, restored, or refocused.
-- No focus-dependent behavior — the overlay is independent of the gallery, and force-
+- No focus-dependent behavior â€” the overlay is independent of the gallery, and force-
   foreground guarantees Esc / clicks land regardless of which app was active.
 - Phantom drag on entry (the v0.4.3 regression where the picker rubber-banded a
   rectangle before you clicked) is gone: input is driven by real
@@ -410,7 +416,7 @@ All notable changes to TrontSnap. Newest first.
 - Toolbar **legend** for the per-thumbnail source dots: cyan = shot by TrontSnap,
   amber = imported from the ShareX archive.
 
-## v0.4.1 (2026-07-13) — initial private release
+## v0.4.1 (2026-07-13) â€” initial private release
 
 - Tray-resident ShareX replacement in Rust + eframe/egui.
 - Global hotkeys via a `WH_KEYBOARD_LL` hook (`PrtSc` = fullscreen,
