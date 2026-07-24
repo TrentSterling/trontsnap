@@ -7,3 +7,5 @@
 
 # release staging
 dist/
+
+verify_shots/
