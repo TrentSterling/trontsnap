@@ -817,6 +817,10 @@ fn settings_tab_ui(ui: &mut egui::Ui) {
                         .small()
                         .color(crate::theme::t().text_muted),
                 );
+                if gradient {
+                    ui.add_space(10.0);
+                    gradient_editor_ui(ui);
+                }
 
                 ui.add_space(22.0);
                 settings_section_header(ui, "Capture");
@@ -906,6 +910,264 @@ fn settings_tab_ui(ui: &mut egui::Ui) {
             });
         });
     });
+}
+
+/// The Gradient v2 sub-block inside Settings > Appearance: split live preview
+/// (raw wash / as-seen-through-frost), direction/intensity/frost sliders,
+/// harmony/preset/custom source mode chips, pegs 1-4, and Magic/Reset. Ported
+/// from SpaceView's reference gradient editor (`theme.rs` + the "Theme"
+/// window in `app.rs`), collapsed into this settings section instead of a
+/// popup window — TrontSnap's Settings tab already IS the appearance panel.
+fn gradient_editor_ui(ui: &mut egui::Ui) {
+    let tk = crate::theme::t();
+    let mut cfg = crate::theme::gradient_cfg();
+    let mut dirty = false;
+
+    // Live preview: TOP band = the raw wash, BOTTOM band = the wash as
+    // perceived through the current frost — preview == background by
+    // construction (the smart-slot invariant, no phantoms).
+    let (rect, _) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 26.0), egui::Sense::hover());
+    const SLICES: usize = 48;
+    let mid_y = rect.top() + rect.height() * 0.5;
+    for i in 0..SLICES {
+        let t0 = i as f32 / SLICES as f32;
+        let t1 = (i + 1) as f32 / SLICES as f32;
+        let tm = (t0 + t1) * 0.5;
+        let x0 = rect.left() + rect.width() * t0;
+        let x1 = rect.left() + rect.width() * t1;
+        ui.painter().rect_filled(
+            egui::Rect::from_min_max(egui::pos2(x0, rect.top()), egui::pos2(x1, mid_y)),
+            0.0,
+            crate::theme::ramp_sample(&tk, tm),
+        );
+        ui.painter().rect_filled(
+            egui::Rect::from_min_max(egui::pos2(x0, mid_y), egui::pos2(x1, rect.bottom())),
+            0.0,
+            crate::theme::ramp_sample_frosted(&tk, tm),
+        );
+    }
+    ui.painter().rect_stroke(rect, 2.0, egui::Stroke::new(1.0, tk.stroke));
+    ui.add_space(6.0);
+
+    ui.label("Direction");
+    dirty |= ui.add(egui::Slider::new(&mut cfg.angle_deg, 0.0..=360.0).suffix(" deg")).changed();
+    ui.label("Intensity");
+    dirty |= ui
+        .add(
+            egui::Slider::new(&mut cfg.intensity, 0.0..=1.0)
+                .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
+        )
+        .changed();
+    // FROST: panel opacity over the wash. 0% = panels vanish, background IS
+    // the preview ramp (WYSIWYG); high = solid chrome. A user slider — Random
+    // never touches it, and Reset below restores it explicitly.
+    ui.label("Frost");
+    let mut frost = crate::theme::frost();
+    if ui
+        .add(
+            egui::Slider::new(&mut frost, 0.0..=1.0)
+                .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
+        )
+        .changed()
+    {
+        crate::theme::set_frost(frost);
+        crate::settings::set_gradient_frost(frost);
+        crate::theme::set_theme(ui.ctx(), crate::theme::t());
+    }
+    ui.add_space(6.0);
+
+    // Source mode chips: harmony / preset / custom.
+    ui.horizontal(|ui| {
+        if ui.selectable_label(cfg.preset == -1, "Harmony").clicked() {
+            cfg.preset = -1;
+            dirty = true;
+        }
+        if ui.selectable_label(cfg.preset >= 0, "Presets").clicked() {
+            if cfg.preset < 0 {
+                cfg.preset = 0;
+            }
+            dirty = true;
+        }
+        if ui.selectable_label(cfg.preset == -2, "Custom").clicked() {
+            cfg.preset = -2;
+            dirty = true;
+        }
+    });
+
+    if cfg.preset == -1 {
+        ui.horizontal(|ui| {
+            ui.label("Pegs");
+            for n in 1..=4u8 {
+                if ui.selectable_label(cfg.pegs == n, format!("{n}")).clicked() {
+                    cfg.pegs = n;
+                    dirty = true;
+                }
+            }
+        });
+        let rule_name =
+            crate::color::HARMONY_RULES[(cfg.harmony as usize) % crate::color::HARMONY_RULES.len()];
+        egui::ComboBox::from_id_salt("trontsnap-gradient-harmony")
+            .selected_text(rule_name)
+            .width(200.0)
+            .show_ui(ui, |ui| {
+                for (i, rule) in crate::color::HARMONY_RULES.iter().enumerate() {
+                    if ui.selectable_label(cfg.harmony == i as u8, *rule).clicked() {
+                        cfg.harmony = i as u8;
+                        dirty = true;
+                    }
+                }
+            });
+    } else if cfg.preset >= 0 {
+        let preset_before = cfg.preset;
+        let n_presets = crate::theme::GRADIENT_PRESETS.len() as i16;
+        ui.horizontal(|ui| {
+            // Prev/next flank the dropdown so you can ride through the shelf
+            // without opening it.
+            if ui.button("<").clicked() {
+                cfg.preset = (cfg.preset - 1).rem_euclid(n_presets);
+                dirty = true;
+            }
+            let preset_label = crate::theme::GRADIENT_PRESETS
+                .get(cfg.preset as usize)
+                .map(|(n, _)| *n)
+                .unwrap_or("Preset");
+            egui::ComboBox::from_id_salt("trontsnap-gradient-preset")
+                .selected_text(preset_label)
+                .width(160.0)
+                .show_ui(ui, |ui| {
+                    for (i, (name, _)) in crate::theme::GRADIENT_PRESETS.iter().enumerate() {
+                        if ui.selectable_label(cfg.preset == i as i16, *name).clicked() {
+                            cfg.preset = i as i16;
+                            dirty = true;
+                        }
+                    }
+                });
+            if ui.button(">").clicked() {
+                cfg.preset = (cfg.preset + 1).rem_euclid(n_presets);
+                dirty = true;
+            }
+        });
+        let mut preset_sync = crate::settings::gradient_preset_sync();
+        if ui
+            .checkbox(&mut preset_sync, "Preset sets theme colors")
+            .on_hover_text(
+                "On: picking a preset rethemes the whole app (coherent). Off: preset only \
+                 drives the wash over your accent's ground (the blend look).",
+            )
+            .changed()
+        {
+            crate::settings::set_gradient_preset_sync(preset_sync);
+        }
+        // A preset SETS the primary color too ("theme IS the gradient" -
+        // otherwise a green preset fights a purple accent ground and the
+        // blend is mud). Toggleable via the checkbox above for A/B. Also
+        // fires on ANY dirty edit while the theme has drifted from this
+        // preset's name (e.g. sync was off, got flipped on, then any slider
+        // moves) - a repair, not just an index-change reaction.
+        let preset_name = crate::theme::GRADIENT_PRESETS.get(cfg.preset as usize).map(|(n, _)| *n).unwrap_or("");
+        if preset_sync && dirty && (cfg.preset != preset_before || crate::settings::theme_name() != preset_name) {
+            if let Some((pname, stops)) = crate::theme::GRADIENT_PRESETS.get(cfg.preset as usize) {
+                let rgbs: Vec<crate::color::Rgb> =
+                    stops.iter().filter_map(|h| crate::color::hex_to_rgb(h)).collect();
+                if let Some(acc) = crate::theme::most_saturated(&rgbs) {
+                    let tk2 = crate::theme::from_accent(acc);
+                    crate::theme::set_theme(ui.ctx(), tk2);
+                    crate::settings::set_theme(pname, &[crate::color::rgb_to_hex(acc)]);
+                }
+            }
+        }
+        // Height parity with the two-row modes so the section doesn't jump
+        // when switching sources.
+        ui.add_space(26.0);
+    } else {
+        // Custom: your colors, your rules.
+        ui.horizontal(|ui| {
+            ui.label("Pegs");
+            for n in 1..=4u8 {
+                if ui.selectable_label(cfg.pegs == n, format!("{n}")).clicked() {
+                    cfg.pegs = n;
+                    dirty = true;
+                }
+            }
+        });
+        ui.horizontal(|ui| {
+            // SLOT 0 IS THE ACCENT (linked): editing it rethemes the app; it
+            // always participates in the ramp. Slots 1..N are free pegs.
+            let acc = crate::theme::t().accent;
+            let mut rgb = [acc.r(), acc.g(), acc.b()];
+            if ui
+                .color_edit_button_srgb(&mut rgb)
+                .on_hover_text("Slot 1 = your theme accent (linked)")
+                .changed()
+            {
+                let tk2 = crate::theme::from_accent(rgb);
+                crate::theme::set_theme(ui.ctx(), tk2);
+                crate::settings::set_theme("Custom", &[crate::color::rgb_to_hex(rgb)]);
+                dirty = true;
+            }
+            // srgb (no alpha) pickers: physically incapable of showing the
+            // dead Blending/Additive row a srgba picker would.
+            for i in 1..(cfg.pegs.clamp(1, 4) as usize) {
+                if ui.color_edit_button_srgb(&mut cfg.custom[i]).changed() {
+                    dirty = true;
+                }
+            }
+        });
+    }
+
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        if ui
+            .button("Magic")
+            .on_hover_text("Roll a colormagic flavor palette into custom pegs")
+            .clicked()
+        {
+            let mut rng = crate::color::Rng::from_clock();
+            let kind = crate::color::PaletteKind::ALL[rng.range(0, 5) as usize];
+            let cols = crate::color::generate_random_palette(kind, 4, &mut rng);
+            for (i, h) in cols.iter().take(4).enumerate() {
+                cfg.custom[i] = crate::color::hsl_to_rgb(h.h, h.s, h.l);
+            }
+            cfg.preset = -2;
+            cfg.pegs = if rng.range(0, 1) == 0 { 3 } else { 4 };
+            cfg.angle_deg = rng.range(0, 359) as f32;
+            dirty = true;
+        }
+        if ui
+            .button("Reset")
+            .on_hover_text(
+                "The wayback machine: restores the known-good look (intensity 45%, frost \
+                 85%, harmony pegs) - the settings every Random used to land on",
+            )
+            .clicked()
+        {
+            cfg = crate::theme::GradientCfg::default();
+            // Reset MUST restore frost too, or the "I can't find the settings
+            // that looked good earlier" trap returns: Reset fixes the ramp
+            // but leaves frost wherever it was, so the sweet spot stays
+            // unreachable.
+            crate::theme::set_frost(0.85);
+            crate::settings::set_gradient_frost(0.85);
+            crate::theme::set_theme(ui.ctx(), crate::theme::t());
+            dirty = true;
+        }
+    });
+
+    if dirty {
+        // Apply live for instant preview...
+        crate::theme::set_gradient_cfg(cfg);
+    }
+    // ...but only hit the registry once the drag ends — Slider::changed()
+    // fires EVERY FRAME mid-drag.
+    if dirty && !ui.ctx().input(|i| i.pointer.primary_down()) {
+        crate::settings::set_gradient_angle(cfg.angle_deg);
+        crate::settings::set_gradient_intensity(cfg.intensity);
+        crate::settings::set_gradient_pegs_count(cfg.pegs);
+        crate::settings::set_gradient_harmony(cfg.harmony);
+        crate::settings::set_gradient_preset(cfg.preset);
+        crate::settings::set_gradient_custom(cfg.custom);
+    }
 }
 
 /// Small accent section header, matching the About tab's "Shortcuts" heading style.

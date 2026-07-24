@@ -9,6 +9,8 @@ use std::sync::{LazyLock, RwLock};
 use winreg::enums::{HKEY_CURRENT_USER, KEY_READ};
 use winreg::RegKey;
 
+use crate::color::{self, Rgb};
+
 const APP_KEY: &str = r"Software\TrontSnap";
 const CAPTURE_CURSOR_VALUE: &str = "CaptureCursor";
 const RECORD_AUDIO_VALUE: &str = "RecordAudio";
@@ -24,6 +26,14 @@ const HOTKEY_RECORD_VK_VALUE: &str = "HotkeyRecordVk";
 const THEME_NAME_VALUE: &str = "ThemeName";
 const THEME_SOURCE_VALUE: &str = "ThemeSource";
 const GRADIENT_VALUE: &str = "Gradient";
+const GRADIENT_ANGLE_VALUE: &str = "GradientAngle";
+const GRADIENT_INTENSITY_VALUE: &str = "GradientIntensity";
+const GRADIENT_FROST_VALUE: &str = "GradientFrost";
+const GRADIENT_PEGS_VALUE: &str = "GradientPegs";
+const GRADIENT_HARMONY_VALUE: &str = "GradientHarmony";
+const GRADIENT_PRESET_VALUE: &str = "GradientPreset";
+const GRADIENT_CUSTOM_VALUE: &str = "GradientCustom";
+const GRADIENT_PRESET_SYNC_VALUE: &str = "GradientPresetSync";
 
 // On-screen size (px) of the region-picker magnifier loupe, scrollwheel-adjustable
 // during a pick. 132 is the original fixed size; region_win32 clamps to its own
@@ -77,6 +87,26 @@ static THEME_SOURCE: LazyLock<RwLock<Vec<String>>> = LazyLock::new(|| RwLock::ne
 // rebuild (see app.rs) since it also governs panel-fill translucency.
 static GRADIENT: AtomicBool = AtomicBool::new(true);
 
+// Gradient v2 knobs (Discord parity): direction dial, color intensity, pegs
+// (1..=4), harmony rule index, preset shelf index, custom peg colors, and
+// whether picking a preset also re-themes the app. Intensity/frost are stored
+// as integer percent (0-100) so the registry stays plain DWORDs; preset is
+// stored as a signed decimal string since winreg's DWORD helpers are u32-only.
+// FROST is DARK-ONLY here (TrontSnap has no light mode) — a single value,
+// unlike SpaceView's frost_dark/frost_light pair — but kept as its own
+// get/set pair (mirroring theme::frost()/set_frost()) so a future light mode
+// is a trivial extension, not a rewrite.
+static GRADIENT_ANGLE: AtomicU32 = AtomicU32::new(135);
+static GRADIENT_INTENSITY_PCT: AtomicU32 = AtomicU32::new(45);
+static GRADIENT_FROST_PCT: AtomicU32 = AtomicU32::new(85);
+static GRADIENT_PEGS: AtomicU32 = AtomicU32::new(3);
+static GRADIENT_HARMONY: AtomicU32 = AtomicU32::new(0);
+static GRADIENT_PRESET: LazyLock<RwLock<i16>> = LazyLock::new(|| RwLock::new(-1));
+static GRADIENT_PRESET_SYNC: AtomicBool = AtomicBool::new(true);
+static GRADIENT_CUSTOM: LazyLock<RwLock<[Rgb; 4]>> = LazyLock::new(|| {
+    RwLock::new([[86, 204, 255], [153, 14, 165], [253, 79, 80], [37, 223, 196]])
+});
+
 /// Load persisted settings into the atomics. Call once at process start — every mode
 /// captures (the one-shot `full` / `region` launches too), so all of them need it.
 pub fn load() {
@@ -126,6 +156,38 @@ pub fn load() {
         }
         if let Ok(v) = key.get_value::<u32, _>(GRADIENT_VALUE) {
             GRADIENT.store(v != 0, Ordering::Relaxed);
+        }
+        if let Ok(v) = key.get_value::<u32, _>(GRADIENT_ANGLE_VALUE) {
+            GRADIENT_ANGLE.store(v % 360, Ordering::Relaxed);
+        }
+        if let Ok(v) = key.get_value::<u32, _>(GRADIENT_INTENSITY_VALUE) {
+            GRADIENT_INTENSITY_PCT.store(v.min(100), Ordering::Relaxed);
+        }
+        if let Ok(v) = key.get_value::<u32, _>(GRADIENT_FROST_VALUE) {
+            GRADIENT_FROST_PCT.store(v.min(100), Ordering::Relaxed);
+        }
+        if let Ok(v) = key.get_value::<u32, _>(GRADIENT_PEGS_VALUE) {
+            GRADIENT_PEGS.store(v.clamp(1, 4), Ordering::Relaxed);
+        }
+        if let Ok(v) = key.get_value::<u32, _>(GRADIENT_HARMONY_VALUE) {
+            GRADIENT_HARMONY.store(v, Ordering::Relaxed);
+        }
+        if let Ok(v) = key.get_value::<String, _>(GRADIENT_PRESET_VALUE) {
+            if let Ok(p) = v.trim().parse::<i16>() {
+                *GRADIENT_PRESET.write().unwrap() = p;
+            }
+        }
+        if let Ok(v) = key.get_value::<String, _>(GRADIENT_CUSTOM_VALUE) {
+            let mut pegs = *GRADIENT_CUSTOM.read().unwrap();
+            for (i, hex) in v.split(',').take(4).enumerate() {
+                if let Some(rgb) = color::hex_to_rgb(hex.trim()) {
+                    pegs[i] = rgb;
+                }
+            }
+            *GRADIENT_CUSTOM.write().unwrap() = pegs;
+        }
+        if let Ok(v) = key.get_value::<u32, _>(GRADIENT_PRESET_SYNC_VALUE) {
+            GRADIENT_PRESET_SYNC.store(v != 0, Ordering::Relaxed);
         }
     }
 }
@@ -262,6 +324,87 @@ pub fn gradient() -> bool {
 pub fn set_gradient(on: bool) {
     GRADIENT.store(on, Ordering::Relaxed);
     persist(GRADIENT_VALUE, on);
+}
+
+/// Gradient v2 direction dial, in degrees (0..360).
+pub fn gradient_angle() -> f32 {
+    GRADIENT_ANGLE.load(Ordering::Relaxed) as f32
+}
+pub fn set_gradient_angle(deg: f32) {
+    let v = deg.rem_euclid(360.0).round() as u32;
+    GRADIENT_ANGLE.store(v, Ordering::Relaxed);
+    persist_u32(GRADIENT_ANGLE_VALUE, v);
+}
+
+/// Gradient v2 color intensity (0..1); persisted as an integer percent.
+pub fn gradient_intensity() -> f32 {
+    GRADIENT_INTENSITY_PCT.load(Ordering::Relaxed) as f32 / 100.0
+}
+pub fn set_gradient_intensity(v: f32) {
+    let pct = (v.clamp(0.0, 1.0) * 100.0).round() as u32;
+    GRADIENT_INTENSITY_PCT.store(pct, Ordering::Relaxed);
+    persist_u32(GRADIENT_INTENSITY_VALUE, pct);
+}
+
+/// Panel opacity over the wash (0..1), dark-only (see the FROST comment near
+/// the statics above). Mirrors `theme::frost()`/`set_frost()`.
+pub fn gradient_frost() -> f32 {
+    GRADIENT_FROST_PCT.load(Ordering::Relaxed) as f32 / 100.0
+}
+pub fn set_gradient_frost(v: f32) {
+    let pct = (v.clamp(0.0, 1.0) * 100.0).round() as u32;
+    GRADIENT_FROST_PCT.store(pct, Ordering::Relaxed);
+    persist_u32(GRADIENT_FROST_VALUE, pct);
+}
+
+/// Number of gradient pegs in play (1..=4; harmony/custom modes only).
+pub fn gradient_pegs_count() -> u8 {
+    GRADIENT_PEGS.load(Ordering::Relaxed).clamp(1, 4) as u8
+}
+pub fn set_gradient_pegs_count(n: u8) {
+    let v = n.clamp(1, 4) as u32;
+    GRADIENT_PEGS.store(v, Ordering::Relaxed);
+    persist_u32(GRADIENT_PEGS_VALUE, v);
+}
+
+/// Index into `color::HARMONY_RULES` used in harmony mode.
+pub fn gradient_harmony() -> u8 {
+    GRADIENT_HARMONY.load(Ordering::Relaxed) as u8
+}
+pub fn set_gradient_harmony(v: u8) {
+    GRADIENT_HARMONY.store(v as u32, Ordering::Relaxed);
+    persist_u32(GRADIENT_HARMONY_VALUE, v as u32);
+}
+
+/// Gradient source mode: >= 0 is a `theme::GRADIENT_PRESETS` index, -1 is
+/// harmony mode, -2 is custom mode.
+pub fn gradient_preset() -> i16 {
+    *GRADIENT_PRESET.read().unwrap()
+}
+pub fn set_gradient_preset(v: i16) {
+    *GRADIENT_PRESET.write().unwrap() = v;
+    persist_str(GRADIENT_PRESET_VALUE, &v.to_string());
+}
+
+/// Whether picking a preset also rethemes the app (accent = the preset's most
+/// saturated stop). Default ON: "theme IS the gradient".
+pub fn gradient_preset_sync() -> bool {
+    GRADIENT_PRESET_SYNC.load(Ordering::Relaxed)
+}
+pub fn set_gradient_preset_sync(on: bool) {
+    GRADIENT_PRESET_SYNC.store(on, Ordering::Relaxed);
+    persist(GRADIENT_PRESET_SYNC_VALUE, on);
+}
+
+/// Manual pegs for custom mode (slot 0 is overridden by the live accent at
+/// read time in `theme::gradient_pegs`; slots 1..4 are these values verbatim).
+pub fn gradient_custom() -> [Rgb; 4] {
+    *GRADIENT_CUSTOM.read().unwrap()
+}
+pub fn set_gradient_custom(pegs: [Rgb; 4]) {
+    *GRADIENT_CUSTOM.write().unwrap() = pegs;
+    let joined = pegs.iter().map(|&c| color::rgb_to_hex(c)).collect::<Vec<_>>().join(",");
+    persist_str(GRADIENT_CUSTOM_VALUE, &joined);
 }
 
 pub fn has_run_before() -> bool {

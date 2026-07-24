@@ -181,11 +181,13 @@ fn build_visuals(tk: Tokens) -> egui::Visuals {
     v.dark_mode = true;
 
     // Discord-style background wash (see `paint_gradient` below): when it's on,
-    // panel/window fills go slightly translucent so the wash reads through the
-    // chrome instead of being hidden under a fully opaque panel. Same panel_alpha
-    // SpaceView's `build_visuals` uses (216/255) — TrontSnap's chrome is the same
-    // full-bleed top-bar + central-panel shape, so the same tuning applies.
-    let panel_alpha: u8 = if crate::settings::gradient() { 216 } else { 255 };
+    // panel/window fills go translucent by FROST (a user slider, default 0.85)
+    // so the wash reads through the chrome instead of being hidden under a
+    // fully opaque panel. Mirrors SpaceView's `build_visuals` dark-mode branch
+    // (`(255.0 * f) as u8`) — TrontSnap has no light mode, so only that one
+    // branch is needed.
+    let panel_alpha: u8 =
+        if crate::settings::gradient() { (255.0 * frost()) as u8 } else { 255 };
     let panel = Color32::from_rgba_unmultiplied(tk.panel_bg.r(), tk.panel_bg.g(), tk.panel_bg.b(), panel_alpha);
 
     v.window_fill = panel;
@@ -366,6 +368,16 @@ pub fn from_accent(accent: Rgb) -> Tokens {
     Tokens { accent: c32(chosen), accent_dim: c32(accent_dim), widget_hover: c32(widget_hover), ..base }
 }
 
+/// Pick the most saturated color in a list — the one swatch a palette (or a
+/// generated harmony/preset spread) would read as its "accent" at a glance.
+/// Used by the Gradient editor's preset-sync: picking a preset also rethemes
+/// the app off this swatch, so the ground and the wash never fight.
+pub fn most_saturated(colors: &[Rgb]) -> Option<Rgb> {
+    colors.iter().copied().max_by(|a, b| {
+        color::rgb_to_hsl(*a).s.partial_cmp(&color::rgb_to_hsl(*b).s).unwrap_or(std::cmp::Ordering::Equal)
+    })
+}
+
 /// Roll a new theme: random flavor palette, random harmony spread, or a
 /// random premade — all funneled through the same contrast-safe deriver.
 /// Returns the tokens plus a display name and the source hex list, so the
@@ -439,55 +451,256 @@ fn load_from_settings() {
     let name = crate::settings::theme_name();
     let source = crate::settings::theme_source();
     *CURRENT.write().unwrap() = resolve(&name, &source);
+
+    // Gradient v2 knobs + frost — settings::load() already ran in main()
+    // before apply(), so these reads see whatever was persisted last session.
+    *GRAD_CFG.write().unwrap() = GradientCfg {
+        angle_deg: crate::settings::gradient_angle(),
+        intensity: crate::settings::gradient_intensity(),
+        pegs: crate::settings::gradient_pegs_count(),
+        harmony: crate::settings::gradient_harmony(),
+        preset: crate::settings::gradient_preset(),
+        custom: crate::settings::gradient_custom(),
+    };
+    *FROST.write().unwrap() = crate::settings::gradient_frost();
 }
 
-// ---- background gradient ---------------------------------------------------
+// ---- background gradient v2 (Discord parity) --------------------------------
+//
+// Ported verbatim from SpaceView's `theme.rs` (the reference implementation).
+// v1 mixed every corner toward bg as one quad; v2 is a true multi-stop ramp,
+// Discord-style:
+//   - 2..=4 PEGS derived from the accent via colormagic harmony rules, so the
+//     stops can NEVER clash (Discord's trick, our engine).
+//   - DIRECTION: any angle, like Discord's Gradient Direction dial.
+//   - INTENSITY: 0..1 like Discord's Color Intensity. At 1.0 the background IS
+//     the pure peg ramp (panels float on top); at low values it fades to bg.
+//   - END-HOLD easing: the ramp saturates to pure first/last peg over the
+//     outer ~12% so the extremes read as their color instead of a blend.
+//
+// TrontSnap is always-dark (no light theme), so unlike SpaceView this module
+// has no `dark: bool` branching anywhere below — every clamp/lift is the dark
+// variant only. The function shapes (frost as its own get/set pair, presets
+// used verbatim rather than lifted toward white, etc.) still mirror SpaceView
+// 1:1 so a future light mode is a drop-in, not a rewrite.
 
-/// Discord-style dynamic background wash, derived from the live tokens.
-/// TrontStack canonical recipe (same shape across every app; ported verbatim
-/// from SpaceView's `theme::gradient_colors`, the reference implementation):
-///   top-left = bg -> toward accent (strongest)
-///   top-right = bg -> toward accent (half as strong)
-///   bottom-left = bg -> toward a deeper/darker accent (hue +40deg, value halved)
-///   bottom-right = bg darkened
-/// TrontSnap is always-dark (no light theme), so only that one branch is
-/// needed. BLEND matches SpaceView's tuned constant (doubled from the 4.0
-/// baseline per Trent: "a bit subtle, I'd like stronger") — TrontSnap's chrome
-/// is the same full-bleed top-bar + central-panel shape that diluted the
-/// un-scaled recipe down to nothing there too, so the same boost applies.
-const BLEND: f32 = 8.0;
-
-pub fn gradient_colors(tk: &Tokens) -> [Color32; 4] {
-    let bg = rgb_of(tk.window_bg);
-    let accent = rgb_of(tk.accent);
-    let a = color::rgb_to_hsl(accent);
-    let deep = color::hsl_to_rgb((a.h + 40.0).rem_euclid(360.0), a.s, (a.l * 0.5).max(6.0));
-    [
-        c32(color::mix_colors(bg, accent, (0.14 * BLEND).min(0.85))), // top-left
-        c32(color::mix_colors(bg, accent, (0.07 * BLEND).min(0.85))), // top-right
-        c32(color::mix_colors(bg, deep, (0.08 * BLEND).min(0.85))),   // bottom-left
-        c32(color::mix_colors(bg, [0, 0, 0], (0.06 * BLEND).min(0.85))), // bottom-right
-    ]
+#[derive(Clone, Copy, PartialEq)]
+pub struct GradientCfg {
+    /// Degrees; 0 = left->right, 90 = top->bottom, 135 = TL->BR diagonal.
+    pub angle_deg: f32,
+    /// 0..1. Discord "Color Intensity". 1.0 = pure peg colors as the ground.
+    pub intensity: f32,
+    /// 2..=4 color stops (harmony mode).
+    pub pegs: u8,
+    /// Index into color::HARMONY_RULES used to derive the pegs from the accent.
+    pub harmony: u8,
+    /// >= 0: index into GRADIENT_PRESETS (curated named ramps, accent ignored).
+    /// -1: harmony mode (pegs derived from the live accent).
+    /// -2: custom mode (the `custom` pegs below, user-picked, used verbatim).
+    pub preset: i16,
+    /// Manual pegs for custom mode (first `pegs` entries used).
+    pub custom: [Rgb; 4],
 }
 
-/// Paint the gradient as one 4-vertex mesh into the background layer, before
-/// any panel draws. Cost is a single quad — negligible. Call every frame
-/// (`app.rs`'s `update()`, before `title_bar()`) while `settings::gradient()`
-/// is on; the caller owns that check so a disabled gradient costs nothing.
+impl Default for GradientCfg {
+    fn default() -> Self {
+        GradientCfg {
+            angle_deg: 135.0,
+            intensity: 0.45,
+            pegs: 3,
+            harmony: 0,
+            preset: -1,
+            custom: [[86, 204, 255], [153, 14, 165], [253, 79, 80], [37, 223, 196]],
+        }
+    }
+}
+
+/// Curated, named multi-stop ramps — the "Gradients of the Galaxy / chrome
+/// sunset" shelf. Hand-picked hex stops (2-3 per ramp), used verbatim as pegs
+/// (dark-only here; SpaceView additionally lifts these toward white for its
+/// light mode, which TrontSnap doesn't have). Creative names are load-bearing;
+/// nobody rolls "Preset 7".
+pub const GRADIENT_PRESETS: &[(&str, &[&str])] = &[
+    ("Galaxy Punch", &["#FD4F50", "#990EA5"]),
+    ("Nebula Rush", &["#E71B7B", "#8324FB"]),
+    ("Ultraviolet", &["#B501AA", "#FD37C8"]),
+    ("Solar Flare", &["#FC4D1D", "#F1358A"]),
+    ("Chrome Sunset", &["#C0C6CC", "#FFB88C", "#DE4313"]),
+    ("Vaporwave", &["#FF6FD8", "#3813C2"]),
+    ("Synthwave Drive", &["#DC28B2", "#2A41D2"]),
+    ("Deep Space", &["#4D153C", "#B30F40"]),
+    ("Golden Hour", &["#FEF528", "#B93B41"]),
+    ("Blue Hour", &["#2AA9E9", "#005AFF"]),
+    ("Tide Pool", &["#0DBEBA", "#00FFFB"]),
+    ("Aurora Sky", &["#00C9FF", "#92FE9D"]),
+    ("Toxic Slime", &["#25DFC4", "#E4E518"]),
+    ("Matrix Rain", &["#00F032", "#00A0EA"]),
+    ("Cherry Cola", &["#EB3349", "#F45C43"]),
+    ("Berry Smoothie", &["#FF1B6B", "#45CAFF"]),
+    ("Miami Nights", &["#FF0080", "#7928CA", "#4A00E0"]),
+    ("Ember Fade", &["#F83600", "#F9D423"]),
+    ("Concrete", &["#3A3D42", "#95989E"]),
+    ("Princess", &["#FF9A9E", "#FAD0C4", "#A18CD1"]),
+    ("Ocean Floor", &["#0F2027", "#2C5364", "#00B4DB"]),
+    ("Firewatch", &["#CB2D3E", "#EF473A", "#2C3E50"]),
+    ("Mint Chip", &["#00B09B", "#96C93D"]),
+    ("Bubblegum", &["#FC5C7D", "#6A82FB"]),
+    ("Night Drive", &["#0F0C29", "#302B63", "#24243E"]),
+    ("Sunburn", &["#FF512F", "#F09819"]),
+    ("Glacier", &["#83A4D4", "#B6FBFF"]),
+];
+
+static GRAD_CFG: LazyLock<RwLock<GradientCfg>> = LazyLock::new(|| RwLock::new(GradientCfg::default()));
+
+/// FROST: panel opacity over the wash (0.0 = panels vanish, the background IS
+/// the raw ramp, WYSIWYG with the editor preview; 1.0 = solid panels, wash
+/// hidden). TrontSnap is always-dark, so this is a single value — SpaceView's
+/// dark/light pair collapses to just the dark default (0.85) here.
+static FROST: LazyLock<RwLock<f32>> = LazyLock::new(|| RwLock::new(0.85));
+
+pub fn frost() -> f32 {
+    *FROST.read().unwrap()
+}
+pub fn set_frost(v: f32) {
+    *FROST.write().unwrap() = v.clamp(0.0, 1.0);
+}
+
+pub fn gradient_cfg() -> GradientCfg {
+    *GRAD_CFG.read().unwrap()
+}
+pub fn set_gradient_cfg(cfg: GradientCfg) {
+    *GRAD_CFG.write().unwrap() = cfg;
+}
+
+/// The peg colors: accent -> harmony spread. WCAG isn't a factor here (no text
+/// sits on the raw ramp; panels carry the text).
+pub fn gradient_pegs(tk: &Tokens) -> Vec<Rgb> {
+    let cfg = gradient_cfg();
+
+    // Custom mode: SLOT 0 IS THE ACCENT (linked, always participates — the
+    // smart-slot rule: the primary color can never be missing from the ramp).
+    // Slots 1..N are the user's exact colors, no adult supervision.
+    if cfg.preset == -2 {
+        let n = cfg.pegs.clamp(1, 4) as usize;
+        let mut pegs: Vec<Rgb> = Vec::with_capacity(n.max(2));
+        pegs.push(rgb_of(tk.accent));
+        if n > 1 {
+            pegs.extend_from_slice(&cfg.custom[1..n]);
+        }
+        return mono_partner(pegs);
+    }
+
+    // Curated preset: designed stops used verbatim.
+    if cfg.preset >= 0 {
+        if let Some((_, hexes)) = GRADIENT_PRESETS.get(cfg.preset as usize) {
+            return hexes.iter().filter_map(|h| color::hex_to_rgb(h)).collect();
+        }
+    }
+
+    // Harmony mode: pegs derived from the live accent, clash-proof by rule.
+    let rule = color::HARMONY_RULES[(cfg.harmony as usize) % color::HARMONY_RULES.len()];
+    let base = color::rgb_to_hsl(rgb_of(tk.accent));
+    let spread = color::generate_harmony(base, rule);
+    let derived: Vec<Rgb> = spread
+        .into_iter()
+        .take((cfg.pegs.clamp(1, 4)) as usize)
+        .map(|h| {
+            // Deep + rich (dark ground). Saturation is only capped, never
+            // forced UP — a gray/black accent legitimately yields a
+            // monochrome ramp (go nuts).
+            let l = h.l.clamp(20.0, 42.0);
+            let s = h.s.min(90.0);
+            color::hsl_to_rgb(h.h, s, l)
+        })
+        .collect();
+    mono_partner(derived)
+}
+
+/// ONE-COLOR THEME MODE: a single peg gets an auto-derived deep partner so the
+/// ramp is a monochrome sweep instead of a flat fill — smart slots means 1 peg
+/// is a real, good-looking choice.
+fn mono_partner(mut pegs: Vec<Rgb>) -> Vec<Rgb> {
+    if pegs.len() == 1 {
+        let h = color::rgb_to_hsl(pegs[0]);
+        let partner = color::hsl_to_rgb(h.h, h.s, (h.l * 0.40).max(8.0));
+        pegs.push(partner);
+    }
+    pegs
+}
+
+/// Sample the peg ramp at t in [0,1], with end-hold easing so the outer ~12%
+/// on each side sits at the pure first/last peg.
+fn ramp(pegs: &[Rgb], t: f32) -> Rgb {
+    let t = ((t - 0.5) * 1.28 + 0.5).clamp(0.0, 1.0);
+    let n = pegs.len();
+    if n == 1 {
+        return pegs[0];
+    }
+    let scaled = t * (n - 1) as f32;
+    let i = (scaled.floor() as usize).min(n - 2);
+    let frac = scaled - i as f32;
+    color::mix_colors(pegs[i], pegs[i + 1], frac)
+}
+
+/// Paint the gradient as a fine vertex-colored grid into the background layer.
+/// A grid (not one quad) because the ramp is multi-stop and runs at an
+/// arbitrary angle; 16x16 vertices is still a trivially cheap single mesh.
+/// Call every frame (`app.rs`'s `update()`, before `title_bar()`) while
+/// `settings::gradient()` is on; the caller owns that check so a disabled
+/// gradient costs nothing.
 pub fn paint_gradient(ctx: &egui::Context, tk: &Tokens) {
     let rect = ctx.screen_rect();
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return;
     }
-    let [tl, tr, bl, br] = gradient_colors(tk);
+    let cfg = gradient_cfg();
+    let pegs = gradient_pegs(tk);
+    let bg = rgb_of(tk.window_bg);
 
+    let a = cfg.angle_deg.to_radians();
+    let (dx, dy) = (a.cos(), a.sin());
+    let c = rect.center();
+    // Projection half-extent of the rect onto the gradient axis.
+    let half = (rect.width() * 0.5 * dx.abs()) + (rect.height() * 0.5 * dy.abs());
+    let half = half.max(1.0);
+
+    const N: usize = 16;
     let mut mesh = egui::Mesh::default();
-    mesh.colored_vertex(rect.left_top(), tl);
-    mesh.colored_vertex(rect.right_top(), tr);
-    mesh.colored_vertex(rect.left_bottom(), bl);
-    mesh.colored_vertex(rect.right_bottom(), br);
-    mesh.add_triangle(0, 1, 2);
-    mesh.add_triangle(1, 3, 2);
+    for gy in 0..=N {
+        for gx in 0..=N {
+            let p = egui::pos2(
+                rect.left() + rect.width() * gx as f32 / N as f32,
+                rect.top() + rect.height() * gy as f32 / N as f32,
+            );
+            let t = (((p.x - c.x) * dx + (p.y - c.y) * dy) / half) * 0.5 + 0.5;
+            let col = color::mix_colors(bg, ramp(&pegs, t), cfg.intensity.clamp(0.0, 1.0));
+            mesh.colored_vertex(p, c32(col));
+        }
+    }
+    let w = (N + 1) as u32;
+    for gy in 0..N as u32 {
+        for gx in 0..N as u32 {
+            let i = gy * w + gx;
+            mesh.add_triangle(i, i + 1, i + w);
+            mesh.add_triangle(i + 1, i + w + 1, i + w);
+        }
+    }
 
     ctx.layer_painter(egui::LayerId::background()).add(egui::Shape::mesh(mesh));
+}
+
+/// Sample the final composited ramp (pegs + end-hold easing + intensity mix
+/// toward bg) at t in [0,1] — powers the editor's live preview bar.
+pub fn ramp_sample(tk: &Tokens, t: f32) -> Color32 {
+    let cfg = gradient_cfg();
+    let pegs = gradient_pegs(tk);
+    c32(color::mix_colors(rgb_of(tk.window_bg), ramp(&pegs, t), cfg.intensity.clamp(0.0, 1.0)))
+}
+
+/// The wash as actually PERCEIVED through the current frost (panel compositing
+/// included) — so the editor preview can show reality, not just the raw ramp.
+pub fn ramp_sample_frosted(tk: &Tokens, t: f32) -> Color32 {
+    let wash = ramp_sample(tk, t);
+    let f = frost();
+    c32(color::mix_colors(rgb_of(wash), rgb_of(tk.panel_bg), f))
 }

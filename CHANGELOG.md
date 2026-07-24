@@ -1,4 +1,18 @@
-﻿## v0.12.3
+﻿## v0.13.0
+
+- Gradient v2 (Discord parity): the background wash is now a true multi-stop
+  ramp instead of a 4-corner blend, with a full editor in Settings > Appearance
+  under the Gradient toggle - direction dial, color intensity, and a Frost
+  slider (panel opacity over the wash; 0% = panels vanish, background IS the
+  ramp). Three source modes: Harmony (2-4 pegs derived from your accent via
+  colormagic harmony rules, so stops can never clash), Presets (27 named
+  curated ramps like Chrome Sunset and Synthwave Drive, with a "Preset sets
+  theme colors" sync toggle), and Custom (pick your own pegs; slot 1 stays
+  linked to your live accent). Split live preview shows the raw wash and the
+  wash as actually seen through Frost side by side. Magic rolls a colormagic
+  flavor palette into custom pegs; Reset is the wayback machine back to the
+  known-good defaults (intensity 45%, frost 85%). Everything persists.
+## v0.12.3
 
 - The logo and wordmark are window drag handles now (drag = move,
   double-click = maximize) - the chrome row always has a grab point even
