@@ -420,16 +420,31 @@ impl App {
             )
             .show(ctx, |ui| {
                 ui.horizontal_centered(|ui| {
-                    ui.add(
-                        egui::Image::new(&self.icon_tex).fit_to_exact_size(egui::vec2(22.0, 22.0)),
+                    // Logo + wordmark are drag handles (boxel-campaign rule:
+                    // a packed chrome row always keeps a grab point) — drag
+                    // moves the window, double-click toggles maximize.
+                    let drag_handle = |ctx: &egui::Context, resp: &egui::Response| {
+                        if resp.drag_started() {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                        } else if resp.double_clicked() {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+                        }
+                    };
+                    let logo = ui.add(
+                        egui::Image::new(&self.icon_tex)
+                            .fit_to_exact_size(egui::vec2(22.0, 22.0))
+                            .sense(egui::Sense::click_and_drag()),
                     );
+                    drag_handle(ctx, &logo);
                     ui.add_space(6.0);
-                    ui.label(
+                    let wm = ui.add(egui::Label::new(
                         egui::RichText::new("TrontSnap")
                             .color(crate::theme::t().accent)
                             .strong()
                             .size(16.0),
-                    );
+                    )
+                    .sense(egui::Sense::click_and_drag()));
+                    drag_handle(ctx, &wm);
                     ui.add_space(16.0);
 
                     // Uniform nav strip: the Capture action-menu and the three view tabs

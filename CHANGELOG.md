@@ -1,4 +1,9 @@
-﻿## v0.12.2
+﻿## v0.12.3
+
+- The logo and wordmark are window drag handles now (drag = move,
+  double-click = maximize) - the chrome row always has a grab point even
+  when tabs and filters pack it edge to edge.
+## v0.12.2
 
 - Discord-style background gradient behind the chrome (same canonical wash as
   SpaceView/TrontEQ), derived live from the colormagic theme. Gradient toggle
