@@ -100,6 +100,11 @@ enum WinBtn {
     Close,
 }
 
+/// Footprint the caption overlay occupies at the top-right (3 buttons + frame
+/// margins). The chrome row reserves this much so its content normally stops
+/// short of the buttons; at extreme widths the opaque overlay simply wins.
+const CAPTION_W: f32 = 3.0 * 40.0 + 10.0;
+
 /// Paint one window-chrome button: a rounded hover fill (reddish for close,
 /// theme hover tint otherwise) plus a hand-drawn glyph, so it never depends on
 /// the font having the right symbol. Returns the Response so the caller can
@@ -465,21 +470,11 @@ impl App {
                     }
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if window_button(ui, WinBtn::Close).on_hover_text("Close to tray").clicked()
-                        {
-                            self.hide(ctx);
-                        }
-                        let max_kind = if maximized { WinBtn::Restore } else { WinBtn::Maximize };
-                        if window_button(ui, max_kind)
-                            .on_hover_text("Maximize / restore")
-                            .clicked()
-                        {
-                            ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
-                        }
-                        if window_button(ui, WinBtn::Minimize).on_hover_text("Minimize").clicked()
-                        {
-                            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
-                        }
+                        // The min/max/close buttons live in a floating top-right
+                        // overlay (caption_overlay) so a cramped chrome row (long
+                        // filter bar, narrow window) can never draw through them.
+                        // Here we only reserve their footprint.
+                        ui.add_space(CAPTION_W);
 
                         // Whatever's left between the tabs (+ filters) and the buttons is
                         // the window's drag handle (move on drag, maximize on double-click).
@@ -494,6 +489,55 @@ impl App {
                         }
                     });
                 });
+            });
+        self.caption_overlay(ctx, maximized);
+    }
+
+    /// The caption buttons as an always-on-top overlay pinned to the window's
+    /// top-right corner with an opaque panel background: whatever the chrome row
+    /// squeezes underneath them at narrow widths, the buttons stay visible and
+    /// clickable — nothing draws through.
+    fn caption_overlay(&mut self, ctx: &egui::Context, maximized: bool) {
+        egui::Area::new(egui::Id::new("trontsnap_caption_overlay"))
+            .order(egui::Order::Foreground)
+            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                egui::Frame::none()
+                    .fill(crate::theme::t().panel_bg)
+                    .rounding(egui::Rounding { sw: 6.0, ..Default::default() })
+                    .inner_margin(egui::Margin {
+                        left: 6.0,
+                        right: 4.0,
+                        top: 5.0,
+                        bottom: 5.0,
+                    })
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.x = 0.0;
+                        ui.horizontal(|ui| {
+                            if window_button(ui, WinBtn::Minimize)
+                                .on_hover_text("Minimize")
+                                .clicked()
+                            {
+                                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                            }
+                            let max_kind =
+                                if maximized { WinBtn::Restore } else { WinBtn::Maximize };
+                            if window_button(ui, max_kind)
+                                .on_hover_text("Maximize / restore")
+                                .clicked()
+                            {
+                                ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(
+                                    !maximized,
+                                ));
+                            }
+                            if window_button(ui, WinBtn::Close)
+                                .on_hover_text("Close to tray")
+                                .clicked()
+                            {
+                                self.hide(ctx);
+                            }
+                        });
+                    });
             });
     }
 
