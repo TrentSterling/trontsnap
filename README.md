@@ -1,6 +1,6 @@
 # TrontSnap
 
-Fast Windows screenshot tool with a lazy-loading gallery over your entire capture history. A ShareX replacement built in Rust.
+Fast Windows screenshot tool with a lazy-loading gallery over your entire capture history. Built in Rust, raised on a decade of ShareX habits.
 
 ## What it is
 
