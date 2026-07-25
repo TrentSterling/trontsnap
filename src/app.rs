@@ -29,7 +29,8 @@ use tray_icon::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIc
 use windows::Win32::Foundation::HWND;
 use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetForegroundWindow, GetWindowThreadProcessId, SetForegroundWindow, ShowWindow, SW_RESTORE,
+    GetForegroundWindow, GetWindowThreadProcessId, SetForegroundWindow, ShowWindow, SW_HIDE,
+    SW_RESTORE,
 };
 
 use crate::autostart;
@@ -39,6 +40,18 @@ use crate::keyhook::{HotkeyEvent, KeyboardHook};
 use crate::region_win32;
 
 const PORT: u16 = 48761;
+
+/// How long a tray left-click waits to see whether it is really the first half
+/// of a double-click before it fires the region capture.
+///
+/// Deliberately SHORTER than Windows' own 500ms double-click default: real
+/// double-clicks land 100-200ms apart, so this catches them while keeping the
+/// single-click capture — the thing that makes the tray icon worth having —
+/// feeling immediate. The cost of the tradeoff is that an unusually lazy
+/// double-click (>330ms between clicks) fires the picker first and then opens
+/// the gallery; Esc dismisses the stray picker. Raise this toward 500ms for
+/// strictness, lower it for snappiness.
+const DBLCLICK_GRACE: Duration = Duration::from_millis(330);
 
 pub fn run(start_hidden: bool) -> anyhow::Result<()> {
     // Single instance: bind a loopback port. If it's taken, another TrontSnap is
@@ -241,6 +254,9 @@ impl App {
         // to the tray, so those actions would silently queue until the window reappeared.
         // Only the autostart toggle (needs &self) is forwarded to update().
         let hwnd_cell = Arc::new(AtomicIsize::new(0));
+        // Declared up here because BOTH the tray click handler (double-click =
+        // open) and the single-instance acceptor below need to raise it.
+        let show_flag = Arc::new(AtomicBool::new(false));
         let (menu_tx, menu_rx) = crossbeam_channel::unbounded::<MenuId>();
         {
             let ctx = cc.egui_ctx.clone();
@@ -274,23 +290,60 @@ impl App {
         }
         {
             let ctx = cc.egui_ctx.clone();
+            let cell = hwnd_cell.clone();
+            let flag = show_flag.clone();
+            // Click arbiter. Windows fires a normal Click BEFORE it fires
+            // DoubleClick (WM_LBUTTONDOWN/UP then WM_LBUTTONDBLCLK), so an
+            // immediate single-click capture would also fire on every
+            // double-click. Instead each left-click claims a generation, waits
+            // out the system double-click time on its own thread, and only
+            // captures if nothing invalidated it meanwhile. A DoubleClick bumps
+            // the generation, which cancels the pending capture and opens the
+            // gallery instead.
+            let click_gen = Arc::new(std::sync::atomic::AtomicU64::new(0));
             TrayIconEvent::set_event_handler(Some(move |ev: TrayIconEvent| {
-                // Left-click = instant region capture (its own window, independent of
-                // the hidden gallery). Right-click opens the menu natively.
-                if let TrayIconEvent::Click {
-                    button: MouseButton::Left,
-                    button_state: MouseButtonState::Up,
-                    ..
-                } = ev
-                {
-                    std::thread::spawn(region_win32::capture_region);
+                match ev {
+                    // Single left-click = region capture (its own window,
+                    // independent of the hidden gallery), deferred just long
+                    // enough to tell it apart from a double-click.
+                    TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } => {
+                        let mine = click_gen.fetch_add(1, Ordering::SeqCst) + 1;
+                        let gen = click_gen.clone();
+                        std::thread::spawn(move || {
+                            std::thread::sleep(DBLCLICK_GRACE);
+                            if gen.load(Ordering::SeqCst) == mine {
+                                region_win32::capture_region();
+                            }
+                        });
+                    }
+                    // Double left-click = open the gallery, faster than
+                    // right-click -> Open. Cancels the pending capture.
+                    TrayIconEvent::DoubleClick {
+                        button: MouseButton::Left,
+                        ..
+                    } => {
+                        click_gen.fetch_add(1, Ordering::SeqCst);
+                        let h = cell.load(Ordering::Relaxed);
+                        if h != 0 {
+                            restore_and_foreground(h);
+                        }
+                        // update() does not run while hidden, so the Win32
+                        // restore above is what actually shows the window; this
+                        // flag lets update() re-sync eframe's own state once it
+                        // starts running again.
+                        flag.store(true, Ordering::SeqCst);
+                    }
+                    _ => {}
                 }
                 ctx.request_repaint();
             }));
         }
 
         // Single-instance acceptor: any connection means "show the window".
-        let show_flag = Arc::new(AtomicBool::new(false));
         {
             let flag = show_flag.clone();
             let ctx = cc.egui_ctx.clone();
@@ -359,6 +412,17 @@ impl App {
     }
 
     fn hide(&mut self, ctx: &egui::Context) {
+        // Mirror show(): raw Win32 is the reliable path for the ROOT viewport.
+        // `ViewportCommand::Visible(false)` on its own does not dependably hide
+        // it — the same asymmetry that made Show a no-op until v0.5.3 switched
+        // it to ShowWindow. Send the viewport command too so eframe's cached
+        // visibility state stays in sync with the OS window.
+        let h = self.hwnd_cell.load(Ordering::Relaxed);
+        if h != 0 {
+            unsafe {
+                let _ = ShowWindow(HWND(h), SW_HIDE);
+            }
+        }
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
     }
 

@@ -1,4 +1,15 @@
-﻿## v0.13.0
+﻿## v0.13.1
+
+- **Close actually closes to tray again.** `show()` was fixed back in v0.5.3 to
+  use raw Win32 ShowWindow, but `hide()` still relied on
+  `ViewportCommand::Visible(false)` alone, which does not dependably hide the
+  root viewport. The painted X (the only close button since the window went
+  frameless in v0.11) now hides via Win32 like show restores via Win32.
+- **Double-click the tray icon to open the gallery** - faster than right-click ->
+  Open. Single left-click still does an instant region capture; because Windows
+  fires a normal Click before it fires DoubleClick, the capture now waits out a
+  330ms grace period and cancels itself if the second click lands.
+## v0.13.0
 
 - Gradient v2 (Discord parity): the background wash is now a true multi-stop
   ramp instead of a 4-corner blend, with a full editor in Settings > Appearance
