@@ -257,6 +257,86 @@ pub fn luminance(rgb: Rgb) -> f32 {
         + 0.0722 * channel_luminance(rgb[2])
 }
 
+// ============ APCA + READABILITY GUARANTEE ============
+//
+// WCAG's ratio (below) is the legal standard but is measurably wrong in dark
+// mode: it treats contrast as symmetric, so light-grey-on-dark "passes" while
+// reading as mud. APCA is polarity-aware and is what actually predicts whether
+// a label is legible. Constants are SA98G / APCA-W3 0.1.9.
+//
+// Lc guide: |Lc| >= 90 preferred body text, 75 minimum body text, 60
+// headline/large or secondary labels, 45 large-bold, 30 non-text, < 15 invisible.
+
+/// Preferred Lc for primary body text.
+pub const LC_TEXT: f32 = 90.0;
+/// Hard floor for body text.
+pub const LC_TEXT_MIN: f32 = 75.0;
+/// Floor for secondary / "muted" captions - the small knob labels, hints and
+/// section blurbs that were washing out to near-invisible grey.
+pub const LC_MUTED: f32 = 60.0;
+
+fn apca_y(rgb: Rgb) -> f32 {
+    let f = |c: u8| (c as f32 / 255.0).powf(2.4);
+    0.2126729 * f(rgb[0]) + 0.7151522 * f(rgb[1]) + 0.0721750 * f(rgb[2])
+}
+
+/// APCA lightness contrast (Lc) for `text` on `bg`. Sign encodes polarity.
+pub fn apca_lc(text: Rgb, bg: Rgb) -> f32 {
+    let soft = |y: f32| if y < 0.022 { y + (0.022 - y).powf(1.414) } else { y };
+    let ytxt = soft(apca_y(text));
+    let ybg = soft(apca_y(bg));
+    if (ybg - ytxt).abs() < 0.0005 {
+        return 0.0;
+    }
+    if ybg > ytxt {
+        let sapc = (ybg.powf(0.56) - ytxt.powf(0.57)) * 1.14;
+        if sapc < 0.1 { 0.0 } else { (sapc - 0.027) * 100.0 }
+    } else {
+        let sapc = (ybg.powf(0.65) - ytxt.powf(0.62)) * 1.14;
+        if sapc > -0.1 { 0.0 } else { (sapc + 0.027) * 100.0 }
+    }
+}
+
+/// "How readable is this pair", polarity-free.
+pub fn apca_abs(text: Rgb, bg: Rgb) -> f32 {
+    apca_lc(text, bg).abs()
+}
+
+/// THE GUARANTEE: return a colour as close to `fg` as possible that provably
+/// clears `target` Lc against `bg`, keeping `fg`'s hue so the theme still reads
+/// as itself. Walks lightness AWAY from the background and falls back to pure
+/// black/white, which is what makes this unconditional rather than hopeful.
+pub fn readable_against(fg: Rgb, bg: Rgb, target: f32) -> Rgb {
+    let mut best = fg;
+    let mut best_lc = apca_abs(fg, bg);
+    if best_lc >= target {
+        return fg;
+    }
+    // Push away from the ground: darker text on a light panel, lighter on dark.
+    let bg_is_light = luminance(bg) > 0.18;
+    let h = rgb_to_hsl(fg);
+    let mut l = h.l;
+    for _ in 0..44 {
+        l = if bg_is_light { (l - 2.5).max(0.0) } else { (l + 2.5).min(100.0) };
+        let cand = hsl_to_rgb(h.h, h.s, l);
+        let lc = apca_abs(cand, bg);
+        if lc > best_lc {
+            best_lc = lc;
+            best = cand;
+        }
+        if lc >= target {
+            return cand;
+        }
+    }
+    if best_lc < target {
+        let extreme: Rgb = if bg_is_light { [0, 0, 0] } else { [255, 255, 255] };
+        if apca_abs(extreme, bg) > best_lc {
+            return extreme;
+        }
+    }
+    best
+}
+
 /// WCAG contrast ratio between two colors (1.0 .. 21.0).
 pub fn contrast_ratio(a: Rgb, b: Rgb) -> f32 {
     let l1 = luminance(a);

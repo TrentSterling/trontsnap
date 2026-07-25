@@ -1,4 +1,15 @@
-﻿## v0.13.1
+## v0.13.2
+
+- **Readability guarantee** (ported from TrontEQ/SpaceView): APCA contrast plus
+  a hue-preserving walker now live in colormagic, and every token set installed
+  passes through `enforce_readability` - startup included, not just theme
+  changes. Body text clears APCA Lc 75 against the panel, cards and widget
+  fills; captions clear Lc 60; the accent and the amber ShareX marker keep
+  their hue but are walked to a legible lightness because both are drawn as ink
+  as well as fill. No theme, premade, random roll or gradient preset can
+  produce washed-out text any more.
+
+## v0.13.1
 
 - **Close actually closes to tray again.** `show()` was fixed back in v0.5.3 to
   use raw Win32 ShowWindow, but `hide()` still relied on

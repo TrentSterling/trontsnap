@@ -164,7 +164,49 @@ pub fn apply(ctx: &egui::Context) {
 
 /// Swap the live palette and re-apply egui visuals. Fonts/style don't change
 /// per theme, so only the visuals need rebuilding.
+/// THE READABILITY GUARANTEE. Every token set that reaches the screen goes
+/// through here, whatever produced it: a built-in, a premade, a derived accent,
+/// Random, or a gradient preset that re-themed the app.
+///
+/// Text roles are walked (hue preserved) until APCA says they clear their floor
+/// against the surfaces they actually sit on, with pure black/white as the
+/// unconditional backstop. `amber` is a SEMANTIC colour (the ShareX-archive
+/// marker) so it keeps its meaning and only its lightness moves.
+fn enforce_readability(mut tk: Tokens) -> Tokens {
+    let rgb = |c: Color32| [c.r(), c.g(), c.b()];
+    let c32 = |v: [u8; 3]| Color32::from_rgb(v[0], v[1], v[2]);
+
+    // Body text has to work on the panel, on cards, and on widget fills.
+    let mut text = rgb(tk.text_primary);
+    for ground in [tk.panel_bg, tk.card_bg, tk.widget_bg] {
+        text = color::readable_against(text, rgb(ground), color::LC_TEXT_MIN);
+    }
+    tk.text_primary = c32(text);
+
+    // Secondary captions: the timestamps, counts and hints under thumbnails.
+    let mut muted = rgb(tk.text_muted);
+    for ground in [tk.panel_bg, tk.card_bg] {
+        muted = color::readable_against(muted, rgb(ground), color::LC_MUTED);
+    }
+    tk.text_muted = c32(muted);
+
+    // Accent + amber are drawn as INK (source dots, labels, legend) as well as
+    // fills; keep the hue, guarantee the legibility.
+    tk.accent = c32(color::readable_against(
+        rgb(tk.accent),
+        rgb(tk.panel_bg),
+        color::LC_MUTED,
+    ));
+    tk.amber = c32(color::readable_against(
+        rgb(tk.amber),
+        rgb(tk.panel_bg),
+        color::LC_MUTED,
+    ));
+    tk
+}
+
 pub fn set_theme(ctx: &egui::Context, tk: Tokens) {
+    let tk = enforce_readability(tk);
     *CURRENT.write().unwrap() = tk;
     ctx.set_visuals(build_visuals(tk));
 }
@@ -450,7 +492,10 @@ pub fn resolve(name: &str, source: &[String]) -> Tokens {
 fn load_from_settings() {
     let name = crate::settings::theme_name();
     let source = crate::settings::theme_source();
-    *CURRENT.write().unwrap() = resolve(&name, &source);
+    // Startup path installs a palette directly, so it needs the same guarantee
+    // `set_theme` applies — otherwise the very first frame can ship unreadable
+    // text and only fix itself once the user touches a theme control.
+    *CURRENT.write().unwrap() = enforce_readability(resolve(&name, &source));
 
     // Gradient v2 knobs + frost — settings::load() already ran in main()
     // before apply(), so these reads see whatever was persisted last session.
