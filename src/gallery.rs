@@ -327,6 +327,10 @@ impl Gallery {
                     };
                     if let Err(e) = r {
                         eprintln!("trontsnap: copy failed: {e:#}");
+                        crate::clipboard::log_line(&format!(
+                            "gallery copy failed for {}: {e:#}",
+                            p.display()
+                        ));
                     }
                 });
                 self.set_status("Copied");

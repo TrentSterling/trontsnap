@@ -50,6 +50,7 @@ pub fn deliver(img: &RgbaImage) -> anyhow::Result<PathBuf> {
         Ok(()) => true,
         Err(e) => {
             eprintln!("trontsnap: clipboard set failed: {e:#}");
+            crate::clipboard::log_line(&format!("clipboard set_all failed: {e:#}"));
             false
         }
     };

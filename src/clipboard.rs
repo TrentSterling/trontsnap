@@ -32,6 +32,30 @@ use windows::Win32::UI::Shell::DROPFILES;
 /// session. `png_bytes` must be the exact PNG encoding of `img`; `file_path`
 /// must already exist on disk (CF_HDROP just references it — it doesn't
 /// carry the bytes).
+/// Append a line to `%LOCALAPPDATA%\TrontSnap\trontsnap.log`.
+///
+/// Release builds are windows-subsystem, so `eprintln!` goes to nowhere: a
+/// clipboard failure left literally no trace anywhere on the machine, which is
+/// why "it just didn't copy" was impossible to chase. Failures are rare, the file
+/// is tiny, and having one real error message beats another round of guessing.
+pub fn log_line(msg: &str) {
+    let Ok(base) = std::env::var("LOCALAPPDATA") else { return };
+    let dir = std::path::Path::new(&base).join("TrontSnap");
+    let _ = std::fs::create_dir_all(&dir);
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("trontsnap.log"))
+    {
+        let _ = writeln!(f, "[{stamp}] {msg}");
+    }
+}
+
 pub fn set_all(img: &RgbaImage, png_bytes: &[u8], file_path: &Path) -> anyhow::Result<()> {
     let (w, h) = (img.width(), img.height());
     let bgra = rgba_to_bgra_bottom_up(w, h, img.as_raw());

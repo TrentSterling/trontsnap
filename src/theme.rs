@@ -232,7 +232,11 @@ fn build_visuals(tk: Tokens) -> egui::Visuals {
         if crate::settings::gradient() { (255.0 * frost()) as u8 } else { 255 };
     let panel = Color32::from_rgba_unmultiplied(tk.panel_bg.r(), tk.panel_bg.g(), tk.panel_bg.b(), panel_alpha);
 
-    v.window_fill = panel;
+    // MENUS AND POPUPS STAY OPAQUE. `window_fill` is what `Frame::popup`,
+    // `Frame::menu` and `egui::Window` paint with, so tying it to frost meant a
+    // 0% frost setting produced alpha 0 -- context menus rendered as floating text
+    // with no background at all. Panels still follow frost; overlays never do.
+    v.window_fill = tk.panel_bg;
     v.panel_fill = panel;
     v.faint_bg_color = tk.header_strip;
     v.extreme_bg_color = tk.window_bg;
