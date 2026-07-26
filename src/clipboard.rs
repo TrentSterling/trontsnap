@@ -117,6 +117,45 @@ pub fn set_file(file_path: &Path) -> anyhow::Result<()> {
 
 /// OpenClipboard can transiently fail if another app (browsers are the usual
 /// culprit) has it open; retry briefly instead of failing the whole capture.
+/// A message-only window to OWN the clipboard, created once per process.
+///
+/// THE TRAP: `OpenClipboard(HWND(0))` leaves the clipboard OWNER null, and
+/// Microsoft documents that this makes `EmptyClipboard` null the owner and
+/// `SetClipboardData` unreliable. The write can report success and the contents
+/// still evaporate, because they are tied to a thread rather than a window — and
+/// the one-shot capture modes (`trontsnap full` / `region`) exit within seconds,
+/// while the gallery's Copy runs on a thread that exits immediately. Either way
+/// the data was gone before it could be pasted.
+///
+/// Owning the clipboard with a real (hidden, message-only) window fixes that: the
+/// window outlives the operation and the OS has a valid owner to point at.
+unsafe fn clipboard_owner() -> HWND {
+    use std::sync::OnceLock;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CreateWindowExW, HWND_MESSAGE, WINDOW_EX_STYLE, WINDOW_STYLE,
+    };
+    // isize because HWND is not Send/Sync; the handle is process-wide and valid
+    // from any thread once created.
+    static OWNER: OnceLock<isize> = OnceLock::new();
+    HWND(*OWNER.get_or_init(|| {
+        CreateWindowExW(
+            WINDOW_EX_STYLE(0),
+            w!("STATIC"),
+            w!("TrontSnapClipboard"),
+            WINDOW_STYLE(0),
+            0,
+            0,
+            0,
+            0,
+            HWND_MESSAGE,
+            None,
+            None,
+            None,
+        )
+        .0
+    }))
+}
+
 unsafe fn open_clipboard_with_retry() -> anyhow::Result<()> {
     // The old budget was 10 x 15ms = 150ms, which loses to a busy browser: Chrome
     // and Firefox routinely hold the clipboard for several hundred ms while their
@@ -126,7 +165,7 @@ unsafe fn open_clipboard_with_retry() -> anyhow::Result<()> {
     // nothing in the common case (the first attempt almost always wins).
     const ATTEMPTS: u32 = 28;
     for attempt in 0..ATTEMPTS {
-        if OpenClipboard(HWND(0)).is_ok() {
+        if OpenClipboard(clipboard_owner()).is_ok() {
             return Ok(());
         }
         if attempt + 1 < ATTEMPTS {
