@@ -54,7 +54,10 @@ fn main() {
             Ok(())
         }
         "toast" => match std::env::args().nth(2) {
-            Some(p) => toast::show(std::path::PathBuf::from(p)),
+            Some(p) => {
+                let clipboard_ok = !std::env::args().any(|a| a == "--clipboard-failed");
+                toast::show(std::path::PathBuf::from(p), clipboard_ok)
+            }
             None => Ok(()),
         },
         other => {

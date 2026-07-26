@@ -15,15 +15,20 @@ use image::RgbaImage;
 /// Medium-integrity exe with no uiAccess manifest, so bare CreateProcess
 /// launches it with no elevation dance. Best-effort: the capture is already
 /// saved + on the clipboard, so a failed toast never loses anything.
-pub fn launch(path: &Path) {
+pub fn launch(path: &Path, clipboard_ok: bool) {
     let Ok(exe) = std::env::current_exe() else { return };
-    let _ = std::process::Command::new(exe).arg("toast").arg(path).spawn();
+    let mut cmd = std::process::Command::new(exe);
+    cmd.arg("toast").arg(path);
+    if !clipboard_ok {
+        cmd.arg("--clipboard-failed");
+    }
+    let _ = cmd.spawn();
 }
 
 const W: f32 = 330.0;
 const H: f32 = 90.0;
 
-pub fn show(path: PathBuf) -> anyhow::Result<()> {
+pub fn show(path: PathBuf, clipboard_ok: bool) -> anyhow::Result<()> {
     // Small thumbnail of the capture (aspect-preserving fit in 76px). Videos decode
     // their first frame via Media Foundation (file is finalized by the time the toast
     // spawns); failures just mean a text-only toast.
@@ -50,7 +55,7 @@ pub fn show(path: PathBuf) -> anyhow::Result<()> {
         options,
         Box::new(move |cc| {
             crate::theme::apply(&cc.egui_ctx);
-            Ok(Box::new(Toast::new(path, thumb)))
+            Ok(Box::new(Toast::new(path, thumb, clipboard_ok)))
         }),
     )
     .map_err(|e| anyhow::anyhow!("toast failed: {e}"))
@@ -63,11 +68,21 @@ struct Toast {
     born: Option<Instant>,
     positioned: bool,
     was_pressed: bool,
+    /// Whether the clipboard write actually succeeded, so the toast can say so.
+    clipboard_ok: bool,
 }
 
 impl Toast {
-    fn new(path: PathBuf, thumb: Option<RgbaImage>) -> Self {
-        Self { path, thumb, tex: None, born: None, positioned: false, was_pressed: false }
+    fn new(path: PathBuf, thumb: Option<RgbaImage>, clipboard_ok: bool) -> Self {
+        Self {
+            path,
+            thumb,
+            tex: None,
+            born: None,
+            positioned: false,
+            was_pressed: false,
+            clipboard_ok,
+        }
     }
 }
 
@@ -122,10 +137,17 @@ impl eframe::App for Toast {
             .rounding(8.0)
             .inner_margin(10.0);
 
+        // Tell the truth about the clipboard. This used to say "Copied to clipboard"
+        // unconditionally, so when the write lost a race with a browser holding the
+        // clipboard the shot silently never arrived and the toast still claimed it
+        // had -- the failure only went to eprintln!, which goes nowhere in a
+        // windowed exe.
         let title = if crate::index::is_video(&self.path) {
             "Recording saved"
-        } else {
+        } else if self.clipboard_ok {
             "Copied to clipboard"
+        } else {
+            "Saved (clipboard was busy)"
         };
 
         egui::CentralPanel::default().frame(frame).show(ctx, |ui| {

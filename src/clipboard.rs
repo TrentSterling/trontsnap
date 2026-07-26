@@ -94,12 +94,20 @@ pub fn set_file(file_path: &Path) -> anyhow::Result<()> {
 /// OpenClipboard can transiently fail if another app (browsers are the usual
 /// culprit) has it open; retry briefly instead of failing the whole capture.
 unsafe fn open_clipboard_with_retry() -> anyhow::Result<()> {
-    for attempt in 0..10 {
+    // The old budget was 10 x 15ms = 150ms, which loses to a busy browser: Chrome
+    // and Firefox routinely hold the clipboard for several hundred ms while their
+    // own paste/copy plumbing settles, and with a lot of tabs open it is longer.
+    // Losing that race meant the shot saved to disk but never reached the
+    // clipboard. Back off from 5ms to 40ms for a ~1s total window, which costs
+    // nothing in the common case (the first attempt almost always wins).
+    const ATTEMPTS: u32 = 28;
+    for attempt in 0..ATTEMPTS {
         if OpenClipboard(HWND(0)).is_ok() {
             return Ok(());
         }
-        if attempt < 9 {
-            std::thread::sleep(Duration::from_millis(15));
+        if attempt + 1 < ATTEMPTS {
+            let backoff = 5 + (attempt * 3).min(35);
+            std::thread::sleep(Duration::from_millis(backoff as u64));
         }
     }
     anyhow::bail!("could not open the clipboard (another app is holding it)")

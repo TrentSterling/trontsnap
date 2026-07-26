@@ -127,12 +127,16 @@ fn record_session() {
         Ok(path) => {
             // Best-effort: the finished MP4 goes on the clipboard as a file (CF_HDROP),
             // so it pastes straight into Discord — same spirit as screenshots.
-            if let Err(e) = crate::clipboard::set_file(&path) {
-                eprintln!("trontsnap: recording clipboard set failed: {e:#}");
-            }
+            let clipboard_ok = match crate::clipboard::set_file(&path) {
+                Ok(()) => true,
+                Err(e) => {
+                    eprintln!("trontsnap: recording clipboard set failed: {e:#}");
+                    false
+                }
+            };
             crate::sound::play_shutter();
             eprintln!("trontsnap: recorded {w}x{h} -> {}", path.display());
-            crate::toast::launch(&path);
+            crate::toast::launch(&path, clipboard_ok);
         }
         Err(e) => eprintln!("trontsnap: recording failed: {e:#}"),
     }

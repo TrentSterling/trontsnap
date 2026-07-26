@@ -43,14 +43,21 @@ pub fn capture_full() -> anyhow::Result<()> {
 pub fn deliver(img: &RgbaImage) -> anyhow::Result<PathBuf> {
     let png_bytes = encode_png(img)?;
     let path = save_png_bytes(&png_bytes)?;
-    if let Err(e) = crate::clipboard::set_all(img, &png_bytes, &path) {
-        eprintln!("trontsnap: clipboard set failed: {e:#}");
-    }
+    // Best-effort, but NOT silent: the toast reports the real outcome. Previously
+    // this only logged to stderr, which goes nowhere in a windowed exe, so a lost
+    // clipboard race looked identical to success.
+    let clipboard_ok = match crate::clipboard::set_all(img, &png_bytes, &path) {
+        Ok(()) => true,
+        Err(e) => {
+            eprintln!("trontsnap: clipboard set failed: {e:#}");
+            false
+        }
+    };
     crate::sound::play_shutter();
     // Corner toast (ShareX-style) as its own tiny process, so it never touches the main
     // app's window/loop. A plain std::process::Command spawn (inside toast::launch) is all
     // it takes now that TrontSnap is a portable, non-uiAccess, Medium-integrity exe.
-    crate::toast::launch(&path);
+    crate::toast::launch(&path, clipboard_ok);
     Ok(path)
 }
 
