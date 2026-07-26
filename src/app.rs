@@ -301,6 +301,19 @@ impl App {
             // the generation, which cancels the pending capture and opens the
             // gallery instead.
             let click_gen = Arc::new(std::sync::atomic::AtomicU64::new(0));
+            // Windows delivers a double-click as DOWN, UP, DBLCLK, UP -- there is a
+            // TRAILING button-up AFTER the DoubleClick. The generation counter
+            // cancels the FIRST click, but that trailing one claimed a fresh
+            // generation and scheduled its own capture, which is why opening the
+            // gallery still popped the region picker to cancel out of. Clicks that
+            // land just after a double-click are that tail, so ignore them.
+            let last_dbl_ms = Arc::new(std::sync::atomic::AtomicU64::new(0));
+            let now_ms = || {
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0)
+            };
             TrayIconEvent::set_event_handler(Some(move |ev: TrayIconEvent| {
                 match ev {
                     // Single left-click = region capture (its own window,
@@ -311,6 +324,12 @@ impl App {
                         button_state: MouseButtonState::Up,
                         ..
                     } => {
+                        // Drop the trailing up-click of a double-click.
+                        let since_dbl =
+                            now_ms().saturating_sub(last_dbl_ms.load(Ordering::SeqCst));
+                        if since_dbl < DBLCLICK_GRACE.as_millis() as u64 {
+                            return;
+                        }
                         let mine = click_gen.fetch_add(1, Ordering::SeqCst) + 1;
                         let gen = click_gen.clone();
                         std::thread::spawn(move || {
@@ -327,6 +346,7 @@ impl App {
                         ..
                     } => {
                         click_gen.fetch_add(1, Ordering::SeqCst);
+                        last_dbl_ms.store(now_ms(), Ordering::SeqCst);
                         let h = cell.load(Ordering::Relaxed);
                         if h != 0 {
                             restore_and_foreground(h);
