@@ -982,6 +982,26 @@ fn settings_tab_ui(ui: &mut egui::Ui) {
 /// from SpaceView's reference gradient editor (`theme.rs` + the "Theme"
 /// window in `app.rs`), collapsed into this settings section instead of a
 /// popup window — TrontSnap's Settings tab already IS the appearance panel.
+/// Read-only view of the pegs the ramp actually resolved to.
+///
+/// In Harmony and Presets mode the stops are derived, so there is no picker to
+/// show — which previously meant the row was an empty 26px spacer and you had no
+/// way to know what colours the gradient was built from.
+fn read_only_pegs(ui: &mut egui::Ui, tk: &crate::theme::Tokens) {
+    let pegs = crate::theme::gradient_pegs(tk);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        let border = ui.visuals().widgets.noninteractive.bg_stroke.color;
+        for p in &pegs {
+            let (rect, resp) = ui.allocate_exact_size(egui::vec2(34.0, 20.0), egui::Sense::hover());
+            ui.painter().rect_filled(rect, 3.0, border);
+            ui.painter()
+                .rect_filled(rect.shrink(1.0), 3.0, egui::Color32::from_rgb(p[0], p[1], p[2]));
+            resp.on_hover_text(crate::color::rgb_to_hex(*p));
+        }
+    });
+}
+
 fn gradient_editor_ui(ui: &mut egui::Ui) {
     let tk = crate::theme::t();
     let mut cfg = crate::theme::gradient_cfg();
@@ -1141,9 +1161,10 @@ fn gradient_editor_ui(ui: &mut egui::Ui) {
                 }
             }
         }
-        // Height parity with the two-row modes so the section doesn't jump
-        // when switching sources.
-        ui.add_space(26.0);
+        // Harmony and Presets derive their pegs, so there is nothing to edit —
+        // but you should still be able to SEE what stops the ramp landed on.
+        // Read-only swatches, and they keep the height parity the spacer had.
+        read_only_pegs(ui, &tk);
     } else {
         // Custom: your colors, your rules.
         ui.horizontal(|ui| {
@@ -1156,6 +1177,10 @@ fn gradient_editor_ui(ui: &mut egui::Ui) {
             }
         });
         ui.horizontal(|ui| {
+            // color_edit_button sizes its swatch from interact_size, whose
+            // default is a thin sliver — the pegs render as an unclickable gap
+            // without this. Same defect TrontEQ had.
+            ui.spacing_mut().interact_size = egui::vec2(42.0, 24.0);
             // SLOT 0 IS THE ACCENT (linked): editing it rethemes the app; it
             // always participates in the ramp. Slots 1..N are free pegs.
             let acc = crate::theme::t().accent;

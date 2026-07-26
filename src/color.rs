@@ -313,11 +313,14 @@ pub fn readable_against(fg: Rgb, bg: Rgb, target: f32) -> Rgb {
         return fg;
     }
     // Push away from the ground: darker text on a light panel, lighter on dark.
-    let bg_is_light = luminance(bg) > 0.18;
+    // Which way to walk is decided by APCA, NOT by a WCAG luminance threshold.
+    // On a midtone ground the threshold guesses wrong and walks toward the WORSE
+    // extreme: against #6a9600, black reaches Lc 41.6 while white reaches 67.9.
+    let dark_wins = apca_abs([0, 0, 0], bg) >= apca_abs([255, 255, 255], bg);
     let h = rgb_to_hsl(fg);
     let mut l = h.l;
     for _ in 0..44 {
-        l = if bg_is_light { (l - 2.5).max(0.0) } else { (l + 2.5).min(100.0) };
+        l = if dark_wins { (l - 2.5).max(0.0) } else { (l + 2.5).min(100.0) };
         let cand = hsl_to_rgb(h.h, h.s, l);
         let lc = apca_abs(cand, bg);
         if lc > best_lc {
@@ -329,7 +332,7 @@ pub fn readable_against(fg: Rgb, bg: Rgb, target: f32) -> Rgb {
         }
     }
     if best_lc < target {
-        let extreme: Rgb = if bg_is_light { [0, 0, 0] } else { [255, 255, 255] };
+        let extreme: Rgb = if dark_wins { [0, 0, 0] } else { [255, 255, 255] };
         if apca_abs(extreme, bg) > best_lc {
             return extreme;
         }
