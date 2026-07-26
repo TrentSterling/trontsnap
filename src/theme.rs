@@ -619,7 +619,63 @@ pub fn set_gradient_cfg(cfg: GradientCfg) {
 
 /// The peg colors: accent -> harmony spread. WCAG isn't a factor here (no text
 /// sits on the raw ramp; panels carry the text).
+/// Make the WASH itself safe to put text on.
+///
+/// At frost 0 and intensity 1 the panels vanish and text sits directly on the raw
+/// peg ramp, which is exactly where labels were disappearing. The guarantee held
+/// for panels but never covered that case.
+///
+/// It is not a hue problem. One ink can clear a full rainbow; what breaks it is
+/// LIGHTNESS SPREAD — a light peg beside a dark one creates a midtone crossing
+/// where neither white nor black reaches the floor. And because `ramp` mixes
+/// linearly between pegs, mixing two dark colours can never yield a light one, so
+/// clearing every PEG clears the entire ramp.
+///
+/// Push the pegs away from the ink until the worst one passes. Hues untouched;
+/// only lightness compresses. Demand scales with how exposed the wash actually is
+/// (`intensity * (1 - frost)`), so a frosted wash keeps its full colour range and
+/// only a bare one gets constrained.
+///
+/// Polarity comes from the INK, not a dark-mode flag: "push away from whatever is
+/// being drawn on top" is the real rule and needs no per-app plumbing.
+fn enforce_wash_readability(pegs: Vec<Rgb>, exposure: f32, ink: Rgb) -> Vec<Rgb> {
+    if exposure <= 0.05 {
+        return pegs; // panels still cover the wash; leave the colours alone
+    }
+    let target = color::LC_TEXT_MIN * exposure.clamp(0.0, 1.0);
+    // A light ink wants dark pegs beneath it, and vice versa.
+    let ink_is_light = color::apca_abs(ink, [0, 0, 0]) >= color::apca_abs(ink, [255, 255, 255]);
+
+    let mut out = pegs;
+    for _ in 0..40 {
+        let worst = out
+            .iter()
+            .map(|p| color::apca_abs(ink, *p))
+            .fold(f32::MAX, f32::min);
+        if worst >= target {
+            break;
+        }
+        out = out
+            .into_iter()
+            .map(|p| {
+                let [l, c, h] = color::rgb_to_oklch(p);
+                let nl = if ink_is_light { (l - 0.025).max(0.04) } else { (l + 0.025).min(0.97) };
+                color::oklch_to_rgb(nl, c, h)
+            })
+            .collect();
+    }
+    out
+}
+
+/// THE CHOKE POINT for peg colours: every source (custom slots, curated preset,
+/// harmony spread) resolves through `gradient_pegs_raw` and then through
+/// `enforce_wash_readability`, so no mode can produce a wash text cannot sit on.
 pub fn gradient_pegs(tk: &Tokens) -> Vec<Rgb> {
+    let exposure = gradient_cfg().intensity.clamp(0.0, 1.0) * (1.0 - frost());
+    enforce_wash_readability(gradient_pegs_raw(tk), exposure, rgb_of(tk.text_primary))
+}
+
+fn gradient_pegs_raw(tk: &Tokens) -> Vec<Rgb> {
     let cfg = gradient_cfg();
 
     // Custom mode: SLOT 0 IS THE ACCENT (linked, always participates — the
