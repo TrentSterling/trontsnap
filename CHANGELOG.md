@@ -1,3 +1,26 @@
+## v0.14.1
+
+Fixes two things v0.14.0's uiAccess build silently broke.
+
+- **Corner toasts stopped appearing, and Reveal in Explorer stopped working.**
+  Both spawn a child process, and a process holding the uiAccess token flag
+  cannot start anything with a bare `CreateProcess`: it fails with
+  `ERROR_ELEVATION_REQUIRED` (740). Both now go through `ShellExecuteW` in the
+  new `shellexec` module.
+- **This is a repeat, which is why the module carries a warning.** v0.9.0 hit the
+  identical regression and switched to `ShellExecuteW`; v0.10 dropped uiAccess
+  and reverted to `std::process::Command` because the portable build no longer
+  needed it; v0.14.0 restored uiAccess without restoring this. `shellexec` is now
+  used **unconditionally** rather than behind `#[cfg(feature = "uiaccess")]`, so
+  the portable build exercises the same path the installed build ships and this
+  cannot rot in whichever configuration nobody ran today.
+- Audited every other spawn site. The `opener` crate (double-click to open a
+  capture) already uses `ShellExecuteW` on Windows and was never affected.
+- The installer no longer deletes the whole `%LOCALAPPDATA%\TrontSnap` folder,
+  only `trontsnap.exe` inside it. That folder is also the thumbnail cache
+  (`thumbs.rs` resolves it via `dirs::cache_dir()`), so wiping it discarded every
+  cached thumbnail and forced a full re-decode of the gallery.
+
 ## v0.14.0
 
 TrontSnap now ships as **two builds off one codebase**, ending an either/or that

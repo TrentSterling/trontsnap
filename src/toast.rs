@@ -10,19 +10,25 @@ use std::time::{Duration, Instant};
 use eframe::egui;
 use image::RgbaImage;
 
-/// Spawn the corner-toast subprocess (`trontsnap toast <path>`). Plain
-/// `std::process::Command` works fine: TrontSnap is a portable, unsigned,
-/// Medium-integrity exe with no uiAccess manifest, so bare CreateProcess
-/// launches it with no elevation dance. Best-effort: the capture is already
-/// saved + on the clipboard, so a failed toast never loses anything.
+/// Spawn the corner-toast subprocess (`trontsnap toast <path>`).
+///
+/// Must go through ShellExecuteW, NOT `std::process::Command`: the installed
+/// build carries the uiAccess token flag, and a uiAccess process cannot start
+/// anything with a bare CreateProcess (ERROR_ELEVATION_REQUIRED, 740). Using
+/// Command here is exactly why toasts silently stopped appearing after the
+/// v0.14.0 install. See shellexec.rs.
+///
+/// Best-effort: the capture is already saved and on the clipboard by now, so a
+/// failed toast never loses anything.
 pub fn launch(path: &Path, clipboard_ok: bool) {
     let Ok(exe) = std::env::current_exe() else { return };
-    let mut cmd = std::process::Command::new(exe);
-    cmd.arg("toast").arg(path);
+    let mut params = format!("toast \"{}\"", path.display());
     if !clipboard_ok {
-        cmd.arg("--clipboard-failed");
+        params.push_str(" --clipboard-failed");
     }
-    let _ = cmd.spawn();
+    if !crate::shellexec::run(&exe.to_string_lossy(), &params) {
+        eprintln!("trontsnap: toast launch refused by the shell");
+    }
 }
 
 const W: f32 = 330.0;

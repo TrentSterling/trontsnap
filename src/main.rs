@@ -26,6 +26,7 @@ mod printscreen;
 mod recorder;
 mod region_win32;
 mod settings;
+mod shellexec;
 mod sound;
 mod theme;
 mod thumbs;

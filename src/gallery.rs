@@ -564,12 +564,12 @@ fn fit(rect: Rect, size: [usize; 2]) -> Rect {
     Rect::from_center_size(rect.center(), egui::vec2(tw * s, th * s))
 }
 
+/// Open Explorer with the file selected. Goes through ShellExecuteW for the same
+/// reason the toast does: a uiAccess process cannot CreateProcess, so the old
+/// `Command::new("explorer")` silently did nothing on the installed build.
 #[cfg(windows)]
 fn reveal(path: &Path) {
-    use std::os::windows::process::CommandExt;
-    let _ = std::process::Command::new("explorer")
-        .raw_arg(format!("/select,\"{}\"", path.display()))
-        .spawn();
+    crate::shellexec::run("explorer.exe", &format!("/select,\"{}\"", path.display()));
 }
 
 #[cfg(not(windows))]
