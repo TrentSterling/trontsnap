@@ -1,3 +1,38 @@
+## v0.14.0
+
+TrontSnap now ships as **two builds off one codebase**, ending an either/or that
+had been re-litigated twice. See `SETUP.md` for which to grab.
+
+- **The rule that forced this.** v0.10 removed uiAccess on the belief that
+  `RegisterHotKey` is never UIPI-blocked, so a plain portable exe would always
+  get its hotkeys. That is true for combos WITH modifiers and false for
+  modifier-less ones: a bare `PrtSc` bind registered by a Medium-integrity
+  process is not delivered while an ELEVATED window has focus. A/B tested
+  2026-07-23 (bare PrtSc and bare F9 dead over an elevated window, Ctrl+Alt+F9
+  fine) and reconfirmed 2026-07-26 against Task Manager. So neither build was
+  ever the whole answer.
+- **Portable** (`cargo build --release`) stays exactly what it was: no install,
+  no admin, no signing, delete-to-uninstall. Its Fullscreen bind now defaults to
+  **Alt+PrtSc** instead of bare PrtSc, so every bind works over elevated windows
+  out of the box rather than looking broken over Task Manager.
+- **Installed** (`cargo build --release --features uiaccess`) is signed into
+  `%ProgramFiles%\TrontSnap`, which is what lets Windows grant uiAccess. That
+  bypasses UIPI, so bare **PrtSc** works everywhere. The process still runs at
+  Medium integrity, so drag-out into Discord keeps working. Restores the
+  feature-gated manifest, `bootstrap.ps1` and the launcher wrappers that v0.10
+  deleted.
+- **The installer removes the portable copy** in `%LOCALAPPDATA%\TrontSnap`.
+  Leaving both installed means two TrontSnaps racing for the same hotkey
+  registration, where the first to register wins and the loser is silently dead.
+  It takes the caller's real `%LOCALAPPDATA%` from the non-elevated window so
+  cleanup targets the right profile even if UAC consent lands elsewhere, and it
+  refuses to install any exe whose manifest lacks `uiAccess="true"`.
+- Corrected the `keyhook.rs` comment asserting the signed installer was "not
+  needed anymore", and `SETUP.md`, which still described the keyboard hook that
+  v0.10 replaced with `RegisterHotKey`.
+- Screenshots (`Pictures\TrontSnap`) and settings (`HKCU\Software\TrontSnap`)
+  are shared, so switching between builds loses nothing.
+
 ## v0.13.2
 
 - **Readability guarantee** (ported from TrontEQ/SpaceView): APCA contrast plus
