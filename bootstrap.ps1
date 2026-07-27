@@ -109,22 +109,30 @@ $deadline = (Get-Date).AddSeconds(6)
 while ((Get-Process trontsnap -ErrorAction SilentlyContinue) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 200 }
 if (Get-Process trontsnap -ErrorAction SilentlyContinue) { Log "WARN: a trontsnap.exe is still running; the copy below may fail" }
 
-# --- 3b. remove the PORTABLE install --------------------------------------------
+# --- 3b. remove the PORTABLE EXE (and only the exe) ------------------------------
 # The portable exe lives in %LOCALAPPDATA%\TrontSnap and is what the old Run key
 # pointed at. Leaving it behind means two TrontSnaps racing for the same hotkey
 # registration (first to register wins, loser is silently dead), so it goes.
+#
+# DELETE THE FILE, NOT THE FOLDER. That same folder is also the THUMBNAIL CACHE:
+# thumbs.rs resolves it via dirs::cache_dir(), i.e. %LOCALAPPDATA%\TrontSnap\thumbs.
+# Wiping the directory would silently throw away every cached thumbnail (~17.6k
+# screenshots here) and force a full re-decode on the next gallery scroll. Doing
+# exactly that is how this was found.
+#
 # Screenshots live in Pictures\TrontSnap and settings in HKCU; neither is touched.
-if (Test-Path $PortableDir) {
+$portableExe = Join-Path $PortableDir 'trontsnap.exe'
+if (Test-Path $portableExe) {
     $keep = Join-Path $PortableDir 'trontsnap.log'
     if (Test-Path $keep) { Copy-Item $keep (Join-Path $dataDir 'portable-last.log') -Force }
-    Remove-Item $PortableDir -Recurse -Force -ErrorAction SilentlyContinue
-    if (Test-Path $PortableDir) {
-        Log "WARN: could not fully remove $PortableDir (file in use?); delete it by hand"
+    Remove-Item $portableExe -Force -ErrorAction SilentlyContinue
+    if (Test-Path $portableExe) {
+        Log "WARN: could not remove $portableExe (still running?); delete it by hand"
     } else {
-        Log "removed portable install -> $PortableDir"
+        Log "removed portable exe -> $portableExe (thumbnail cache left intact)"
     }
 } else {
-    Log "portable install: none at $PortableDir (nothing to clean up)"
+    Log "portable exe: none at $portableExe (nothing to clean up)"
 }
 
 # --- 4. install into Program Files ----------------------------------------------
