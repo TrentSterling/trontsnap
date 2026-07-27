@@ -35,6 +35,10 @@ exit /b
 :admin
 REM elevated branch: install only, do NOT launch (the Medium window above does that).
 REM %2 carries the caller's real %LOCALAPPDATA% so the portable cleanup targets the
-REM right profile even if UAC consent landed on a different admin account.
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0bootstrap.ps1" -PortableDir "%~2\TrontSnap"
+REM right profile even if UAC consent landed on a different admin account. It is empty
+REM when this file is run directly from an already-elevated shell, so fall back to this
+REM process's own value rather than resolving to a bare "\TrontSnap".
+set "PORTABLE=%~2"
+if "%PORTABLE%"=="" set "PORTABLE=%LOCALAPPDATA%"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0bootstrap.ps1" -PortableDir "%PORTABLE%\TrontSnap"
 exit /b
