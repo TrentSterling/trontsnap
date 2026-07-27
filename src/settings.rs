@@ -68,12 +68,31 @@ pub enum HotkeyAction {
 // MOD_SHIFT=0x4, MOD_WIN=0x8) WITHOUT MOD_NOREPEAT: keyhook::register_all() ORs
 // that in itself at RegisterHotKey time. VK_SNAPSHOT (0x2C) is PrintScreen for all
 // three defaults, matching the original fixed bindings.
-static HOTKEY_FULL_MODS: AtomicU32 = AtomicU32::new(0x0000);
-static HOTKEY_FULL_VK: AtomicU32 = AtomicU32::new(0x2C);
-static HOTKEY_REGION_MODS: AtomicU32 = AtomicU32::new(0x0002);
-static HOTKEY_REGION_VK: AtomicU32 = AtomicU32::new(0x2C);
-static HOTKEY_RECORD_MODS: AtomicU32 = AtomicU32::new(0x0002 | 0x0004);
-static HOTKEY_RECORD_VK: AtomicU32 = AtomicU32::new(0x2C);
+/// Default modifiers for Fullscreen, and the one place the two shipping builds
+/// differ in behaviour.
+///
+/// A MODIFIER-LESS bind registered by a Medium-integrity process is not
+/// delivered while an ELEVATED window has focus; combos with modifiers are
+/// (A/B tested 2026-07-23, reconfirmed against Task Manager 2026-07-26). So the
+/// portable build, which cannot be granted uiAccess, would ship with a
+/// Fullscreen key that silently dies over Task Manager and elevated terminals.
+///
+/// - PORTABLE  -> MOD_ALT: Alt+PrtSc, which survives elevated windows.
+/// - INSTALLED -> 0x0000: bare PrtSc, which uiAccess makes reliable everywhere.
+///
+/// Region and Record already carry modifiers, so they are identical either way.
+pub const DEFAULT_FULL_MODS: u32 = if cfg!(feature = "uiaccess") { 0x0000 } else { 0x0001 };
+pub const DEFAULT_REGION_MODS: u32 = 0x0002;
+pub const DEFAULT_RECORD_MODS: u32 = 0x0002 | 0x0004;
+/// VK_SNAPSHOT. All three defaults sit on PrintScreen.
+pub const DEFAULT_HOTKEY_VK: u32 = 0x2C;
+
+static HOTKEY_FULL_MODS: AtomicU32 = AtomicU32::new(DEFAULT_FULL_MODS);
+static HOTKEY_FULL_VK: AtomicU32 = AtomicU32::new(DEFAULT_HOTKEY_VK);
+static HOTKEY_REGION_MODS: AtomicU32 = AtomicU32::new(DEFAULT_REGION_MODS);
+static HOTKEY_REGION_VK: AtomicU32 = AtomicU32::new(DEFAULT_HOTKEY_VK);
+static HOTKEY_RECORD_MODS: AtomicU32 = AtomicU32::new(DEFAULT_RECORD_MODS);
+static HOTKEY_RECORD_VK: AtomicU32 = AtomicU32::new(DEFAULT_HOTKEY_VK);
 
 // Persisted theme selection: a name ("Cyan" = the hardcoded default built-in,
 // a premade palette name, "Custom" for a picked accent, or "Random <flavor>")
@@ -273,13 +292,14 @@ pub fn set_hotkey(action: HotkeyAction, mods: u32, vk: u32) {
     persist_u32(vk_value, vk);
 }
 
-/// Restore all three hotkeys to their compiled-in defaults (PrintScreen /
-/// Ctrl+PrintScreen / Ctrl+Shift+PrintScreen) and persist. Caller still needs to
-/// call keyhook::reload() to make the OS-level rebind take effect.
+/// Restore all three hotkeys to their compiled-in defaults and persist. Caller
+/// still needs to call keyhook::reload() to make the OS-level rebind take
+/// effect. Fullscreen resets to Alt+PrtSc on the portable build and bare PrtSc
+/// on the installed one (see DEFAULT_FULL_MODS).
 pub fn reset_hotkeys() {
-    set_hotkey(HotkeyAction::Full, 0x0000, 0x2C);
-    set_hotkey(HotkeyAction::Region, 0x0002, 0x2C);
-    set_hotkey(HotkeyAction::Record, 0x0002 | 0x0004, 0x2C);
+    set_hotkey(HotkeyAction::Full, DEFAULT_FULL_MODS, DEFAULT_HOTKEY_VK);
+    set_hotkey(HotkeyAction::Region, DEFAULT_REGION_MODS, DEFAULT_HOTKEY_VK);
+    set_hotkey(HotkeyAction::Record, DEFAULT_RECORD_MODS, DEFAULT_HOTKEY_VK);
 }
 
 fn persist_u32(value: &str, v: u32) {

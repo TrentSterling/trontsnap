@@ -5,12 +5,22 @@
 // opens Snipping Tool" shell feature, which owns that binding by default. The
 // fix is the per-user, no-admin registry flag `PrintScreenKeyForSnippingEnabled`
 // (see printscreen.rs), which frees the key so our registration actually wins
-// it. Once that's set, RegisterHotKey is rock solid and — critically — it is
-// NEVER UIPI-blocked, so a plain Medium-integrity, unsigned, portable exe
-// receives it even while an elevated window (TrontEQ, Task Manager, an
-// elevated terminal) has focus. That's the whole reason the previous
-// WH_KEYBOARD_LL hook + uiAccess manifest + signed installer existed; none of
-// it is needed anymore.
+// it. Once that's set, RegisterHotKey is rock solid and needs no keyboard hook.
+//
+// CORRECTION (2026-07-26). This comment used to claim RegisterHotKey is "NEVER
+// UIPI-blocked", so the uiAccess manifest and signed installer were "not needed
+// anymore". That is half right, and the wrong half cost real debugging twice:
+//
+//   - Combos WITH modifiers (Ctrl+PrtSc, Ctrl+Shift+PrtSc) are delivered to a
+//     Medium-integrity process even while an ELEVATED window has focus. True.
+//   - MODIFIER-LESS binds (bare PrtSc) are NOT. A/B tested on this machine
+//     2026-07-23 (bare PrtSc and bare F9 dead over an elevated window,
+//     Ctrl+Alt+F9 fine), reconfirmed 2026-07-26 against Task Manager.
+//
+// Hence two shipping builds. The portable one defaults Fullscreen to Alt+PrtSc
+// so it works everywhere unsigned; the installed one is signed into Program
+// Files with uiAccess=true, which bypasses UIPI and makes bare PrtSc reliable.
+// See settings::DEFAULT_FULL_MODS and build.rs.
 //
 // THREADING: RegisterHotKey posts WM_HOTKEY to the thread that registered it
 // (hwnd = NULL), so we spawn one dedicated thread that registers all three

@@ -1,6 +1,6 @@
 ﻿[package]
 name = "trontsnap"
-version = "0.13.3"
+version = "0.14.0"
 edition = "2021"
 description = "Fast screenshot tool: global-hotkey capture (full + freeze-frame region) straight to clipboard, plus a lazy-loading gallery over your whole screenshot history"
 
@@ -47,8 +47,27 @@ windows = { version = "0.56", features = [
 ] }
 
 [build-dependencies]
-# Embeds the distinct rainbow icon into the exe.
+# Embeds the distinct rainbow icon + a Win32 manifest (asInvoker; uiAccess only
+# under the `uiaccess` feature, which the installed build turns on).
 winresource = "0.1"
+
+[features]
+# uiAccess=true so our RegisterHotKey binds are delivered even while an ELEVATED
+# window (Task Manager, an elevated terminal) has focus, WITHOUT the process
+# itself being elevated — so it stays Medium integrity and drag-out keeps
+# working. Opt-in, because Windows only GRANTS uiAccess to an exe that is
+# Authenticode-signed by a trusted-root cert AND lives in a secure location
+# (%ProgramFiles%), and a uiAccess exe cannot be launched via bare CreateProcess
+# (plain `cargo run` would fail with ERROR_ELEVATION_REQUIRED 740).
+#
+# TWO SHIPPING BUILDS, deliberately (decided 2026-07-26):
+#   default             -> the PORTABLE download. No install, no admin, no
+#                          signing, delete-to-uninstall. Defaults Fullscreen to
+#                          Alt+PrtSc so it behaves over elevated windows.
+#   --features uiaccess -> the INSTALLED build (bootstrap.ps1 -> Program Files).
+#                          Defaults Fullscreen to bare PrtSc, which uiAccess
+#                          makes reliable everywhere.
+uiaccess = []
 
 [profile.release]
 opt-level = 3        # speed over size: this app decodes a lot of images
