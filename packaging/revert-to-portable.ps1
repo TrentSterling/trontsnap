@@ -90,7 +90,14 @@ Log "stopped running instances"
 New-Item -ItemType Directory -Force -Path $PortableDir | Out-Null
 $destPortable = Join-Path $PortableDir 'trontsnap.exe'
 Copy-Item $srcPortable $destPortable -Force
-if (-not (Test-Path $destPortable)) { Log "ERROR: could not write $destPortable"; exit 1 }
+# Hash, not Test-Path. On a re-run the destination already exists, so Test-Path
+# passes even when Copy-Item failed (locked file, access denied), and step 4 would
+# then delete the working Program Files install while leaving a STALE or partial
+# portable exe behind as the only remaining binary. Same trap bootstrap.ps1 had.
+if ((Get-FileHash $srcPortable).Hash -ne (Get-FileHash $destPortable -ErrorAction SilentlyContinue).Hash) {
+    Log "ERROR: $destPortable does not match the source after copy; leaving the install alone"
+    exit 1
+}
 Log "restored portable -> $destPortable"
 
 # --- 4. remove the Program Files install ----------------------------------------

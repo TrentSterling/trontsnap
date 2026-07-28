@@ -42,5 +42,14 @@ exit /b
 :admin
 set "PORTABLE=%~2"
 if "%PORTABLE%"=="" set "PORTABLE=%LOCALAPPDATA%"
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0revert-to-portable.ps1" -PortableDir "%PORTABLE%\TrontSnap"
-exit /b
+set "REVERT=%~dp0revert-to-portable.ps1"
+if not exist "%REVERT%" set "REVERT=%~dp0..\packaging\revert-to-portable.ps1"
+if not exist "%REVERT%" (
+    echo ERROR: cannot find revert-to-portable.ps1.
+    exit /b 1
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%REVERT%" -PortableDir "%PORTABLE%\TrontSnap"
+REM Propagate the real exit code. A bare `exit /b` here discarded it, so the
+REM non-elevated half saw success no matter what the script did, and printed the
+REM "back on the portable build" banner over a failed revert.
+exit /b %errorlevel%
