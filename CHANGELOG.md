@@ -1,3 +1,25 @@
+## v0.20.0
+
+Multi-select lands in the gallery, which finally gives ~18,800 shots a cleanup
+path that isn't one right-click at a time.
+
+- **Ctrl+click** toggles a shot, **Shift+click** extends from the anchor,
+  **Ctrl+A** selects everything the current filter/search shows, **Esc**
+  clears, **Delete** moves the visible selection to the Recycle Bin. Anything
+  over 5 gets a confirm dialog with the count in the button; everything is
+  recoverable from the Bin regardless.
+- Selection is keyed by path, not index, so it survives rescans, watcher
+  inserts and refilters; ops only ever touch the selection's intersection with
+  what is on screen, so a hidden-but-selected shot can never be deleted.
+- The context menu on a selected cell grows "Copy N paths" and "Delete N
+  (Recycle Bin)"; the single-item menu is unchanged. Bulk deletes go through
+  one trash call: one undo unit in the Bin instead of N.
+- Selected cells hold the hover treatment (accent wash plus a heavier ring),
+  and the chrome shows a live "N selected" count with the shortcuts on hover.
+- Plain click still copies the shot to the clipboard; the flagship gesture
+  does not change. Ctrl+A is gated off text focus, so select-all inside the
+  search box still selects text, not shots.
+
 ## v0.19.0
 
 The gallery is searchable. ~18,800 shots and the only way to find one was to

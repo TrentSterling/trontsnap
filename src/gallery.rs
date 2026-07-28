@@ -5,6 +5,7 @@
 // visible cell requests its thumbnail on demand — so 17k shots scroll smoothly and
 // nothing is decoded until you scroll to it.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Local};
@@ -42,7 +43,19 @@ enum Action {
     Delete(PathBuf),
     Drag(PathBuf),
     ExportGif(PathBuf),
+    // Multi-select: toggle one (Ctrl+click), extend from the anchor
+    // (Shift+click), and the context-menu bulk ops, which resolve the CURRENT
+    // visible selection inside apply() rather than snapshotting it per cell.
+    ToggleSelect(PathBuf),
+    RangeSelect(PathBuf),
+    CopySelectedPaths,
+    DeleteSelected,
 }
+
+/// Bulk deletes larger than this get a confirm dialog first. Recycle Bin makes
+/// everything recoverable anyway; the dialog exists so a stray Delete over a
+/// "select all" filter can't silently sweep thousands of shots.
+const CONFIRM_THRESHOLD: usize = 5;
 
 pub struct Gallery {
     shots: Vec<Shot>,
@@ -52,6 +65,15 @@ pub struct Gallery {
     // Search box text (chrome row, next to the chips). Matches filename, parent
     // folder name, and the capture date; see shot_haystack. Session state only.
     query: String,
+    // Multi-select, keyed by PATH rather than index so it survives rescans,
+    // watcher inserts and refilters without ever pointing at the wrong shot.
+    // Every op acts on the selection's intersection with the visible
+    // (filtered) view; hidden-but-selected shots are never touched.
+    selected: HashSet<PathBuf>,
+    // Shift-click extends from the most recent Ctrl/plain selection here.
+    sel_anchor: Option<PathBuf>,
+    // Bulk delete parked while its confirm dialog is up.
+    confirm_delete: Option<Vec<PathBuf>>,
     scan_rx: Option<Receiver<(u64, Vec<Shot>)>>,
     scan_gen: u64,
     displayed_gen: u64,
@@ -72,6 +94,9 @@ impl Gallery {
             thumbs: ThumbCache::new(),
             filter: Filter::All,
             query: String::new(),
+            selected: HashSet::new(),
+            sel_anchor: None,
+            confirm_delete: None,
             scan_rx: None,
             scan_gen: 0,
             displayed_gen: 0,
@@ -218,6 +243,54 @@ impl Gallery {
         }
     }
 
+    /// The selection restricted to what the current filter/search shows, in
+    /// timeline order. This is the set every bulk op works on.
+    fn visible_selected(&self) -> Vec<PathBuf> {
+        self.filtered
+            .iter()
+            .map(|&i| &self.shots[i])
+            .filter(|s| self.selected.contains(&s.path))
+            .map(|s| s.path.clone())
+            .collect()
+    }
+
+    /// Bulk delete entry point: small batches go straight to the bin, large
+    /// ones park in `confirm_delete` for the dialog.
+    fn request_delete(&mut self, paths: Vec<PathBuf>) {
+        if paths.is_empty() {
+            return;
+        }
+        if paths.len() > CONFIRM_THRESHOLD {
+            self.confirm_delete = Some(paths);
+        } else {
+            self.delete_many(paths);
+        }
+    }
+
+    /// Recycle-Bin the batch in ONE trash op (one undoable unit, and hugely
+    /// faster than per-file), then drop the shots via retain: a per-path
+    /// `position` scan would be O(selection x shots), which at select-all
+    /// scale is 300M+ compares.
+    fn delete_many(&mut self, paths: Vec<PathBuf>) {
+        let n = paths.len();
+        match trash::delete_all(&paths) {
+            Ok(()) => {
+                let del: HashSet<&PathBuf> = paths.iter().collect();
+                self.shots.retain(|s| !del.contains(&s.path));
+                for p in &paths {
+                    self.thumbs.forget(p);
+                    self.selected.remove(p);
+                }
+                self.rebuild_filtered();
+                self.set_status(format!("Moved {n} to Recycle Bin"));
+            }
+            Err(e) => {
+                eprintln!("trontsnap: bulk delete failed: {e:#}");
+                self.set_status("Delete failed (see log)");
+            }
+        }
+    }
+
     /// Filter chips + shot count + spinner + source legend + status message. Drawn
     /// inline in the app's single top chrome row (gallery tab only) instead of a
     /// separate header strip inside the gallery body — see `App::title_bar`.
@@ -281,6 +354,20 @@ impl Gallery {
             if self.scanning {
                 ui.spinner();
             }
+            // Visible-selection count (18k hash probes is well under a
+            // millisecond; not worth caching against every mutation site).
+            let sel_n = self
+                .filtered
+                .iter()
+                .filter(|&&i| self.selected.contains(&self.shots[i].path))
+                .count();
+            if sel_n > 0 {
+                ui.separator();
+                ui.colored_label(accent(), format!("{sel_n} selected")).on_hover_text(
+                    "Ctrl+click toggles, Shift+click extends, Ctrl+A selects all shown, \
+                     Delete removes (Recycle Bin), Esc clears.",
+                );
+            }
             ui.separator();
             // Legend: explains the little source dot on the corner of every
             // thumbnail (cyan = shot by TrontSnap, amber = imported ShareX archive).
@@ -318,6 +405,70 @@ impl Gallery {
             }
         }
 
+        // Selection keyboard ops, gated off text focus so Ctrl+A in the search
+        // box selects text there, not 18k shots (and the Esc that drops the
+        // box's focus doesn't also nuke a selection). Held while the confirm
+        // dialog is up; that has its own Esc handling below.
+        if !ctx.wants_keyboard_input() && self.confirm_delete.is_none() {
+            let (del, all, esc) = ctx.input(|i| {
+                (
+                    i.key_pressed(egui::Key::Delete),
+                    i.modifiers.command && i.key_pressed(egui::Key::A),
+                    i.key_pressed(egui::Key::Escape),
+                )
+            });
+            if all {
+                for &i in &self.filtered {
+                    self.selected.insert(self.shots[i].path.clone());
+                }
+            }
+            if esc && !self.selected.is_empty() {
+                self.selected.clear();
+                self.sel_anchor = None;
+            }
+            if del {
+                let vis = self.visible_selected();
+                self.request_delete(vis);
+            }
+        }
+
+        // The bulk-delete confirm. Center-anchored (immovable is FINE for a
+        // modal; the anchor lesson is about tool panels), Esc cancels, and the
+        // count stays in the button so there is no "OK to what?" moment.
+        // Rendered before the grid so it survives the empty-state early return.
+        if self.confirm_delete.is_some() {
+            let n = self.confirm_delete.as_ref().map(Vec::len).unwrap_or(0);
+            let mut decision: Option<bool> = None;
+            egui::Window::new("Delete shots")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                .show(ctx, |ui| {
+                    ui.label(format!("Move {n} shots to the Recycle Bin?"));
+                    ui.add_space(10.0);
+                    ui.horizontal(|ui| {
+                        if ui.button(format!("Delete {n}")).clicked() {
+                            decision = Some(true);
+                        }
+                        if ui.button("Cancel").clicked() {
+                            decision = Some(false);
+                        }
+                    });
+                });
+            if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                decision = Some(false);
+            }
+            match decision {
+                Some(true) => {
+                    if let Some(paths) = self.confirm_delete.take() {
+                        self.delete_many(paths);
+                    }
+                }
+                Some(false) => self.confirm_delete = None,
+                None => {}
+            }
+        }
+
         // Grid. Thin, right-anchored (egui's default), themed scrollbar — set it
         // locally so this is the source of truth regardless of the global style.
         let scroll_style = egui::style::ScrollStyle {
@@ -352,9 +503,16 @@ impl Gallery {
             return;
         }
 
+        // Count once per frame, not per cell: the context menu labels need it.
+        let sel_count = self
+            .filtered
+            .iter()
+            .filter(|&&i| self.selected.contains(&self.shots[i].path))
+            .count();
         let shots = &self.shots;
         let filtered = &self.filtered;
         let thumbs = &mut self.thumbs;
+        let selected_set = &self.selected;
         let mut action: Option<Action> = None;
 
         egui::ScrollArea::vertical()
@@ -370,18 +528,19 @@ impl Gallery {
                                 break;
                             }
                             let shot = &shots[filtered[fi]];
-                            draw_cell(ui, shot, thumbs, &mut action);
+                            let is_sel = selected_set.contains(&shot.path);
+                            draw_cell(ui, shot, thumbs, is_sel, sel_count, &mut action);
                         }
                     });
                 }
             });
 
         if let Some(action) = action {
-            self.apply(action, hwnd);
+            self.apply(action, hwnd, ctx);
         }
     }
 
-    fn apply(&mut self, action: Action, hwnd: Option<isize>) {
+    fn apply(&mut self, action: Action, hwnd: Option<isize>, ctx: &egui::Context) {
         match action {
             Action::Copy(path) => {
                 let p = path.clone();
@@ -403,9 +562,8 @@ impl Gallery {
                 });
                 self.set_status("Copied");
             }
-            Action::CopyPath(_path) => {
-                // The actual clipboard write happens right at the menu click (needs
-                // `ui.ctx()`, not available here) — this just surfaces the toast.
+            Action::CopyPath(path) => {
+                ctx.copy_text(path.display().to_string());
                 self.set_status("Path copied");
             }
             Action::Open(path) => {
@@ -441,11 +599,57 @@ impl Gallery {
                     }
                 });
             }
+            Action::ToggleSelect(path) => {
+                if !self.selected.insert(path.clone()) {
+                    self.selected.remove(&path);
+                }
+                self.sel_anchor = Some(path);
+            }
+            Action::RangeSelect(path) => {
+                // Extend from the anchor within the CURRENT view, both ends
+                // resolved against filtered order. If the anchor is filtered
+                // out (or there never was one), Shift+click degrades to a
+                // plain select-and-anchor instead of guessing a range.
+                let anchor = self.sel_anchor.clone().unwrap_or_else(|| path.clone());
+                let a = self.filtered.iter().position(|&i| self.shots[i].path == anchor);
+                let b = self.filtered.iter().position(|&i| self.shots[i].path == path);
+                match (a, b) {
+                    (Some(a), Some(b)) => {
+                        let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+                        for &fi in &self.filtered[lo..=hi] {
+                            self.selected.insert(self.shots[fi].path.clone());
+                        }
+                    }
+                    _ => {
+                        self.selected.insert(path.clone());
+                        self.sel_anchor = Some(path);
+                    }
+                }
+            }
+            Action::CopySelectedPaths => {
+                let vis = self.visible_selected();
+                let n = vis.len();
+                ctx.copy_text(
+                    vis.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join("\n"),
+                );
+                self.set_status(format!("Copied {n} paths"));
+            }
+            Action::DeleteSelected => {
+                let vis = self.visible_selected();
+                self.request_delete(vis);
+            }
         }
     }
 }
 
-fn draw_cell(ui: &mut egui::Ui, shot: &Shot, thumbs: &mut ThumbCache, action: &mut Option<Action>) {
+fn draw_cell(
+    ui: &mut egui::Ui,
+    shot: &Shot,
+    thumbs: &mut ThumbCache,
+    selected: bool,
+    sel_count: usize,
+    action: &mut Option<Action>,
+) {
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(CELL, CELL), Sense::click_and_drag());
     let painter = ui.painter();
     // Raised card: theme fill + a hairline border so tiles read as surfaces.
@@ -515,6 +719,19 @@ fn draw_cell(ui: &mut egui::Ui, shot: &Shot, thumbs: &mut ThumbCache, action: &m
     let color = if shot.source == Source::TrontSnap { accent() } else { amber() };
     painter.circle_filled(rect.left_bottom() + egui::vec2(10.0, -10.0), 3.5, color);
 
+    // Selected: the hover treatment, held, in the live accent (a wash plus a
+    // heavier ring), so a selection reads at a glance across the grid. Hover
+    // still layers its glow on top.
+    if selected {
+        let ac = accent();
+        painter.rect_filled(
+            rect,
+            6.0,
+            Color32::from_rgba_unmultiplied(ac.r(), ac.g(), ac.b(), 26),
+        );
+        painter.rect_stroke(rect, 6.0, Stroke::new(2.0, ac));
+    }
+
     if resp.hovered() {
         // Subtle lift: a faint accent wash + soft outer glow under the crisp
         // inner outline, so hover reads as "raised" without shouting.
@@ -535,7 +752,16 @@ fn draw_cell(ui: &mut egui::Ui, shot: &Shot, thumbs: &mut ThumbCache, action: &m
     } else if resp.double_clicked() {
         *action = Some(Action::Open(shot.path.clone()));
     } else if resp.clicked() {
-        *action = Some(Action::Copy(shot.path.clone()));
+        // Plain click stays copy-to-clipboard (the flagship gesture); the
+        // modifier clicks are the selection model.
+        let mods = ui.input(|i| i.modifiers);
+        *action = Some(if mods.command {
+            Action::ToggleSelect(shot.path.clone())
+        } else if mods.shift {
+            Action::RangeSelect(shot.path.clone())
+        } else {
+            Action::Copy(shot.path.clone())
+        });
     }
 
     resp.context_menu(|ui| {
@@ -544,9 +770,6 @@ fn draw_cell(ui: &mut egui::Ui, shot: &Shot, thumbs: &mut ThumbCache, action: &m
             ui.close_menu();
         }
         if ui.button("Copy path").clicked() {
-            // Written straight to the OS clipboard here (needs `ui.ctx()`); the
-            // Action only drives the status toast.
-            ui.ctx().copy_text(shot.path.display().to_string());
             *action = Some(Action::CopyPath(shot.path.clone()));
             ui.close_menu();
         }
@@ -566,6 +789,20 @@ fn draw_cell(ui: &mut egui::Ui, shot: &Shot, thumbs: &mut ThumbCache, action: &m
         if ui.button("Delete (Recycle Bin)").clicked() {
             *action = Some(Action::Delete(shot.path.clone()));
             ui.close_menu();
+        }
+        // Bulk section, only when this cell is part of a multi-selection, so
+        // the everyday single-item menu stays uncluttered. Both resolve the
+        // live visible selection inside apply().
+        if selected && sel_count > 1 {
+            ui.separator();
+            if ui.button(format!("Copy {sel_count} paths")).clicked() {
+                *action = Some(Action::CopySelectedPaths);
+                ui.close_menu();
+            }
+            if ui.button(format!("Delete {sel_count} (Recycle Bin)")).clicked() {
+                *action = Some(Action::DeleteSelected);
+                ui.close_menu();
+            }
         }
     });
 }
