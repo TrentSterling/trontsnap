@@ -217,6 +217,7 @@ impl App {
         // before. See hotkeyd/src/main.rs and keyhook.rs.
         let hotkeys = if start_broker() {
             eprintln!("trontsnap: hotkeys owned by trontsnap-hotkeys.exe (uiAccess broker)");
+            spawn_broker_watchdog();
             None
         } else {
             match setup_hotkeys() {
@@ -1571,7 +1572,12 @@ fn start_broker() -> bool {
         return false;
     }
     // uiAccess launches go through AppInfo, so allow a beat for it to come up.
-    for _ in 0..20 {
+    // This blocks window creation, so keep it short: a dev build (broker present
+    // in target\release but unsigned, so Windows refuses it uiAccess) pays this
+    // in full on EVERY launch, with no window and no tray icon on screen while it
+    // waits. The watchdog picks up a late arrival anyway, so there is no need to
+    // wait long enough to catch a slow one here.
+    for _ in 0..12 {
         std::thread::sleep(Duration::from_millis(100));
         if broker_alive() {
             return true;
@@ -1581,13 +1587,51 @@ fn start_broker() -> bool {
     false
 }
 
-/// True when something is listening on the broker's beacon port.
+/// What a real broker writes on connect. Anything else holding the port is not
+/// the broker.
+const BEACON_HELLO: &[u8] = b"trontsnap-hotkeyd";
+
+/// True when the BROKER is listening on the beacon port. Requires it to identify
+/// itself, because "something is listening" is not the same claim: an unrelated
+/// process holding this port would otherwise convince us to hand over our
+/// hotkeys and never register any, leaving PrtSc dead with no explanation. The
+/// TrontEQ port collision earlier tonight was the benign version of exactly that.
 fn broker_alive() -> bool {
-    std::net::TcpStream::connect_timeout(
+    let Ok(mut s) = std::net::TcpStream::connect_timeout(
         &std::net::SocketAddr::from((Ipv4Addr::LOCALHOST, BROKER_PORT)),
         Duration::from_millis(150),
-    )
-    .is_ok()
+    ) else {
+        return false;
+    };
+    let _ = s.set_read_timeout(Some(Duration::from_millis(250)));
+    let mut buf = [0u8; 32];
+    let n = std::io::Read::read(&mut s, &mut buf).unwrap_or(0);
+    buf[..n].starts_with(BEACON_HELLO)
+}
+
+/// Watch the broker for the life of the process and take the hotkeys back if it
+/// dies.
+///
+/// Without this, broker death is permanent and silent: the ownership decision is
+/// made once in `App::new`, so a broker killed from Task Manager (precisely where
+/// someone debugging dead hotkeys would look), retired by its own watchdog, or
+/// taskkilled by a reinstall leaves the UI with no hotkeys and no way back short
+/// of restarting it.
+///
+/// Restarting it is exactly what this does, rather than registering locally:
+/// `KeyboardHook::install` stores into a `OnceLock` and hard-errors on a second
+/// call, so local registration is genuinely once-per-process. Relaunching the
+/// broker is both simpler and preserves the behaviour that made it worth having.
+fn spawn_broker_watchdog() {
+    std::thread::spawn(|| loop {
+        std::thread::sleep(Duration::from_secs(5));
+        if broker_alive() {
+            continue;
+        }
+        let Some(p) = broker_path() else { return };
+        eprintln!("trontsnap: hotkey broker went away; restarting it");
+        crate::shellexec::run(&p.to_string_lossy(), "");
+    });
 }
 
 fn do_full() {

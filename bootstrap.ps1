@@ -124,15 +124,101 @@ $deadline = (Get-Date).AddSeconds(6)
 while ((Get-Process trontsnap -ErrorAction SilentlyContinue) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 200 }
 if (Get-Process trontsnap -ErrorAction SilentlyContinue) { Log "WARN: a trontsnap.exe is still running; the copy below may fail" }
 
-# --- 3b. remove the PORTABLE EXE (and only the exe) ------------------------------
-# The portable exe lives in %LOCALAPPDATA%\TrontSnap and is what the old Run key
-# pointed at. Leaving it behind means two TrontSnaps racing for the same hotkey
-# registration (first to register wins, loser is silently dead), so it goes.
+# NOTE: removing the portable exe happens LAST, in step 7, deliberately. It used
+# to happen here, before the install was proven, so any later failure (copy
+# refused, signtool missing, signature not Valid) left the machine with the
+# portable exe deleted, the Run key still aimed at it, and an unsigned Program
+# Files copy Windows would refuse to grant uiAccess. Nothing bootable, no way
+# back. Do not move it earlier.
+
+# --- 4. install BOTH binaries into Program Files ---------------------------------
+# The UI finds the broker by looking for it next to itself, so they must land in
+# the same directory.
+New-Item -ItemType Directory -Force -Path $installDir | Out-Null
+Copy-Item $srcBuilt $destExe -Force
+# Test-Path is NOT a copy verification: on a re-install the destination already
+# exists, so a failed copy (the running-exe case warned about above) still passes
+# it, and a STALE binary then gets signed and reported as freshly installed.
+# Compare content.
+if ((Get-FileHash $srcBuilt).Hash -ne (Get-FileHash $destExe -ErrorAction SilentlyContinue).Hash) {
+    Log "ERROR: $destExe does not match the source after copy (locked / access denied)"
+    exit 1
+}
+Log "installed -> $destExe ($((Get-Item $destExe).Length) bytes)"
+
+& (Join-Path $sys32 'taskkill.exe') /IM trontsnap-hotkeys.exe /F 2>&1 | Out-Null
+Start-Sleep -Milliseconds 300
+$destBroker = Join-Path $installDir 'trontsnap-hotkeys.exe'
+Copy-Item $srcBroker $destBroker -Force
+if ((Get-FileHash $srcBroker).Hash -ne (Get-FileHash $destBroker -ErrorAction SilentlyContinue).Hash) {
+    Log "ERROR: $destBroker does not match the source after copy (locked / access denied)"
+    exit 1
+}
+Log "installed -> $destBroker ($((Get-Item $destBroker).Length) bytes)"
+
+# --- 5. sign the installed exe (uiAccess is denied without a valid signature) -----
+$signtool = 'C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\signtool.exe'
+if (-not (Test-Path $signtool)) { $signtool = 'C:\Program Files (x86)\Windows Kits\10\bin\x64\signtool.exe' }
+if (-not (Test-Path $signtool)) {
+    $signtool = (Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin' -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
+                 Where-Object { $_.FullName -match '\\x64\\' } | Select-Object -First 1 -ExpandProperty FullName)
+}
+if (-not $signtool -or -not (Test-Path $signtool)) { Log "ERROR: signtool.exe not found (install the Windows SDK)"; exit 1 }
+# Only the BROKER strictly needs a signature (uiAccess is denied without one),
+# but sign both: a signed UI is one less SmartScreen prompt and costs nothing.
+# /tr + /td add a trusted TIMESTAMP. Without it, every installed binary stops
+# verifying the moment the signing cert expires (2027-04-17 for the current dev
+# cert), Windows silently denies the broker uiAccess, and bare PrtSc dies on an
+# install nobody touched. A timestamped signature stays valid past expiry.
+# The timestamp server is best-effort: offline machines still get a signature,
+# just one with an expiry date, so a failure here is logged rather than fatal.
+$signArgs = @('sign','/v','/fd','SHA256','/f',$pfx,'/p',$pfxPass,'/tr','http://timestamp.digicert.com','/td','SHA256')
+foreach ($target in @($destExe, $destBroker)) {
+    & $signtool @signArgs $target 2>&1 | ForEach-Object { Log "  $_" }
+    if ($LASTEXITCODE -ne 0) {
+        Log "  timestamping failed (offline?), retrying without a timestamp"
+        & $signtool sign /v /fd SHA256 /f $pfx /p $pfxPass $target 2>&1 | ForEach-Object { Log "  $_" }
+        if ($LASTEXITCODE -ne 0) { Log "ERROR: signtool failed for $target (exit $LASTEXITCODE)"; exit 1 }
+    }
+}
+# Gate on BOTH, not just the broker. An unsigned UI is not fatal to uiAccess but
+# it is a SmartScreen prompt and a sign that something went wrong above.
+foreach ($target in @($destBroker, $destExe)) {
+    $sig = Get-AuthenticodeSignature $target
+    Log "signature: $(Split-Path $target -Leaf) -> $($sig.Status)"
+    if ($sig.Status -ne 'Valid') { Log "ERROR: $target is not validly signed"; exit 1 }
+}
+
+# --- 6. autostart -> the installed exe (Run key; a Run/shell launch grants uiAccess) ---
 #
-# DELETE THE FILE, NOT THE FOLDER. That same folder is also the THUMBNAIL CACHE:
+# NEVER `New-Item -Path <existing key> -Force` HERE. On an EXISTING registry key
+# that does not mean "create if missing"; it RECREATES the key and destroys every
+# value in it. This script used to do exactly that to both keys below, which
+# silently wiped every other application's per-user autostart entry, and every
+# TrontSnap setting (theme, gradient, custom hotkey binds), on every single
+# install. Proven and repaired 2026-07-27. Create only when genuinely absent.
+$run = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+$cmd = "`"$destExe`" --startup"
+if (-not (Test-Path $run)) { New-Item -Path $run -Force | Out-Null }
+Set-ItemProperty -Path $run -Name 'TrontSnap' -Value $cmd
+$appKey = 'HKCU:\Software\TrontSnap'
+if (-not (Test-Path $appKey)) { New-Item -Path $appKey -Force | Out-Null }
+# -Force on New-ItemProperty is fine: it overwrites one VALUE, not the key.
+New-ItemProperty -Path $appKey -Name 'AutostartInit' -Value 1 -PropertyType DWord -Force | Out-Null
+Log "autostart -> $cmd"
+
+# --- 7. NOW remove the portable exe, once the install is proven good -------------
+# Everything above has succeeded: both binaries copied, the broker's signature
+# verified Valid, autostart repointed. Only now is it safe to take away the thing
+# the user would otherwise fall back to.
+#
+# Leaving it would mean two TrontSnaps racing for the same hotkey registration,
+# where the first to register wins and the loser is silently dead.
+#
+# DELETE THE FILE, NOT THE FOLDER. That folder is also the THUMBNAIL CACHE:
 # thumbs.rs resolves it via dirs::cache_dir(), i.e. %LOCALAPPDATA%\TrontSnap\thumbs.
-# Wiping the directory would silently throw away every cached thumbnail (~17.6k
-# screenshots here) and force a full re-decode on the next gallery scroll. Doing
+# Wiping the directory throws away every cached thumbnail (~17.6k screenshots on
+# this machine) and forces a full re-decode on the next gallery scroll. Doing
 # exactly that is how this was found.
 #
 # Screenshots live in Pictures\TrontSnap and settings in HKCU; neither is touched.
@@ -149,47 +235,5 @@ if (Test-Path $portableExe) {
 } else {
     Log "portable exe: none at $portableExe (nothing to clean up)"
 }
-
-# --- 4. install BOTH binaries into Program Files ---------------------------------
-# The UI finds the broker by looking for it next to itself, so they must land in
-# the same directory.
-New-Item -ItemType Directory -Force -Path $installDir | Out-Null
-Copy-Item $srcBuilt $destExe -Force
-if (-not (Test-Path $destExe)) { Log "ERROR: could not copy exe to $destExe (need admin / file locked)"; exit 1 }
-Log "installed -> $destExe ($((Get-Item $destExe).Length) bytes)"
-
-& (Join-Path $sys32 'taskkill.exe') /IM trontsnap-hotkeys.exe /F 2>&1 | Out-Null
-Start-Sleep -Milliseconds 300
-$destBroker = Join-Path $installDir 'trontsnap-hotkeys.exe'
-Copy-Item $srcBroker $destBroker -Force
-if (-not (Test-Path $destBroker)) { Log "ERROR: could not copy broker to $destBroker"; exit 1 }
-Log "installed -> $destBroker ($((Get-Item $destBroker).Length) bytes)"
-
-# --- 5. sign the installed exe (uiAccess is denied without a valid signature) -----
-$signtool = 'C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\signtool.exe'
-if (-not (Test-Path $signtool)) { $signtool = 'C:\Program Files (x86)\Windows Kits\10\bin\x64\signtool.exe' }
-if (-not (Test-Path $signtool)) {
-    $signtool = (Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin' -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
-                 Where-Object { $_.FullName -match '\\x64\\' } | Select-Object -First 1 -ExpandProperty FullName)
-}
-if (-not $signtool -or -not (Test-Path $signtool)) { Log "ERROR: signtool.exe not found (install the Windows SDK)"; exit 1 }
-# Only the BROKER strictly needs a signature (uiAccess is denied without one),
-# but sign both: a signed UI is one less SmartScreen prompt and costs nothing.
-& $signtool sign /v /fd SHA256 /f $pfx /p $pfxPass $destExe 2>&1 | ForEach-Object { Log "  $_" }
-& $signtool sign /v /fd SHA256 /f $pfx /p $pfxPass $destBroker 2>&1 | ForEach-Object { Log "  $_" }
-$sig = Get-AuthenticodeSignature $destBroker
-Log "broker signature: $($sig.Status)"
-if ($sig.Status -ne 'Valid') { Log "ERROR: broker is not validly signed -> Windows will deny it uiAccess"; exit 1 }
-Log "ui signature    : $((Get-AuthenticodeSignature $destExe).Status)"
-
-# --- 6. autostart -> the installed exe (Run key; a Run/shell launch grants uiAccess) ---
-$run = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
-$cmd = "`"$destExe`" --startup"
-New-Item -Path $run -Force | Out-Null
-Set-ItemProperty -Path $run -Name 'TrontSnap' -Value $cmd
-$appKey = 'HKCU:\Software\TrontSnap'
-New-Item -Path $appKey -Force | Out-Null
-New-ItemProperty -Path $appKey -Name 'AutostartInit' -Value 1 -PropertyType DWord -Force | Out-Null
-Log "autostart -> $cmd"
 
 Log "RESULT: installed + signed OK. Launch it at Medium ('Install/Launch TrontSnap.cmd') so uiAccess is granted."

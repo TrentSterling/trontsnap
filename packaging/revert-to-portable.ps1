@@ -42,10 +42,19 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 Log "== revert to portable @ $(Get-Date) =="
 
 # --- 1. the portable exe must exist BEFORE we tear anything down ----------------
-$srcPortable = Join-Path $root 'portable\trontsnap.exe'
-if (-not (Test-Path $srcPortable)) { $srcPortable = Join-Path $root 'trontsnap-portable.exe' }
-if (-not (Test-Path $srcPortable)) {
-    Log "ERROR: no portable exe found next to this script (expected portable\trontsnap.exe)."
+# Search order covers the shipped bundle, a loose drop, and a plain repo checkout.
+# The repo fallback matters: without it this script could never run from a clone,
+# which made the only documented recovery path a guaranteed no-op.
+$candidates = @(
+    (Join-Path $root 'portable\trontsnap.exe'),
+    (Join-Path $root 'trontsnap-portable.exe'),
+    (Join-Path $root '..\target\release\trontsnap.exe'),
+    (Join-Path $root '..\dist\portable\trontsnap.exe')
+)
+$srcPortable = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $srcPortable) {
+    Log "ERROR: no portable exe found. Looked in:"
+    $candidates | ForEach-Object { Log "         $_" }
     Log "       Build one with: cargo build --release"
     exit 1
 }
@@ -57,11 +66,22 @@ if ($m -match 'uiAccess="true"') {
 }
 Log "portable source: $srcPortable (uiAccess=false confirmed)"
 
-# --- 2. stop the running (High integrity) instance ------------------------------
+# --- 2. stop BOTH processes -------------------------------------------------------
+# The broker matters as much as the UI here. It is a uiAccess process holding the
+# global hotkey registrations; if it survives, it keeps them, and the portable
+# build relaunched at the end loses the race and comes up with silently dead
+# hotkeys. It also locks its own exe, so step 4's directory removal would leave a
+# half-deleted Program Files install behind.
 & (Join-Path $sys32 'taskkill.exe') /IM trontsnap.exe /F 2>&1 | Out-Null
+& (Join-Path $sys32 'taskkill.exe') /IM trontsnap-hotkeys.exe /F 2>&1 | Out-Null
 $deadline = (Get-Date).AddSeconds(8)
-while ((Get-Process trontsnap -ErrorAction SilentlyContinue) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 200 }
-if (Get-Process trontsnap -ErrorAction SilentlyContinue) { Log "WARN: trontsnap.exe still running" } else { Log "stopped running instance" }
+while (((Get-Process trontsnap -ErrorAction SilentlyContinue) -or
+        (Get-Process trontsnap-hotkeys -ErrorAction SilentlyContinue)) -and (Get-Date) -lt $deadline) {
+    Start-Sleep -Milliseconds 200
+}
+if (Get-Process trontsnap -ErrorAction SilentlyContinue) { Log "WARN: trontsnap.exe still running" }
+if (Get-Process trontsnap-hotkeys -ErrorAction SilentlyContinue) { Log "WARN: trontsnap-hotkeys.exe still running (hotkeys may stay dead)" }
+Log "stopped running instances"
 
 # --- 3. put the portable exe back ------------------------------------------------
 # Only the exe is written. The folder is ALSO the thumbnail cache

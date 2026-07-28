@@ -63,6 +63,12 @@ const UI_PORT: u16 = 48761;
 ///   48771 this broker
 pub const BROKER_PORT: u16 = 48771;
 
+/// Written to anyone who connects to the beacon. The UI requires it, so holding
+/// the port is not by itself enough to convince it to give up its hotkeys: a
+/// bare "something is listening" check would let any unrelated process squatting
+/// this port silently disable every hotkey.
+pub const BEACON_HELLO: &[u8] = b"trontsnap-hotkeyd";
+
 const APP_KEY: &str = r"Software\TrontSnap";
 
 const ID_FULL: i32 = 1;
@@ -197,9 +203,28 @@ fn main() {
     // Single instance, and the liveness beacon the UI probes. Held for the whole
     // process lifetime; dropping out here means another broker already owns the
     // hotkeys, which is a success case, not an error.
-    let Ok(_beacon) = TcpListener::bind((Ipv4Addr::LOCALHOST, BROKER_PORT)) else {
+    let Ok(beacon) = TcpListener::bind((Ipv4Addr::LOCALHOST, BROKER_PORT)) else {
         return;
     };
+
+    // The backlog MUST be drained. std hardcodes listen(128), and a closed client
+    // does not free its slot, so a beacon that is never accepted stops completing
+    // handshakes after exactly 128 probes. The UI would then read a live broker as
+    // dead, register its own hotkeys, have every RegisterHotKey rejected because
+    // this process still owns them, and report nothing: PrtSc silently dead in an
+    // app that believes its hotkeys are installed. Each UI launch spends 1 probe,
+    // or up to 21 when the broker is slow to appear, so 128 is reachable.
+    //
+    // Answering with a name rather than just accepting also lets the UI tell a
+    // real broker apart from anything else that happens to hold this port.
+    std::thread::spawn(move || {
+        for stream in beacon.incoming() {
+            if let Ok(mut s) = stream {
+                let _ = s.set_write_timeout(Some(Duration::from_millis(250)));
+                let _ = s.write_all(BEACON_HELLO);
+            }
+        }
+    });
 
     let pump_tid = unsafe { GetCurrentThreadId() };
     spawn_registry_watcher(pump_tid);

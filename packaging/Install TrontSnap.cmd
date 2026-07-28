@@ -15,7 +15,24 @@ if %errorlevel%==0 goto :admin
 if /i "%~1"=="admin" goto :admin
 
 echo Installing TrontSnap ^(one administrator prompt^)...
-powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -ArgumentList 'admin','%LOCALAPPDATA%' -Verb RunAs -Wait"
+REM -PassThru + ExitCode: without it a cancelled UAC prompt, or any `exit 1` in
+REM bootstrap.ps1, is invisible and we cheerfully print the success banner below.
+REM %LOCALAPPDATA% is read INSIDE PowerShell rather than substituted by cmd,
+REM because a username containing an apostrophe would otherwise terminate the
+REM single-quoted string and a username containing a space would split the
+REM argument in two (-ArgumentList joins with spaces and adds no quoting).
+powershell -NoProfile -Command "$p = Start-Process -FilePath '%~f0' -ArgumentList @('admin', ('\"' + $env:LOCALAPPDATA + '\"')) -Verb RunAs -Wait -PassThru; exit $p.ExitCode"
+if errorlevel 1 (
+    echo.
+    echo ------------------------------------------------------------
+    echo  INSTALL FAILED. Nothing was changed that you need to undo.
+    echo  Details: C:\ProgramData\TrontSnap\bootstrap.log
+    echo ------------------------------------------------------------
+    echo.
+    if /i "%~1"=="nopause" exit /b 1
+    pause
+    exit /b 1
+)
 echo.
 echo Launching TrontSnap...
 start "" "%ProgramFiles%\TrontSnap\trontsnap.exe"
@@ -40,5 +57,14 @@ REM when this file is run directly from an already-elevated shell, so fall back 
 REM process's own value rather than resolving to a bare "\TrontSnap".
 set "PORTABLE=%~2"
 if "%PORTABLE%"=="" set "PORTABLE=%LOCALAPPDATA%"
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0bootstrap.ps1" -PortableDir "%PORTABLE%\TrontSnap"
-exit /b
+REM bootstrap.ps1 sits BESIDE this file in the shipped bundle, but one directory
+REM UP in the repo (it lives at the repo root, this file lives in packaging\).
+REM Support both rather than only ever working from dist\.
+set "BOOT=%~dp0bootstrap.ps1"
+if not exist "%BOOT%" set "BOOT=%~dp0..\bootstrap.ps1"
+if not exist "%BOOT%" (
+    echo ERROR: cannot find bootstrap.ps1 next to this file or one level up.
+    exit /b 1
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%BOOT%" -PortableDir "%PORTABLE%\TrontSnap"
+exit /b %errorlevel%
