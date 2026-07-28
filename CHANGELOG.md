@@ -1,3 +1,19 @@
+## v0.19.0
+
+The gallery is searchable. ~18,800 shots and the only way to find one was to
+scroll; there is now a search box in the chrome next to the filter chips.
+
+- Matches the filename, the parent folder name (the ShareX archive buckets by
+  "YYYY-MM"), and the capture date as YYYY-MM-DD, so "2026-07", a full day, or
+  a name fragment all narrow the timeline. Space-separated terms AND together:
+  "2026-07 clip" is a July shot with clip in the name.
+- Ctrl+F focuses the box, the drawn x clears it, and the shot count beside it
+  is the live result count. A search that matches nothing says so instead of
+  showing a blank grid identical to "still scanning".
+- Search never opens files: it runs on the metadata the index already holds
+  (the Shot model stays metadata-only by design), filters on query change
+  only, and combines with the All / New / ShareX chips.
+
 ## v0.18.0
 
 One-click theming: an accent swatch now lives in the title bar, and clicking it

@@ -49,6 +49,9 @@ pub struct Gallery {
     filtered: Vec<usize>,
     thumbs: ThumbCache,
     filter: Filter,
+    // Search box text (chrome row, next to the chips). Matches filename, parent
+    // folder name, and the capture date; see shot_haystack. Session state only.
+    query: String,
     scan_rx: Option<Receiver<(u64, Vec<Shot>)>>,
     scan_gen: u64,
     displayed_gen: u64,
@@ -68,6 +71,7 @@ impl Gallery {
             filtered: Vec::new(),
             thumbs: ThumbCache::new(),
             filter: Filter::All,
+            query: String::new(),
             scan_rx: None,
             scan_gen: 0,
             displayed_gen: 0,
@@ -179,6 +183,11 @@ impl Gallery {
 
     fn rebuild_filtered(&mut self) {
         let filter = self.filter;
+        // Terms are ANDed: "2026-07 clip" means a July shot with clip in the
+        // name. Only runs when the query/filter/scan changes, never per frame,
+        // so formatting ~18k dates stays off the paint path.
+        let query = self.query.to_lowercase();
+        let terms: Vec<&str> = query.split_whitespace().collect();
         self.filtered = self
             .shots
             .iter()
@@ -187,6 +196,12 @@ impl Gallery {
                 Filter::All => true,
                 Filter::TrontSnap => s.source == Source::TrontSnap,
                 Filter::ShareX => s.source == Source::ShareX,
+            })
+            .filter(|(_, s)| {
+                terms.is_empty() || {
+                    let hay = shot_haystack(s);
+                    terms.iter().all(|t| hay.contains(t))
+                }
             })
             .map(|(i, _)| i)
             .collect();
@@ -219,6 +234,47 @@ impl Gallery {
             if ui.selectable_label(self.filter == Filter::ShareX, "ShareX").clicked() {
                 self.filter = Filter::ShareX;
                 self.rebuild_filtered();
+            }
+            ui.add_space(6.0);
+            // Search over the whole timeline: filename, parent folder (the
+            // ShareX archive buckets by "YYYY-MM"), or capture date as
+            // YYYY-MM-DD. The shot count to the right is the live result count.
+            let search = ui
+                .add(
+                    egui::TextEdit::singleline(&mut self.query)
+                        .hint_text("Search")
+                        .desired_width(150.0),
+                )
+                .on_hover_text("Filename, folder, or date, like 2026-07");
+            if search.changed() {
+                self.rebuild_filtered();
+            }
+            // Ctrl+F jumps here: the muscle-memory route to a search box.
+            if ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::F)) {
+                search.request_focus();
+            }
+            if !self.query.is_empty() {
+                // Hand-drawn clear glyph, same rule as the window buttons: a
+                // font "x" renders as tofu on some systems.
+                let (crect, cresp) =
+                    ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::click());
+                if cresp.hovered() {
+                    ui.painter().rect_filled(crect, 3.0, crate::theme::t().widget_hover);
+                }
+                let s = Stroke::new(1.2, crate::theme::t().text_muted);
+                let c = crect.center();
+                ui.painter().line_segment(
+                    [egui::pos2(c.x - 3.5, c.y - 3.5), egui::pos2(c.x + 3.5, c.y + 3.5)],
+                    s,
+                );
+                ui.painter().line_segment(
+                    [egui::pos2(c.x - 3.5, c.y + 3.5), egui::pos2(c.x + 3.5, c.y - 3.5)],
+                    s,
+                );
+                if cresp.on_hover_text("Clear search").clicked() {
+                    self.query.clear();
+                    self.rebuild_filtered();
+                }
             }
             ui.separator();
             ui.label(format!("{} shots", self.filtered.len()));
@@ -283,6 +339,18 @@ impl Gallery {
         let n = self.filtered.len();
         let rows = n.div_ceil(cols);
         let row_h = CELL + GAP;
+
+        // A search that matches nothing gets told so, not an ambiguous blank
+        // grid (which otherwise looks identical to "still scanning").
+        if n == 0 && !self.query.trim().is_empty() && !self.scanning {
+            ui.centered_and_justified(|ui| {
+                ui.label(
+                    egui::RichText::new(format!("No shots match \"{}\"", self.query.trim()))
+                        .color(crate::theme::t().text_muted),
+                );
+            });
+            return;
+        }
 
         let shots = &self.shots;
         let filtered = &self.filtered;
@@ -500,6 +568,28 @@ fn draw_cell(ui: &mut egui::Ui, shot: &Shot, thumbs: &mut ThumbCache, action: &m
             ui.close_menu();
         }
     });
+}
+
+/// The lowercase text a shot is searchable by: filename, parent folder name
+/// (the ShareX archive buckets by "YYYY-MM", TrontSnap by app dir), and the
+/// capture date formatted YYYY-MM-DD, so "2026-07", a full day, or a name
+/// fragment all narrow the timeline. Deliberately NOT file contents or
+/// dimensions: search must never open files (the Shot model is metadata-only
+/// by design, and 18k opens per keystroke would be absurd).
+fn shot_haystack(shot: &Shot) -> String {
+    let name = shot
+        .path
+        .file_name()
+        .map(|s| s.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    let dir = shot
+        .path
+        .parent()
+        .and_then(|p| p.file_name())
+        .map(|s| s.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    let dt: DateTime<Local> = shot.taken.into();
+    format!("{name} {dir} {}", dt.format("%Y-%m-%d"))
 }
 
 /// Compact multi-line hover tooltip: name, full path, capture time, pixel

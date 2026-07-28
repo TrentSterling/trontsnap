@@ -4231,7 +4231,7 @@ dependencies = [
 
 [[package]]
 name = "trontsnap"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4254,7 +4254,7 @@ dependencies = [
 
 [[package]]
 name = "trontsnap-hotkeys"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "windows 0.56.0",
  "winreg",
