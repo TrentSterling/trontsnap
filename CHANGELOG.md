@@ -1,3 +1,33 @@
+## v0.16.0
+
+"CLIPBOARD WAS BUSY" is fixed, and it was never another app's fault.
+
+**Root cause, and it was self-inflicted.** v0.13.3 fixed a real bug (a null
+clipboard owner makes `SetClipboardData` unreliable) by creating one message-only
+owner window in a process-wide `OnceLock`. But a window belongs to the thread
+that created it, and `OpenClipboard` against another thread's window fails. Every
+capture runs on a freshly spawned thread, so the FIRST capture after launch
+worked and every one after it failed. The error text said "another app is holding
+it", which sent the investigation after browsers, terminals and remote-desktop
+sessions for hours. Measured proof: `GetOpenClipboardWindow()` returned NULL,
+meaning nothing held the clipboard at all, while 185 consecutive retries failed.
+
+- **One writer thread now owns the window and performs every clipboard write.**
+  `set_all` / `set_file` build the payload and hand it over; they never touch the
+  clipboard from the calling thread. Verified: `GetClipboardOwner()` now returns
+  the writer's window instead of NULL, and three back-to-back captures all land
+  (previously only the first would).
+- **Writes are queued and retried instead of dropped.** A clipboard genuinely held
+  by another app is a transient condition, so the writer keeps trying for 90
+  seconds with a 50ms to 500ms backoff rather than giving up after one second and
+  losing the capture. The file is already safe on disk throughout.
+- **Newest capture wins.** A fresh capture replaces a pending one rather than
+  queueing behind it; nobody wants an old screenshot landing on the clipboard
+  after they have taken another.
+- Removed `open_clipboard_with_retry`. Retrying on the calling thread could never
+  succeed, because the window was invalid there no matter how many attempts it
+  made.
+
 ## v0.15.0
 
 Bare PrintScreen captures elevated windows (Task Manager, elevated terminals)

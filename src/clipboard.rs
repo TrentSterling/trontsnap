@@ -56,20 +56,147 @@ pub fn log_line(msg: &str) {
     }
 }
 
+/// Everything needed to perform one clipboard write, built once so a retry
+/// costs nothing but the Win32 calls.
+enum Payload {
+    All { dib: Vec<u8>, dibv5: Vec<u8>, png: Vec<u8>, dropfiles: Vec<u8> },
+    File { dropfiles: Vec<u8> },
+}
+
+impl Payload {
+    unsafe fn write(&self) -> anyhow::Result<()> {
+        match self {
+            Payload::All { dib, dibv5, png, dropfiles } => {
+                set_all_formats(dib, dibv5, png, dropfiles)
+            }
+            Payload::File { dropfiles } => {
+                EmptyClipboard().map_err(win_err)?;
+                let h = alloc_global_copy(dropfiles)?;
+                SetClipboardData(CF_HDROP.0 as u32, HANDLE(h.0 as isize)).map_err(win_err)?;
+                Ok(())
+            }
+        }
+    }
+}
+
+/// The one outstanding write, plus the file it came from (for the late-success
+/// toast). NEWEST WINS: a fresh capture replaces a pending one rather than
+/// queueing behind it, because nobody wants an old screenshot to land on their
+/// clipboard after they have already taken another.
+static PENDING: std::sync::Mutex<Option<(Payload, std::path::PathBuf)>> =
+    std::sync::Mutex::new(None);
+static PENDING_WAKE: std::sync::Condvar = std::sync::Condvar::new();
+
+/// How long the background retrier keeps trying before giving up on a payload.
+/// Generous on purpose: the whole point is that a clipboard held by a browser,
+/// a terminal with an active selection, or a remote-desktop session is a
+/// TRANSIENT condition, and the capture is already safely on disk meanwhile.
+const RETRY_BUDGET: Duration = Duration::from_secs(90);
+
+/// Hand a payload to the background retrier, replacing whatever was pending.
+fn enqueue(payload: Payload, path: &Path) {
+    start_retry_thread();
+    if let Ok(mut slot) = PENDING.lock() {
+        let superseded = slot.is_some();
+        *slot = Some((payload, path.to_path_buf()));
+        if superseded {
+            log_line("clipboard: newer capture superseded the pending retry");
+        }
+    }
+    PENDING_WAKE.notify_all();
+}
+
+/// Background retrier. Started once, on first need.
+///
+/// WHY THIS EXISTS: the synchronous attempt gives up after about a second, and
+/// when it lost, the capture was on disk but never on the clipboard, with the
+/// only feedback being a toast saying so. That is the "CLIPBOARD WAS BUSY"
+/// failure, and it is infuriating precisely because the condition clears on its
+/// own a moment later. Now the write is queued and keeps trying.
+fn start_retry_thread() {
+    use std::sync::Once;
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        log_line("clipboard: writer thread starting");
+        std::thread::spawn(|| {
+        // Created HERE so it belongs to this thread, and never handed out. Every
+        // OpenClipboard in the process happens on this thread with this window.
+        let owner = unsafe { create_owner_window() };
+        log_line(&format!("clipboard: writer owns hwnd=0x{:X}", owner.0));
+        loop {
+            // Wait for work.
+            let (payload, path) = {
+                let Ok(mut slot) = PENDING.lock() else { return };
+                while slot.is_none() {
+                    let Ok(next) = PENDING_WAKE.wait(slot) else { return };
+                    slot = next;
+                }
+                slot.take().expect("checked above")
+            };
+
+            let started = std::time::Instant::now();
+            let mut attempt = 0u32;
+            loop {
+                // A newer capture replaces this one; abandon it immediately.
+                if PENDING.lock().map(|s| s.is_some()).unwrap_or(false) {
+                    break;
+                }
+                let ok = unsafe {
+                    if OpenClipboard(owner).is_ok() {
+                        let r = payload.write();
+                        let _ = CloseClipboard();
+                        r.is_ok()
+                    } else {
+                        false
+                    }
+                };
+                if ok {
+                    if attempt > 0 {
+                        log_line(&format!(
+                            "clipboard: landed after {} retries ({:.1}s)",
+                            attempt,
+                            started.elapsed().as_secs_f32()
+                        ));
+                    }
+                    let _ = &path;
+                    break;
+                }
+                if started.elapsed() >= RETRY_BUDGET {
+                    log_line(&format!(
+                        "clipboard: gave up after {attempt} retries; the file is still on disk"
+                    ));
+                    break;
+                }
+                attempt += 1;
+                if attempt % 10 == 0 {
+                    log_line(&format!("clipboard: retry {attempt} still blocked"));
+                }
+                // Ramp 50ms -> 500ms. Fast enough to catch a browser letting go
+                // within a frame or two, slow enough to be free while a terminal
+                // sits on a selection for a minute.
+                let backoff = (50 * (attempt.min(10) as u64)).min(500);
+                std::thread::sleep(Duration::from_millis(backoff));
+            }
+        }
+        });
+    });
+}
+
 pub fn set_all(img: &RgbaImage, png_bytes: &[u8], file_path: &Path) -> anyhow::Result<()> {
     let (w, h) = (img.width(), img.height());
     let bgra = rgba_to_bgra_bottom_up(w, h, img.as_raw());
-    let dib = build_dib(w, h, &bgra);
-    let dibv5 = build_dibv5(w, h, &bgra);
-    let dropfiles = build_dropfiles(file_path);
+    let payload = Payload::All {
+        dib: build_dib(w, h, &bgra),
+        dibv5: build_dibv5(w, h, &bgra),
+        png: png_bytes.to_vec(),
+        dropfiles: build_dropfiles(file_path),
+    };
 
-    unsafe {
-        open_clipboard_with_retry()?;
-        let result = set_all_formats(&dib, &dibv5, png_bytes, &dropfiles);
-        // Always close, even if a Set* call failed partway through.
-        let _ = CloseClipboard();
-        result
-    }
+    // ALWAYS go through the writer thread; never touch the clipboard from here.
+    // This function runs on a fresh thread per capture, and the clipboard owner
+    // window belongs to exactly one thread, so a write attempted here would fail.
+    enqueue(payload, file_path);
+    Ok(())
 }
 
 unsafe fn set_all_formats(
@@ -101,18 +228,8 @@ unsafe fn set_all_formats(
 /// dropped/pasted file (Discord, Explorer, terminals). Same atomic session +
 /// open-retry as `set_all`.
 pub fn set_file(file_path: &Path) -> anyhow::Result<()> {
-    let dropfiles = build_dropfiles(file_path);
-    unsafe {
-        open_clipboard_with_retry()?;
-        let result = (|| {
-            EmptyClipboard().map_err(win_err)?;
-            let h = alloc_global_copy(&dropfiles)?;
-            SetClipboardData(CF_HDROP.0 as u32, HANDLE(h.0 as isize)).map_err(win_err)?;
-            Ok(())
-        })();
-        let _ = CloseClipboard();
-        result
-    }
+    enqueue(Payload::File { dropfiles: build_dropfiles(file_path) }, file_path);
+    Ok(())
 }
 
 /// OpenClipboard can transiently fail if another app (browsers are the usual
@@ -129,15 +246,26 @@ pub fn set_file(file_path: &Path) -> anyhow::Result<()> {
 ///
 /// Owning the clipboard with a real (hidden, message-only) window fixes that: the
 /// window outlives the operation and the OS has a valid owner to point at.
-unsafe fn clipboard_owner() -> HWND {
-    use std::sync::OnceLock;
+/// Create the message-only window that owns the clipboard.
+///
+/// MUST be called on the thread that will call OpenClipboard with it, and that
+/// handle must not be shared with other threads. A window belongs to the thread
+/// that created it, and OpenClipboard against another thread's window fails.
+///
+/// This used to be a process-wide `OnceLock<isize>`, created by whichever thread
+/// captured first and then reused everywhere. `do_full` spawns a fresh thread per
+/// capture, so every capture after the first passed a foreign window and
+/// OpenClipboard refused it. The error surfaces as "could not open the clipboard
+/// (another app is holding it)", which sent us hunting for a culprit that did not
+/// exist: measured 2026-07-27 with `GetOpenClipboardWindow()` returning NULL
+/// while 185 consecutive retries all failed.
+///
+/// Hence the single writer thread below: one window, one thread, all writes.
+unsafe fn create_owner_window() -> HWND {
     use windows::Win32::UI::WindowsAndMessaging::{
         CreateWindowExW, HWND_MESSAGE, WINDOW_EX_STYLE, WINDOW_STYLE,
     };
-    // isize because HWND is not Send/Sync; the handle is process-wide and valid
-    // from any thread once created.
-    static OWNER: OnceLock<isize> = OnceLock::new();
-    HWND(*OWNER.get_or_init(|| {
+    HWND({
         CreateWindowExW(
             WINDOW_EX_STYLE(0),
             w!("STATIC"),
@@ -153,28 +281,13 @@ unsafe fn clipboard_owner() -> HWND {
             None,
         )
         .0
-    }))
+    })
 }
 
-unsafe fn open_clipboard_with_retry() -> anyhow::Result<()> {
-    // The old budget was 10 x 15ms = 150ms, which loses to a busy browser: Chrome
-    // and Firefox routinely hold the clipboard for several hundred ms while their
-    // own paste/copy plumbing settles, and with a lot of tabs open it is longer.
-    // Losing that race meant the shot saved to disk but never reached the
-    // clipboard. Back off from 5ms to 40ms for a ~1s total window, which costs
-    // nothing in the common case (the first attempt almost always wins).
-    const ATTEMPTS: u32 = 28;
-    for attempt in 0..ATTEMPTS {
-        if OpenClipboard(clipboard_owner()).is_ok() {
-            return Ok(());
-        }
-        if attempt + 1 < ATTEMPTS {
-            let backoff = 5 + (attempt * 3).min(35);
-            std::thread::sleep(Duration::from_millis(backoff as u64));
-        }
-    }
-    anyhow::bail!("could not open the clipboard (another app is holding it)")
-}
+// NOTE: the old `open_clipboard_with_retry` lived here. It is gone because
+// retrying on the CALLING thread could never work: the owner window belongs to
+// the writer thread, so a caller retrying 28 times just failed 28 times. The
+// retry now lives in the writer thread's loop, where the window is valid.
 
 /// A GMEM_MOVEABLE + zero-initialized global block containing a copy of
 /// `bytes`, ready to hand to `SetClipboardData`. Ownership of the handle passes
