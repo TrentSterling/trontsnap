@@ -1540,24 +1540,54 @@ fn broker_path() -> Option<std::path::PathBuf> {
     p.exists().then_some(p)
 }
 
-/// Start the broker if it shipped with this install, and report whether it owns
-/// the hotkeys now.
+/// The broker's liveness beacon. It binds this port for its whole life, so a
+/// successful connection proves it is actually up and holding the hotkeys.
+const BROKER_PORT: u16 = 48771;
+
+/// Start the broker if it shipped with this install, and report whether it is
+/// ALIVE and therefore owns the hotkeys.
 ///
-/// Deterministic ownership, no race: if the broker exists we NEVER register
-/// locally, because RegisterHotKey is system-wide exclusive and whoever gets
-/// there first would win arbitrarily on a slow boot. The portable build has no
-/// broker beside it, so it registers locally exactly as before.
+/// The return value is load-bearing: on false the caller registers hotkeys
+/// locally. Never report success without proof. v0.15.0 first shipped this
+/// returning whether ShellExecute *accepted* the launch, which is not the same
+/// thing at all: the broker started, failed to bind its port (the number
+/// collided with TrontEQ's), exited immediately, and the UI cheerfully ceded its
+/// hotkeys to a process that no longer existed. Result: no hotkeys at all.
+///
+/// So: launch it, then poll the beacon. If it is not answering within the
+/// timeout, we keep the hotkeys ourselves and the app degrades to portable
+/// behaviour instead of to nothing.
 ///
 /// Launched via ShellExecuteW, not CreateProcess: a uiAccess exe refuses a bare
-/// CreateProcess with ERROR_ELEVATION_REQUIRED (740). It self-single-instances,
-/// so calling this when it is already up is harmless.
+/// CreateProcess with ERROR_ELEVATION_REQUIRED (740). The broker
+/// self-single-instances, so calling this when it is already up is harmless.
 fn start_broker() -> bool {
     let Some(p) = broker_path() else { return false };
-    let started = crate::shellexec::run(&p.to_string_lossy(), "");
-    if !started {
-        eprintln!("trontsnap: hotkey broker present but would not start; using local hotkeys");
+    if broker_alive() {
+        return true; // already running from a previous launch
     }
-    started
+    if !crate::shellexec::run(&p.to_string_lossy(), "") {
+        eprintln!("trontsnap: hotkey broker would not launch; keeping hotkeys locally");
+        return false;
+    }
+    // uiAccess launches go through AppInfo, so allow a beat for it to come up.
+    for _ in 0..20 {
+        std::thread::sleep(Duration::from_millis(100));
+        if broker_alive() {
+            return true;
+        }
+    }
+    eprintln!("trontsnap: hotkey broker never answered; keeping hotkeys locally");
+    false
+}
+
+/// True when something is listening on the broker's beacon port.
+fn broker_alive() -> bool {
+    std::net::TcpStream::connect_timeout(
+        &std::net::SocketAddr::from((Ipv4Addr::LOCALHOST, BROKER_PORT)),
+        Duration::from_millis(150),
+    )
+    .is_ok()
 }
 
 fn do_full() {

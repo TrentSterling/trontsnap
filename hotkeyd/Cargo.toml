@@ -1,6 +1,6 @@
-[package]
+﻿[package]
 name = "trontsnap-hotkeys"
-version = "0.15.0"
+version = "0.15.1"
 edition = "2021"
 description = "uiAccess hotkey broker for TrontSnap: owns RegisterHotKey so binds survive elevated windows, and relays them to the Medium-integrity UI over loopback"
 

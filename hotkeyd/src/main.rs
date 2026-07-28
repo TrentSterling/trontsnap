@@ -49,8 +49,19 @@ use winreg::RegKey;
 /// The UI's single-instance port (app.rs `PORT`). Connecting to it and writing a
 /// command is the whole IPC.
 const UI_PORT: u16 = 48761;
-/// Our own single-instance port. Two brokers would fight over the registration.
-const SELF_PORT: u16 = 48762;
+
+/// Our own port. It does double duty: holding it is our single-instance lock
+/// (two brokers would fight over the same registrations), and the UI connects to
+/// it to check we actually came up before it cedes the hotkeys to us.
+///
+/// NOT 48762: that is TrontEQ's single-instance port, and picking it made the
+/// bind fail, which made this process exit instantly, which left the UI having
+/// handed its hotkeys to a corpse. Ports are a shared namespace across the whole
+/// fleet; check before adding one.
+///   48761 trontsnap UI
+///   48762 tronteq
+///   48771 this broker
+pub const BROKER_PORT: u16 = 48771;
 
 const APP_KEY: &str = r"Software\TrontSnap";
 
@@ -183,9 +194,10 @@ fn spawn_ui_watchdog() {
 }
 
 fn main() {
-    // Single instance. Two brokers would race for the same registrations and the
-    // loser would sit there doing nothing.
-    let Ok(_guard) = TcpListener::bind((Ipv4Addr::LOCALHOST, SELF_PORT)) else {
+    // Single instance, and the liveness beacon the UI probes. Held for the whole
+    // process lifetime; dropping out here means another broker already owns the
+    // hotkeys, which is a success case, not an error.
+    let Ok(_beacon) = TcpListener::bind((Ipv4Addr::LOCALHOST, BROKER_PORT)) else {
         return;
     };
 
