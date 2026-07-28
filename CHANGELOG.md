@@ -1,3 +1,30 @@
+## v0.22.0
+
+The annotation editor: the single biggest gap versus ShareX, and the reason
+people keep it installed. `trontsnap edit <path>`, reachable from an **Edit**
+chip on the capture toast and **Edit (annotate)** in the gallery right-click
+menu.
+
+- **Six tools:** Arrow, Box, Redact, Pixelate, Text, Crop. Shapes stay
+  vectors until you save (undo/redo on Ctrl+Z / Ctrl+Y), then everything
+  bakes into the PNG. Saving OVERWRITES the original and puts the result on
+  the clipboard, because annotate-then-paste is the whole flow; the gallery
+  thumbnail refreshes itself (the watcher already re-keys on mtime).
+- **Redaction is solid black by default, on purpose.** A gaussian blur over
+  text can be reversed, so soft options must be chosen, never defaulted.
+  Pixelate exists for de-emphasis and keeps its blocks chunky (clamped block
+  size) so it cannot be dialed down into something reversible by accident.
+  Both composite into the preview immediately: the redaction you see is
+  exactly what the file will contain.
+- Text renders in the bundled Rajdhani on canvas AND in the saved file (same
+  face egui shows; baking goes through ab_glyph, which egui already ships,
+  so the dependency cost is zero).
+- Its own process, like the toast: a tray-hidden main window never runs
+  update(), so it could not open an editor at capture time. The toast's Edit
+  chip is painted + Win32 hit-tested, since egui never receives that
+  window's pointer events.
+- Unsaved changes get a Save / Discard / Cancel prompt on close or Esc.
+
 ## v0.21.0
 
 Copy the TEXT out of anything on screen. Ctrl+Alt+PrtSc opens the same

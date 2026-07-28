@@ -45,6 +45,8 @@ enum Action {
     ExportGif(PathBuf),
     // Stills only: run the shot through Windows OCR, text to clipboard.
     CopyText(PathBuf),
+    // Stills only: open the annotation editor (its own process).
+    Edit(PathBuf),
     // Multi-select: toggle one (Ctrl+click), extend from the anchor
     // (Shift+click), and the context-menu bulk ops, which resolve the CURRENT
     // visible selection inside apply() rather than snapshotting it per cell.
@@ -601,6 +603,9 @@ impl Gallery {
                     }
                 });
             }
+            Action::Edit(path) => {
+                crate::editor::launch(&path);
+            }
             Action::CopyText(path) => {
                 // Decode + OCR off-thread (a full-res PNG decode is tens of
                 // ms and RecognizeAsync more); the result comes back through
@@ -805,6 +810,10 @@ fn draw_cell(
         }
         if ui.button("Open").clicked() {
             *action = Some(Action::Open(shot.path.clone()));
+            ui.close_menu();
+        }
+        if !shot.is_video() && ui.button("Edit (annotate)").clicked() {
+            *action = Some(Action::Edit(shot.path.clone()));
             ui.close_menu();
         }
         if ui.button("Reveal in Explorer").clicked() {

@@ -6,6 +6,7 @@
 //   "region"        -> one-shot freeze-frame region picker, deliver, exit
 //   "full"          -> one-shot fullscreen grab, deliver, exit
 //   "ocr"           -> one-shot region picker, TEXT to clipboard (Windows OCR), exit
+//   "edit <path>"   -> annotation editor (arrow/box/redact/pixelate/text/crop); save overwrites
 //
 // Hotkeys owned by the app: PrintScreen = fullscreen, Ctrl+PrintScreen = region.
 // Every capture goes to the clipboard (lossless) AND saves a PNG to Pictures\TrontSnap.
@@ -18,6 +19,7 @@ mod capture;
 mod clipboard;
 mod color;
 mod cursor;
+mod editor;
 mod gallery;
 mod gifexport;
 mod index;
@@ -60,6 +62,10 @@ fn main() {
             region_win32::capture_region_ocr();
             Ok(())
         }
+        "edit" => match std::env::args().nth(2) {
+            Some(p) => editor::run(std::path::PathBuf::from(p)),
+            None => Ok(()),
+        },
         "toast" => match std::env::args().nth(2) {
             Some(p) => {
                 let clipboard_ok = !std::env::args().any(|a| a == "--clipboard-failed");

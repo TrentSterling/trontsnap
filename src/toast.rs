@@ -93,6 +93,9 @@ struct Toast {
     dragging: bool,
     /// Whether the clipboard write actually succeeded, so the toast can say so.
     clipboard_ok: bool,
+    /// Where the Edit chip was drawn last frame (logical coords), for the
+    /// Win32 hit test — a normal ui.button() never receives events here.
+    edit_rect: Option<egui::Rect>,
 }
 
 impl Toast {
@@ -107,6 +110,7 @@ impl Toast {
             press_at: None,
             dragging: false,
             clipboard_ok,
+            edit_rect: None,
         }
     }
 }
@@ -125,6 +129,13 @@ impl eframe::App for Toast {
         // input events it would normally use for clicks and drags.
         let over = cursor_over_window(frame);
         let btn = left_button_down();
+        // Edit chip hover, from the rect the previous frame drew (30ms stale at
+        // worst, invisible in practice). Videos have no editor.
+        let over_edit = !crate::index::is_video(&self.path)
+            && self
+                .edit_rect
+                .map(|r| cursor_over_logical(frame, ctx, r))
+                .unwrap_or(false);
 
         // HOVER HOLDS THE TOAST OPEN. Pushing `born` forward every hovered frame
         // means the countdown is effectively paused while the cursor is on it,
@@ -158,12 +169,15 @@ impl eframe::App for Toast {
             }
         }
 
-        // Release without travel is a click: open the capture. Moved from the
+        // Release without travel is a click: the Edit chip spawns the
+        // annotation editor, anywhere else opens the capture. Moved from the
         // press edge so a drag no longer also opens the file in the viewer.
         if !btn && self.was_pressed {
             let was_press = self.press_at.take().is_some();
             if was_press && !self.dragging && over {
-                if let Err(e) = opener::open(&self.path) {
+                if over_edit {
+                    crate::editor::launch(&self.path);
+                } else if let Err(e) = opener::open(&self.path) {
                     eprintln!("trontsnap: toast open failed: {e:#}");
                 }
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -277,6 +291,36 @@ impl eframe::App for Toast {
                 egui::FontId::proportional(11.0),
                 egui::Color32::from_white_alpha(140),
             );
+
+            // Edit chip, top-right: the annotation entry point (a toast
+            // button, never an auto-opened editor). Painted + hit-tested via
+            // the same Win32 polling as every other interaction here.
+            if !crate::index::is_video(&self.path) {
+                let chip = egui::Rect::from_min_size(
+                    egui::pos2(rect.right() - 62.0, rect.top() + 8.0),
+                    egui::vec2(54.0, 22.0),
+                );
+                let fill = if over_edit {
+                    crate::theme::t().accent
+                } else {
+                    egui::Color32::from_black_alpha(160)
+                };
+                painter.rect_filled(chip, 5.0, fill);
+                painter.rect_stroke(chip, 5.0, egui::Stroke::new(1.0, crate::theme::t().accent));
+                let text_color = if over_edit {
+                    crate::theme::on_accent()
+                } else {
+                    egui::Color32::from_white_alpha(220)
+                };
+                painter.text(
+                    chip.center(),
+                    egui::Align2::CENTER_CENTER,
+                    "Edit",
+                    egui::FontId::proportional(12.0),
+                    text_color,
+                );
+                self.edit_rect = Some(chip);
+            }
         });
 
         // Poll fairly often so the Win32 click detection above catches quick clicks.
@@ -330,6 +374,34 @@ fn cursor_over_window(frame: &eframe::Frame) -> bool {
             return false;
         }
         pt.x >= wr.left && pt.x < wr.right && pt.y >= wr.top && pt.y < wr.bottom
+    }
+}
+
+/// Is the cursor inside `rect` (egui logical coords) of this window? Same
+/// physical-px polling as cursor_over_window, mapped through the scale factor.
+/// Valid because the toast is undecorated: client rect == window rect.
+fn cursor_over_logical(frame: &eframe::Frame, ctx: &egui::Context, rect: egui::Rect) -> bool {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use windows::Win32::Foundation::{HWND, POINT, RECT};
+    use windows::Win32::UI::WindowsAndMessaging::{GetCursorPos, GetWindowRect};
+
+    let hwnd = match frame.window_handle().ok().map(|h| h.as_raw()) {
+        Some(RawWindowHandle::Win32(h)) => HWND(h.hwnd.get()),
+        _ => return false,
+    };
+    unsafe {
+        let mut pt = POINT::default();
+        if GetCursorPos(&mut pt).is_err() {
+            return false;
+        }
+        let mut wr = RECT::default();
+        if GetWindowRect(hwnd, &mut wr).is_err() {
+            return false;
+        }
+        let ppp = ctx.pixels_per_point();
+        let lx = (pt.x - wr.left) as f32 / ppp;
+        let ly = (pt.y - wr.top) as f32 / ppp;
+        rect.contains(egui::pos2(lx, ly))
     }
 }
 

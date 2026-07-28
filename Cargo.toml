@@ -7,11 +7,15 @@ members = ["hotkeyd"]
 
 [package]
 name = "trontsnap"
-version = "0.21.0"
+version = "0.22.0"
 edition = "2021"
 description = "Fast screenshot tool: global-hotkey capture (full + freeze-frame region) straight to clipboard, plus a lazy-loading gallery over your whole screenshot history"
 
 [dependencies]
+# Rasterizes the annotation editor's Text tool into the saved PNG using the
+# bundled Rajdhani TTF (egui only draws to the screen; baking needs our own
+# glyph rendering). Pure Rust, tiny, no transitive weight.
+ab_glyph = "0.2"
 eframe = "0.29.1"
 xcap = "0.0.15"
 image = "0.24.9"

@@ -4231,8 +4231,9 @@ dependencies = [
 
 [[package]]
 name = "trontsnap"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
+ "ab_glyph",
  "anyhow",
  "chrono",
  "crossbeam-channel",
@@ -4254,7 +4255,7 @@ dependencies = [
 
 [[package]]
 name = "trontsnap-hotkeys"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "windows 0.56.0",
  "winreg",
