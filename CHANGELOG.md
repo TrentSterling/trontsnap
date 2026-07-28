@@ -1,3 +1,52 @@
+## v0.18.0
+
+One-click theming: an accent swatch now lives in the title bar, and clicking it
+opens a floating "Theme" window holding the complete Appearance panel. No more
+Settings, scroll, Appearance round trip just to try a color.
+
+- **The swatch paints the color you picked**, not the readability-corrected
+  value the engine renders with (new `theme::swatch_seed()`: one source hex is
+  your exact pick, a palette shows its most saturated stop). Painting the
+  corrected value made a yellow pick display as brown right next to the picker
+  holding it; TrontEQ hit this first, same rule here.
+- **One panel, two entry points.** The Appearance controls moved out of
+  `settings_tab_ui` into `appearance_ui`, and the Settings tab and the Theme
+  window both call it. The window gets everything, including the whole gradient
+  v2 block (direction, intensity, frost, harmony/presets/custom pegs,
+  Magic/Reset); Settings keeps its copy, so nothing moved for anyone who goes
+  looking there.
+- The window opens under the swatch, scrolls when the gradient editor overflows
+  a short app window, closes on Esc or its X, and is constrained on-screen so
+  it can never end up somewhere unreachable.
+
+## v0.17.0
+
+The toast becomes the preview, holds on hover, and drags out. Three ShareX
+behaviours Trent asked for, all in `src/toast.rs`.
+
+- **The preview IS the toast.** It was a 64px thumbnail beside three lines of
+  text, spending most of a 330x90 window on words describing a picture it was
+  showing too small to read. The capture now fills a 340x188 surface, cover-fit
+  with a centre crop via UV so nothing letterboxes, and the text sits on top
+  over a two-band scrim that keeps it legible against a bright screenshot.
+  Thumbnails decode at 720px instead of 76px to stay crisp.
+- **Hover holds it open.** The dwell timer is pushed forward every frame the
+  cursor is over the toast, so it pauses while hovered and restarts from full
+  when the cursor leaves. This is also what makes drag-out physically possible:
+  otherwise the toast can vanish from under the pointer mid-gesture.
+- **Drag-out.** A press that travels more than 6px becomes a real OLE file drag
+  via the same start_file_drag the gallery uses, so a capture can go straight
+  into Discord, a terminal or an editor without opening the gallery.
+  Click-to-open moved from the press edge to the release edge, so a drag no
+  longer also opens the file in the viewer. All of it is Win32 polling rather
+  than egui input, because the toast is a non-activating always-on-top tool
+  window and egui never receives its pointer events.
+- Adds `packaging/verify-install.ps1`: 22 assertions over the installed state
+  (both manifests, both signatures + timestamps, integrity levels, uiAccess
+  flags, both ports, the beacon's identity string, autostart, and a live
+  clipboard round trip). Every check is there because something in it broke for
+  real that night.
+
 ## v0.16.0
 
 "CLIPBOARD WAS BUSY" is fixed, and it was never another app's fault.

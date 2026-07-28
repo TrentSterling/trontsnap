@@ -91,6 +91,24 @@ pub fn on_accent() -> Color32 {
     c32(color::contrast_color(rgb_of(t().accent)))
 }
 
+/// The color the title-bar theme swatch paints: the USER'S pick, never the
+/// readability-corrected token. `from_accent` / `enforce_readability` walk a
+/// low-contrast pick toward the panel-readable version, so painting
+/// `t().accent` next to a picker holding the raw value makes the two disagree
+/// (TrontEQ shipped that: a yellow pick displayed as brown). Resolution
+/// mirrors `resolve()`: no source hexes = the built-in look (the token IS the
+/// truth), one = the exact custom pick, several = the most saturated stop,
+/// which is what a palette reads as at a glance.
+pub fn swatch_seed() -> Color32 {
+    let source = crate::settings::theme_source();
+    let cols: Vec<Rgb> = source.iter().filter_map(|h| color::hex_to_rgb(h)).collect();
+    match cols.len() {
+        0 => t().accent,
+        1 => c32(cols[0]),
+        _ => most_saturated(&cols).map(c32).unwrap_or_else(|| t().accent),
+    }
+}
+
 pub fn rounding() -> Rounding {
     Rounding::same(6.0)
 }

@@ -195,6 +195,10 @@ pub struct App {
     // Last known-good main-window HWND, cached by update() so the tray menu handler can
     // restore the window directly via Win32 while it's hidden.
     hwnd_cell: Arc<AtomicIsize>,
+    // The floating Theme window: the same Appearance panel Settings shows (one
+    // appearance_ui, two callers), toggled by the title-bar swatch. Not
+    // persisted; always starts closed, same as TrontEQ's.
+    show_theme_window: bool,
 }
 
 impl App {
@@ -449,6 +453,7 @@ impl App {
             hwnd_cell,
             good_size: egui::vec2(1180.0, 760.0),
             small_frames: 0,
+            show_theme_window: false,
         })
     }
 
@@ -614,6 +619,26 @@ impl App {
                         // Here we only reserve their footprint.
                         ui.add_space(CAPTION_W);
 
+                        // Theme swatch: the one-click theme picker (TrontEQ's
+                        // toolbar pattern). Paints swatch_seed(), the color the
+                        // USER picked, not the readability-corrected t().accent;
+                        // this block answers "what is my theme color", and the
+                        // corrected value made a yellow pick read as brown right
+                        // next to the picker holding it.
+                        let (srect, sresp) = ui
+                            .allocate_exact_size(egui::vec2(26.0, 18.0), egui::Sense::click());
+                        ui.painter().rect_filled(srect, 4.0, crate::theme::swatch_seed());
+                        let ring = if sresp.hovered() || self.show_theme_window {
+                            egui::Stroke::new(1.5, crate::theme::t().text_primary)
+                        } else {
+                            egui::Stroke::new(1.0, crate::theme::t().text_muted)
+                        };
+                        ui.painter().rect_stroke(srect, 4.0, ring);
+                        if sresp.on_hover_text("Theme: colors and gradient").clicked() {
+                            self.show_theme_window = !self.show_theme_window;
+                        }
+                        ui.add_space(2.0);
+
                         // Whatever's left between the tabs (+ filters) and the buttons is
                         // the window's drag handle (move on drag, maximize on double-click).
                         let (_, drag) = ui.allocate_exact_size(
@@ -678,6 +703,53 @@ impl App {
                         });
                     });
             });
+    }
+
+    /// The floating "Theme" window: the SAME Appearance panel the Settings tab
+    /// shows (`appearance_ui`; one copy, two entry points), reachable from the
+    /// title-bar swatch without leaving the current tab. Esc or the X closes it.
+    fn theme_window(&mut self, ctx: &egui::Context) {
+        if !self.show_theme_window {
+            return;
+        }
+        // Modal law: Esc closes, same as the window's own X.
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.show_theme_window = false;
+            return;
+        }
+        let screen = ctx.input(|i| i.screen_rect());
+        // Budget the SCROLL VIEWPORT, never the window frame: clamping the
+        // frame just clips the content while the ScrollArea believes it fits
+        // (the TrontEQ lesson). A conservative viewport is what makes the
+        // scrollbar appear when the gradient editor overflows a short window.
+        let scroll_h = (screen.height() - 120.0).max(200.0);
+        let mut open = true;
+        egui::Window::new("Theme")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(320.0)
+            // First open lands under the swatch that toggled it (top-right,
+            // clear of the caption overlay); draggable after that. Computed
+            // left-edge pos instead of pivot(RIGHT_TOP) so it stays deterministic
+            // on the first frame, and no anchor(): an anchored window is pinned
+            // immovably (the Boxel lesson).
+            .default_pos(egui::pos2(
+                (screen.right() - 352.0).max(screen.left() + 8.0),
+                screen.top() + 52.0,
+            ))
+            // egui remembers window positions; constrain so a panel dragged
+            // toward an edge is still fully reachable after the app shrinks.
+            .constrain_to(screen)
+            .show(ctx, |ui| {
+                egui::ScrollArea::vertical()
+                    .max_height(scroll_h)
+                    .auto_shrink([false, true])
+                    .show(ui, appearance_ui);
+            });
+        if !open {
+            self.show_theme_window = false;
+        }
     }
 
     /// Thin invisible interact strips along the 4 edges + 4 corners, so the window
@@ -842,6 +914,7 @@ impl eframe::App for App {
             Tab::About => self.about_tab_ui(ui),
         });
 
+        self.theme_window(ctx);
         self.edge_resize(ctx);
     }
 }
@@ -858,89 +931,7 @@ fn settings_tab_ui(ui: &mut egui::Ui) {
                 ui.set_max_width(560.0);
 
                 settings_section_header(ui, "Appearance");
-                ui.label(
-                    egui::RichText::new(format!("Current theme: {}", crate::settings::theme_name()))
-                        .small()
-                        .color(crate::theme::t().text_muted),
-                );
-                ui.add_space(10.0);
-
-                let mut accent = crate::theme::t().accent;
-                ui.horizontal(|ui| {
-                    ui.label("Accent color");
-                    ui.add_space(8.0);
-                    // The default color swatch renders as a thin sliver (it's sized to
-                    // interact_size); bump it to a proper, obviously-clickable box.
-                    let changed = ui
-                        .scope(|ui| {
-                            ui.spacing_mut().interact_size = egui::vec2(96.0, 30.0);
-                            ui.color_edit_button_srgba(&mut accent).changed()
-                        })
-                        .inner;
-                    if changed {
-                        let rgb = [accent.r(), accent.g(), accent.b()];
-                        let tokens = crate::theme::from_accent(rgb);
-                        crate::theme::set_theme(ui.ctx(), tokens);
-                        crate::settings::set_theme("Custom", &[crate::color::rgb_to_hex(rgb)]);
-                    }
-                });
-                ui.add_space(10.0);
-
-                let current_name = crate::settings::theme_name();
-                egui::ComboBox::from_id_salt("trontsnap-premade-theme")
-                    .selected_text(current_name.clone())
-                    .show_ui(ui, |ui| {
-                        for p in crate::color::PREMADE_PALETTES {
-                            if ui.selectable_label(current_name == p.name, p.name).clicked() {
-                                if let Some((tokens, source)) = crate::theme::premade_tokens(p.name) {
-                                    crate::theme::set_theme(ui.ctx(), tokens);
-                                    crate::settings::set_theme(p.name, &source);
-                                }
-                            }
-                        }
-                    });
-                ui.add_space(10.0);
-
-                ui.horizontal(|ui| {
-                    if ui.button("Randomize").clicked() {
-                        let (tokens, name, source) = crate::theme::randomize();
-                        crate::theme::set_theme(ui.ctx(), tokens);
-                        crate::settings::set_theme(&name, &source);
-                    }
-                    if ui.button("Reset to default").clicked() {
-                        let tokens = crate::theme::resolve("Cyan", &[]);
-                        crate::theme::set_theme(ui.ctx(), tokens);
-                        crate::settings::set_theme("Cyan", &[]);
-                    }
-                });
-                ui.add_space(6.0);
-                ui.label(
-                    egui::RichText::new(
-                        "Themes are generated with smart contrast, so text stays readable on any color.",
-                    )
-                    .small()
-                    .color(crate::theme::t().text_muted),
-                );
-
-                ui.add_space(14.0);
-                let mut gradient = crate::settings::gradient();
-                if ui.checkbox(&mut gradient, "Gradient").changed() {
-                    crate::settings::set_gradient(gradient);
-                    // Panel-fill translucency lives in build_visuals and is keyed
-                    // off settings::gradient(), so re-derive visuals from the
-                    // current tokens to pick up the flip immediately.
-                    crate::theme::set_theme(ui.ctx(), crate::theme::t());
-                }
-                ui.add_space(4.0);
-                ui.label(
-                    egui::RichText::new("Discord-style background wash behind the panels.")
-                        .small()
-                        .color(crate::theme::t().text_muted),
-                );
-                if gradient {
-                    ui.add_space(10.0);
-                    gradient_editor_ui(ui);
-                }
+                appearance_ui(ui);
 
                 ui.add_space(22.0);
                 settings_section_header(ui, "Capture");
@@ -1032,12 +1023,104 @@ fn settings_tab_ui(ui: &mut egui::Ui) {
     });
 }
 
-/// The Gradient v2 sub-block inside Settings > Appearance: split live preview
+/// The Appearance panel: current-theme line, accent picker, premade combo,
+/// Randomize / Reset, the smart-contrast note, and the Gradient block. ONE copy
+/// of the controls with two callers (the Settings tab under its "Appearance"
+/// header, and the floating Theme window the title-bar swatch opens), so the
+/// two can never drift apart. Width comes from the caller: Settings caps it at
+/// 560, the Theme window at its own frame.
+fn appearance_ui(ui: &mut egui::Ui) {
+    ui.label(
+        egui::RichText::new(format!("Current theme: {}", crate::settings::theme_name()))
+            .small()
+            .color(crate::theme::t().text_muted),
+    );
+    ui.add_space(10.0);
+
+    let mut accent = crate::theme::t().accent;
+    ui.horizontal(|ui| {
+        ui.label("Accent color");
+        ui.add_space(8.0);
+        // The default color swatch renders as a thin sliver (it's sized to
+        // interact_size); bump it to a proper, obviously-clickable box.
+        let changed = ui
+            .scope(|ui| {
+                ui.spacing_mut().interact_size = egui::vec2(96.0, 30.0);
+                ui.color_edit_button_srgba(&mut accent).changed()
+            })
+            .inner;
+        if changed {
+            let rgb = [accent.r(), accent.g(), accent.b()];
+            let tokens = crate::theme::from_accent(rgb);
+            crate::theme::set_theme(ui.ctx(), tokens);
+            crate::settings::set_theme("Custom", &[crate::color::rgb_to_hex(rgb)]);
+        }
+    });
+    ui.add_space(10.0);
+
+    let current_name = crate::settings::theme_name();
+    egui::ComboBox::from_id_salt("trontsnap-premade-theme")
+        .selected_text(current_name.clone())
+        .show_ui(ui, |ui| {
+            for p in crate::color::PREMADE_PALETTES {
+                if ui.selectable_label(current_name == p.name, p.name).clicked() {
+                    if let Some((tokens, source)) = crate::theme::premade_tokens(p.name) {
+                        crate::theme::set_theme(ui.ctx(), tokens);
+                        crate::settings::set_theme(p.name, &source);
+                    }
+                }
+            }
+        });
+    ui.add_space(10.0);
+
+    ui.horizontal(|ui| {
+        if ui.button("Randomize").clicked() {
+            let (tokens, name, source) = crate::theme::randomize();
+            crate::theme::set_theme(ui.ctx(), tokens);
+            crate::settings::set_theme(&name, &source);
+        }
+        if ui.button("Reset to default").clicked() {
+            let tokens = crate::theme::resolve("Cyan", &[]);
+            crate::theme::set_theme(ui.ctx(), tokens);
+            crate::settings::set_theme("Cyan", &[]);
+        }
+    });
+    ui.add_space(6.0);
+    ui.label(
+        egui::RichText::new(
+            "Themes are generated with smart contrast, so text stays readable on any color.",
+        )
+        .small()
+        .color(crate::theme::t().text_muted),
+    );
+
+    ui.add_space(14.0);
+    let mut gradient = crate::settings::gradient();
+    if ui.checkbox(&mut gradient, "Gradient").changed() {
+        crate::settings::set_gradient(gradient);
+        // Panel-fill translucency lives in build_visuals and is keyed
+        // off settings::gradient(), so re-derive visuals from the
+        // current tokens to pick up the flip immediately.
+        crate::theme::set_theme(ui.ctx(), crate::theme::t());
+    }
+    ui.add_space(4.0);
+    ui.label(
+        egui::RichText::new("Discord-style background wash behind the panels.")
+            .small()
+            .color(crate::theme::t().text_muted),
+    );
+    if gradient {
+        ui.add_space(10.0);
+        gradient_editor_ui(ui);
+    }
+}
+
+/// The Gradient v2 sub-block inside the Appearance panel: split live preview
 /// (raw wash / as-seen-through-frost), direction/intensity/frost sliders,
 /// harmony/preset/custom source mode chips, pegs 1-4, and Magic/Reset. Ported
 /// from SpaceView's reference gradient editor (`theme.rs` + the "Theme"
-/// window in `app.rs`), collapsed into this settings section instead of a
-/// popup window — TrontSnap's Settings tab already IS the appearance panel.
+/// window in `app.rs`); lives inside `appearance_ui`, which the Settings tab
+/// and the floating Theme window share.
 /// Read-only view of the pegs the ramp actually resolved to.
 ///
 /// In Harmony and Presets mode the stops are derived, so there is no picker to
