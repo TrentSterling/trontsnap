@@ -68,20 +68,19 @@ pub enum HotkeyAction {
 // MOD_SHIFT=0x4, MOD_WIN=0x8) WITHOUT MOD_NOREPEAT: keyhook::register_all() ORs
 // that in itself at RegisterHotKey time. VK_SNAPSHOT (0x2C) is PrintScreen for all
 // three defaults, matching the original fixed bindings.
-/// Default modifiers for Fullscreen, and the one place the two shipping builds
-/// differ in behaviour.
+/// Fullscreen is bare PrintScreen. Always, on every build.
 ///
-/// A MODIFIER-LESS bind registered by a Medium-integrity process is not
-/// delivered while an ELEVATED window has focus; combos with modifiers are
-/// (A/B tested 2026-07-23, reconfirmed against Task Manager 2026-07-26). So the
-/// portable build, which cannot be granted uiAccess, would ship with a
-/// Fullscreen key that silently dies over Task Manager and elevated terminals.
+/// v0.14.0 briefly defaulted this to Alt+PrtSc on the portable build, reasoning
+/// that a modifier-less bind is not delivered to a Medium process while an
+/// elevated window has focus, so a modified one would at least work everywhere.
+/// That traded the common case away for the rare one, and the result was a
+/// screenshot tool where pressing PrintScreen did nothing at all. PrtSc is what
+/// the key is for and what muscle memory expects.
 ///
-/// - PORTABLE  -> MOD_ALT: Alt+PrtSc, which survives elevated windows.
-/// - INSTALLED -> 0x0000: bare PrtSc, which uiAccess makes reliable everywhere.
-///
-/// Region and Record already carry modifiers, so they are identical either way.
-pub const DEFAULT_FULL_MODS: u32 = if cfg!(feature = "uiaccess") { 0x0000 } else { 0x0001 };
+/// The elevated-window case is solved by trontsnap-hotkeys.exe (see hotkeyd/),
+/// which owns the registration from a uiAccess process, NOT by degrading the
+/// binding everyone actually uses.
+pub const DEFAULT_FULL_MODS: u32 = 0x0000;
 pub const DEFAULT_REGION_MODS: u32 = 0x0002;
 pub const DEFAULT_RECORD_MODS: u32 = 0x0002 | 0x0004;
 /// VK_SNAPSHOT. All three defaults sit on PrintScreen.

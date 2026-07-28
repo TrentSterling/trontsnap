@@ -1,3 +1,47 @@
+## v0.15.0
+
+Bare PrintScreen captures elevated windows (Task Manager, elevated terminals)
+AND drag-out still works. Those two had been mutually exclusive; this splits them
+across two processes instead of choosing.
+
+**The trap.** Windows will not deliver a modifier-less hotkey to a
+Medium-integrity process while an elevated window has focus, which is why
+PrtSc never captured Task Manager. The documented fix is uiAccess, but uiAccess
+is granted by handing out a raised token that lands at HIGH integrity, and
+Windows blocks OLE drag-and-drop across an integrity boundary. So v0.14.0 bought
+Task Manager captures and lost dragging into Discord. Both directions measured
+2026-07-27. It is one token doing both jobs; no single process can win.
+
+**The fix, which is what every other app does.** AutoHotkey ships a separate
+uiAccess binary; Everything runs a Medium GUI plus a privileged service. So:
+
+- **New `trontsnap-hotkeys.exe`** (crate `hotkeyd/`): uiAccess, signed, no window,
+  no tray icon. Its entire job is `RegisterHotKey` plus a message pump. On a press
+  it opens a loopback connection to the UI's existing single-instance port and
+  writes one word.
+- **`trontsnap.exe` is now always Medium.** The `uiaccess` cargo feature is gone
+  and cannot be turned back on by accident. Portable and installed are the SAME
+  binary; the only difference is whether the broker sits beside it.
+- **The single-instance port gained a vocabulary.** `full` / `region` / `record`
+  run the same actions a local hotkey would, `ping` is the broker's liveness
+  probe, and anything unrecognised still means "surface the window" so second
+  launches keep working.
+- **Ownership is deterministic, not a race.** If the broker exists beside the UI,
+  the UI never registers locally, because `RegisterHotKey` is system-wide
+  exclusive and whoever won the boot race would decide arbitrarily. Portable has
+  no broker beside it and registers exactly as before.
+- **Rebinding still just works.** The broker reads the same
+  `HKCU\Software\TrontSnap` values the UI writes and watches the key with
+  `RegNotifyChangeKeyValue`, so Settings > Hotkeys needs no extra IPC.
+- **The broker retires itself** when the UI stops answering, so quitting from the
+  tray never leaves an invisible process holding your PrintScreen key hostage.
+
+**Fullscreen is bare PrintScreen again, on every build.** v0.14.0 defaulted the
+portable build to Alt+PrtSc so that every bind would survive elevated windows.
+That traded the common case for the rare one and produced a screenshot tool where
+pressing PrintScreen did nothing. Reverted; the broker is the right place to
+solve that.
+
 ## v0.14.1
 
 Fixes two things v0.14.0's uiAccess build silently broke.

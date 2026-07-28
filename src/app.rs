@@ -204,13 +204,27 @@ impl App {
         // like an edit field — this is a native app chrome, not a document.
         cc.egui_ctx.style_mut(|s| s.interaction.selectable_labels = false);
 
-        // Global hotkeys via RegisterHotKey (best-effort — if it can't install, the
-        // gallery still works). See keyhook.rs.
-        let hotkeys = match setup_hotkeys() {
-            Ok(m) => Some(m),
-            Err(e) => {
-                eprintln!("trontsnap: hotkeys unavailable: {e:#}");
-                None
+        // Hotkeys come from one of two places, never both.
+        //
+        // If trontsnap-hotkeys.exe was installed beside us, IT owns the binds and
+        // relays them over the loopback channel below. That is the only way a
+        // bare PrtSc reaches us while an elevated window (Task Manager) has
+        // focus, because Windows will not deliver a modifier-less hotkey to a
+        // Medium-integrity process in that situation. We stay Medium on purpose:
+        // uiAccess would fix the hotkey and break drag-out.
+        //
+        // Otherwise (the portable build) we register them ourselves, exactly as
+        // before. See hotkeyd/src/main.rs and keyhook.rs.
+        let hotkeys = if start_broker() {
+            eprintln!("trontsnap: hotkeys owned by trontsnap-hotkeys.exe (uiAccess broker)");
+            None
+        } else {
+            match setup_hotkeys() {
+                Ok(m) => Some(m),
+                Err(e) => {
+                    eprintln!("trontsnap: hotkeys unavailable: {e:#}");
+                    None
+                }
             }
         };
 
@@ -363,15 +377,36 @@ impl App {
             }));
         }
 
-        // Single-instance acceptor: any connection means "show the window".
+        // Loopback command channel. Originally just single-instance handling (a
+        // second launch pokes us to surface), now also how trontsnap-hotkeys.exe
+        // delivers hotkeys it registered from a uiAccess process, since ours
+        // cannot fire over elevated windows. See hotkeyd/src/main.rs.
+        //
+        // Vocabulary:
+        //   "full" / "region" / "record"  -> same actions as a local hotkey
+        //   "ping"                        -> broker liveness probe, ignore it
+        //   anything else (incl. "open")  -> surface the window
+        //
+        // An unrecognised payload MUST keep meaning "show the window": that is
+        // what a second launch sends, and older builds sent nothing at all.
         {
             let flag = show_flag.clone();
             let ctx = cc.egui_ctx.clone();
             std::thread::spawn(move || {
                 for stream in listener.incoming() {
-                    if stream.is_ok() {
-                        flag.store(true, Ordering::SeqCst);
-                        ctx.request_repaint();
+                    let Ok(mut s) = stream else { continue };
+                    let mut buf = [0u8; 16];
+                    let _ = s.set_read_timeout(Some(Duration::from_millis(250)));
+                    let n = std::io::Read::read(&mut s, &mut buf).unwrap_or(0);
+                    match std::str::from_utf8(&buf[..n]).unwrap_or("").trim() {
+                        "ping" => {}
+                        "full" => dispatch_hotkey(HotkeyEvent::Full),
+                        "region" => dispatch_hotkey(HotkeyEvent::Region),
+                        "record" => dispatch_hotkey(HotkeyEvent::Record),
+                        _ => {
+                            flag.store(true, Ordering::SeqCst);
+                            ctx.request_repaint();
+                        }
                     }
                 }
             });
@@ -1473,17 +1508,56 @@ fn setup_hotkeys() -> anyhow::Result<KeyboardHook> {
     let (hook, rx) = KeyboardHook::install()?;
     std::thread::spawn(move || {
         while let Ok(ev) = rx.recv() {
-            match ev {
-                HotkeyEvent::Full => do_full(),
-                HotkeyEvent::Region => {
-                    std::thread::spawn(region_win32::capture_region);
-                }
-                // Toggle: first press picks a region + starts recording, second stops.
-                HotkeyEvent::Record => crate::recorder::toggle(),
-            }
+            dispatch_hotkey(ev);
         }
     });
     Ok(hook)
+}
+
+/// Perform a hotkey action. Split out of the consumer loop so the loopback
+/// command channel can drive the exact same path: a bind relayed by
+/// trontsnap-hotkeys.exe must behave identically to one we registered ourselves.
+///
+/// Safe to call from any background thread; each arm hands off to its own thread
+/// or returns immediately. Deliberately NOT routed through eframe's update(),
+/// which does not run while the window is hidden to tray, which is precisely
+/// when captures happen.
+fn dispatch_hotkey(ev: HotkeyEvent) {
+    match ev {
+        HotkeyEvent::Full => do_full(),
+        HotkeyEvent::Region => {
+            std::thread::spawn(region_win32::capture_region);
+        }
+        // Toggle: first press picks a region + starts recording, second stops.
+        HotkeyEvent::Record => crate::recorder::toggle(),
+    }
+}
+
+/// Path to the uiAccess hotkey broker, if it was installed beside us.
+fn broker_path() -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let p = exe.with_file_name("trontsnap-hotkeys.exe");
+    p.exists().then_some(p)
+}
+
+/// Start the broker if it shipped with this install, and report whether it owns
+/// the hotkeys now.
+///
+/// Deterministic ownership, no race: if the broker exists we NEVER register
+/// locally, because RegisterHotKey is system-wide exclusive and whoever gets
+/// there first would win arbitrarily on a slow boot. The portable build has no
+/// broker beside it, so it registers locally exactly as before.
+///
+/// Launched via ShellExecuteW, not CreateProcess: a uiAccess exe refuses a bare
+/// CreateProcess with ERROR_ELEVATION_REQUIRED (740). It self-single-instances,
+/// so calling this when it is already up is harmless.
+fn start_broker() -> bool {
+    let Some(p) = broker_path() else { return false };
+    let started = crate::shellexec::run(&p.to_string_lossy(), "");
+    if !started {
+        eprintln!("trontsnap: hotkey broker present but would not start; using local hotkeys");
+    }
+    started
 }
 
 fn do_full() {

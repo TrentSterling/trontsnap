@@ -1,6 +1,13 @@
-﻿[package]
+﻿[workspace]
+# The hotkey broker is a separate crate because a build script emits ONE manifest
+# per crate, and these two binaries need opposite manifests: the UI must stay
+# non-uiAccess (Medium, so drag-out works) while the broker must be uiAccess
+# (so binds survive elevated windows). See hotkeyd/build.rs.
+members = ["hotkeyd"]
+
+[package]
 name = "trontsnap"
-version = "0.14.1"
+version = "0.15.0"
 edition = "2021"
 description = "Fast screenshot tool: global-hotkey capture (full + freeze-frame region) straight to clipboard, plus a lazy-loading gallery over your whole screenshot history"
 
@@ -51,23 +58,12 @@ windows = { version = "0.56", features = [
 # under the `uiaccess` feature, which the installed build turns on).
 winresource = "0.1"
 
-[features]
-# uiAccess=true so our RegisterHotKey binds are delivered even while an ELEVATED
-# window (Task Manager, an elevated terminal) has focus, WITHOUT the process
-# itself being elevated — so it stays Medium integrity and drag-out keeps
-# working. Opt-in, because Windows only GRANTS uiAccess to an exe that is
-# Authenticode-signed by a trusted-root cert AND lives in a secure location
-# (%ProgramFiles%), and a uiAccess exe cannot be launched via bare CreateProcess
-# (plain `cargo run` would fail with ERROR_ELEVATION_REQUIRED 740).
-#
-# TWO SHIPPING BUILDS, deliberately (decided 2026-07-26):
-#   default             -> the PORTABLE download. No install, no admin, no
-#                          signing, delete-to-uninstall. Defaults Fullscreen to
-#                          Alt+PrtSc so it behaves over elevated windows.
-#   --features uiaccess -> the INSTALLED build (bootstrap.ps1 -> Program Files).
-#                          Defaults Fullscreen to bare PrtSc, which uiAccess
-#                          makes reliable everywhere.
-uiaccess = []
+# NOTE: the `uiaccess` feature is deliberately GONE (v0.15.0). Putting uiAccess
+# on this binary raises it to HIGH integrity, and Windows blocks drag-and-drop
+# across an integrity boundary, so it broke dragging captures into Discord and
+# terminals. There is now ONE trontsnap.exe, always Medium; the elevated-window
+# hotkey problem is solved by the separate `trontsnap-hotkeys` broker crate.
+# Do not reintroduce it here.
 
 [profile.release]
 opt-level = 3        # speed over size: this app decodes a lot of images

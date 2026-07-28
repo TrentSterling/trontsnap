@@ -71,16 +71,31 @@ if (Test-Path $prebuilt) {
     Log "layout: source ($srcExe)"
 }
 
-# Refuse to install a build without uiAccess in its manifest: that is the entire
-# point of this installer, and a default-feature exe here would silently produce an
-# install with none of the benefit and all of the ceremony.
-$manifestTxt = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($srcBuilt))
-if ($manifestTxt -notmatch 'uiAccess="true"') {
-    Log "ERROR: $srcBuilt was NOT built with --features uiaccess (no uiAccess=true in its manifest)."
-    Log "       Build it with: cargo build --release --features uiaccess"
+# The UI must NOT have uiAccess. It would be raised to HIGH integrity and lose
+# drag-and-drop into every Medium app. Refuse rather than silently ship that.
+$uiManifest = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($srcBuilt))
+if ($uiManifest -match 'uiAccess="true"') {
+    Log "ERROR: $srcBuilt has uiAccess=true. The UI must stay Medium or drag-out breaks."
+    Log "       Build it with a plain: cargo build --release"
     exit 1
 }
-Log "manifest: uiAccess=true confirmed"
+Log "UI manifest: uiAccess=false confirmed (Medium; drag-out intact)"
+
+# The broker is the piece that DOES need uiAccess. Without it this install is just
+# a copy of the portable build, so say so loudly rather than appearing to work.
+$srcBroker = Join-Path $root 'trontsnap-hotkeys.exe'
+if (-not (Test-Path $srcBroker)) { $srcBroker = Join-Path $root 'target\release\trontsnap-hotkeys.exe' }
+if (-not (Test-Path $srcBroker)) {
+    Log "ERROR: trontsnap-hotkeys.exe not found. It is what makes bare PrtSc work over"
+    Log "       elevated windows. Build it with: cargo build --release -p trontsnap-hotkeys"
+    exit 1
+}
+$brokerManifest = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($srcBroker))
+if ($brokerManifest -notmatch 'uiAccess="true"') {
+    Log "ERROR: $srcBroker lacks uiAccess=true; it would be pointless."
+    exit 1
+}
+Log "broker manifest: uiAccess=true confirmed"
 
 # --- 2. trusted signing cert (reuse TrontEQ's; else make a machine-local one) ----
 $pfxPass = 'tronteq'
@@ -135,11 +150,20 @@ if (Test-Path $portableExe) {
     Log "portable exe: none at $portableExe (nothing to clean up)"
 }
 
-# --- 4. install into Program Files ----------------------------------------------
+# --- 4. install BOTH binaries into Program Files ---------------------------------
+# The UI finds the broker by looking for it next to itself, so they must land in
+# the same directory.
 New-Item -ItemType Directory -Force -Path $installDir | Out-Null
 Copy-Item $srcBuilt $destExe -Force
 if (-not (Test-Path $destExe)) { Log "ERROR: could not copy exe to $destExe (need admin / file locked)"; exit 1 }
 Log "installed -> $destExe ($((Get-Item $destExe).Length) bytes)"
+
+& (Join-Path $sys32 'taskkill.exe') /IM trontsnap-hotkeys.exe /F 2>&1 | Out-Null
+Start-Sleep -Milliseconds 300
+$destBroker = Join-Path $installDir 'trontsnap-hotkeys.exe'
+Copy-Item $srcBroker $destBroker -Force
+if (-not (Test-Path $destBroker)) { Log "ERROR: could not copy broker to $destBroker"; exit 1 }
+Log "installed -> $destBroker ($((Get-Item $destBroker).Length) bytes)"
 
 # --- 5. sign the installed exe (uiAccess is denied without a valid signature) -----
 $signtool = 'C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\signtool.exe'
@@ -149,10 +173,14 @@ if (-not (Test-Path $signtool)) {
                  Where-Object { $_.FullName -match '\\x64\\' } | Select-Object -First 1 -ExpandProperty FullName)
 }
 if (-not $signtool -or -not (Test-Path $signtool)) { Log "ERROR: signtool.exe not found (install the Windows SDK)"; exit 1 }
+# Only the BROKER strictly needs a signature (uiAccess is denied without one),
+# but sign both: a signed UI is one less SmartScreen prompt and costs nothing.
 & $signtool sign /v /fd SHA256 /f $pfx /p $pfxPass $destExe 2>&1 | ForEach-Object { Log "  $_" }
-$sig = Get-AuthenticodeSignature $destExe
-Log "signature: $($sig.Status)"
-if ($sig.Status -ne 'Valid') { Log "ERROR: installed exe is not validly signed -> Windows will deny uiAccess"; exit 1 }
+& $signtool sign /v /fd SHA256 /f $pfx /p $pfxPass $destBroker 2>&1 | ForEach-Object { Log "  $_" }
+$sig = Get-AuthenticodeSignature $destBroker
+Log "broker signature: $($sig.Status)"
+if ($sig.Status -ne 'Valid') { Log "ERROR: broker is not validly signed -> Windows will deny it uiAccess"; exit 1 }
+Log "ui signature    : $((Get-AuthenticodeSignature $destExe).Status)"
 
 # --- 6. autostart -> the installed exe (Run key; a Run/shell launch grants uiAccess) ---
 $run = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'

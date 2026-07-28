@@ -1,0 +1,28 @@
+[package]
+name = "trontsnap-hotkeys"
+version = "0.15.0"
+edition = "2021"
+description = "uiAccess hotkey broker for TrontSnap: owns RegisterHotKey so binds survive elevated windows, and relays them to the Medium-integrity UI over loopback"
+
+[[bin]]
+name = "trontsnap-hotkeys"
+path = "src/main.rs"
+
+[dependencies]
+winreg = "0.52"
+windows = { version = "0.56", features = [
+    "Win32_Foundation",
+    # CreateEventW's signature references SECURITY_ATTRIBUTES, so windows-rs only
+    # generates it when this is on.
+    "Win32_Security",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[build-dependencies]
+# Embeds the uiAccess manifest. This is why the helper is its OWN CRATE: a build
+# script emits one resource for the whole crate, so a single crate cannot produce
+# both a uiAccess binary and a plain one.
+winresource = "0.1"
