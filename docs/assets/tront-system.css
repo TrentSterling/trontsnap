@@ -1,0 +1,331 @@
+/*!
+ * TRONT SYSTEM - shared component language for tront.xyz
+ *
+ * NEW FILE. Does not touch assets/css/tront-themes.css (the live override sheet)
+ * or assets/js/tront-theme.js (the live cycler). Nothing existing changes until
+ * pages opt in.
+ *
+ * Every colour here comes from tront-system.js. No literal colour values below
+ * this comment, which is the whole point: a theme cannot break a component if
+ * the component never names a colour.
+ *
+ * Usage:
+ *   <link rel="stylesheet" href="https://tront.xyz/assets/css/tront-system.css">
+ *   <script src="https://tront.xyz/assets/js/tront-system.js"></script>
+ *   <script>Tront.applyTheme('#56ccff', true)</script>
+ *
+ * Absolute URLs because three separate repos publish into this domain
+ * (EOS-Native/docs, SpaceView/docs, SnapScan/docs).
+ */
+
+/* ============================================================ 1. FOUNDATION */
+
+:root {
+  --t-display: 'Fira Code', ui-monospace, monospace;
+  --t-body: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+
+  /* one spacing rhythm, used by everything */
+  --t-1: 4px;  --t-2: 8px;  --t-3: 12px; --t-4: 16px;
+  --t-5: 24px; --t-6: 32px; --t-7: 48px; --t-8: 72px;
+
+  --t-radius: 8px;
+  --t-radius-pill: 999px;
+  --t-border: 1px;
+  --t-border-strong: 2px;
+
+  /* real depth: offset plus blur. A zero-offset colour halo is decoration */
+  --t-shadow: 0 2px 8px -2px rgba(0, 0, 0, .35);
+  --t-shadow-lg: 0 8px 28px -8px rgba(0, 0, 0, .5);
+
+  --t-fast: .14s cubic-bezier(.2, .8, .2, 1);
+  --t-slow: .3s cubic-bezier(.2, .8, .2, 1);
+}
+
+/* ============================================================ 2. TYPE SCALE */
+
+/* TWO GROUNDS. Text on the page sits on the WASH; text in a panel sits on the
+   panel. Using the panel's ink out on the wash is what makes a rolled theme
+   produce unreadable kickers at high intensity. Panels reset back below. */
+.t-kicker {
+  font-family: var(--t-display);
+  font-size: .8rem;
+  font-weight: 700;
+  letter-spacing: .1em;
+  color: var(--accent-wash, var(--accent));
+  display: block;
+  margin-bottom: var(--t-2);
+}
+
+/* Modular scale, ratio 1.25. Steps closer than that stop reading as hierarchy
+   and the page turns into one grey mass, which is the current home page's
+   actual problem. Fewer sizes, further apart. */
+.t-h1 { font-family: var(--t-display); font-size: clamp(2.44rem, 5vw, 3.82rem); font-weight: 700; line-height: 1.02; letter-spacing: -.025em; }
+.t-h2 { font-family: var(--t-display); font-size: clamp(1.56rem, 3.2vw, 2.44rem); font-weight: 700; line-height: 1.1; letter-spacing: -.015em; }
+.t-h3 { font-family: var(--t-display); font-size: 1.25rem; font-weight: 700; line-height: 1.25; }
+.t-body { font-family: var(--t-body); font-size: 1rem; line-height: 1.6; max-width: 68ch; }
+.t-small { font-family: var(--t-body); font-size: .8rem; line-height: 1.5; color: var(--muted-wash, var(--muted)); }
+.t-mono { font-family: var(--t-display); font-size: .8rem; letter-spacing: .02em; }
+
+/* Page-level ink defaults to the WASH ground. */
+body { color: var(--text-wash, var(--text)); }
+
+/* Inside any panel the ground is the panel again, so the panel-matched inks
+   come back. One rule, and every nested element inherits correctly. */
+.t-panel, .t-surface, .t-card, .t-nav, [data-ground="panel"] {
+  color: var(--text-frosted, var(--text));
+}
+.t-panel .t-kicker, .t-surface .t-kicker, .t-card .t-kicker, [data-ground="panel"] .t-kicker {
+  color: var(--accent-frosted, var(--accent));
+}
+.t-panel .t-small, .t-surface .t-small, .t-card .t-small, [data-ground="panel"] .t-small {
+  color: var(--muted-frosted, var(--muted));
+}
+
+/* more space above a heading than below it */
+.t-h2, .t-h3 { margin-top: var(--t-6); margin-bottom: var(--t-3); }
+.t-h2:first-child, .t-h3:first-child { margin-top: 0; }
+
+/* ============================================================ 3. BUTTONS
+ *
+ * ONE button. Variants change weight, never shape, size or family.
+ *
+ * The bug this replaces: /games .join-button had color:#fff hardcoded over a
+ * gradient ending in --accent-teal, and /discord .cta-button had color:#111
+ * over a 5-stop aurora. Under the cyan theme the games one went white-on-light
+ * and became unreadable. --on-solid is chosen by APCA against the actual fill,
+ * so that cannot happen.
+ */
+
+.t-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--t-2);
+  font-family: var(--t-display);
+  font-size: .95rem;
+  font-weight: 700;
+  letter-spacing: .01em;
+  line-height: 1;
+  padding: var(--t-3) var(--t-5);
+  border-radius: var(--t-radius);
+  border: var(--t-border) solid transparent;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background var(--t-fast), border-color var(--t-fast),
+              color var(--t-fast), transform var(--t-fast), box-shadow var(--t-fast);
+}
+.t-btn:hover { transform: translateY(-1px); box-shadow: var(--t-shadow); }
+.t-btn:active { transform: translateY(0); box-shadow: none; }
+.t-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.t-btn[disabled], .t-btn[aria-disabled="true"] {
+  opacity: .45; cursor: not-allowed; transform: none; box-shadow: none;
+}
+
+.t-btn--primary   { background: var(--solid); color: var(--on-solid); }
+.t-btn--primary:hover { background: var(--solid-hover); }
+
+/* The gradient button, kept rather than banned. Stops come from the accent's
+   own harmony spread so they cannot clash, and the label is chosen against the
+   ramp's WORST point rather than one end, which is where the old
+   .join-button (color:#fff over a gradient) actually failed. */
+.t-btn--wash {
+  background-image: var(--btn-wash);
+  background-size: 200% 100%;
+  background-position: 0% 0%;
+  color: var(--on-btn-wash);
+  transition: background-position var(--t-slow), transform var(--t-fast), box-shadow var(--t-fast);
+}
+.t-btn--wash:hover { background-position: 100% 0%; }
+
+/* the animated variant, for the one place that earns it */
+.t-btn--wash.is-aurora { background-size: 400% 100%; animation: t-aurora 8s linear infinite; }
+@keyframes t-aurora { 0% { background-position: 0% 0%; } 100% { background-position: 400% 0%; } }
+
+.t-btn--secondary { background: var(--elem); color: var(--text); border-color: var(--line); }
+.t-btn--secondary:hover { background: var(--elem-hover); border-color: var(--line-hover); }
+
+/* ghost has no fill, so it sits on whatever is behind it: the wash */
+.t-btn--ghost     { background: transparent; color: var(--accent-wash, var(--accent)); border-color: var(--line); }
+.t-btn--ghost:hover { background: var(--elem); color: var(--text); }
+.t-panel .t-btn--ghost, .t-card .t-btn--ghost, [data-ground="panel"] .t-btn--ghost { color: var(--accent); }
+
+.t-btn--sm { font-size: .82rem; padding: var(--t-2) var(--t-3); }
+.t-btn--lg { font-size: 1.05rem; padding: var(--t-4) var(--t-6); }
+
+/* ============================================================ 4. NAV
+ * Two variants. Hub carries the site's own navigation; product keeps the
+ * product's navigation and only adds a parent mark, because someone who
+ * arrived to evaluate a library should not be handed the hub's menu.
+ */
+
+.t-nav {
+  position: sticky; top: 0; z-index: 100;
+  display: flex; align-items: center; gap: var(--t-2);
+  padding: var(--t-3) var(--t-4);
+  background: var(--panel-fill, var(--panel));
+  backdrop-filter: blur(var(--panel-blur, 0px));
+  -webkit-backdrop-filter: blur(var(--panel-blur, 0px));
+  border-bottom: var(--t-border) solid var(--line-subtle);
+}
+.t-nav--hub { justify-content: center; flex-wrap: wrap; }
+.t-nav--product { justify-content: flex-start; }
+.t-nav--product .t-nav__links { margin-left: auto; }
+.t-nav__links { display: flex; gap: var(--t-2); flex-wrap: wrap; }
+
+.t-nav__link {
+  display: inline-flex; align-items: center; gap: var(--t-2);
+  font-family: var(--t-display); font-size: .92rem; font-weight: 700;
+  color: var(--muted); text-decoration: none;
+  padding: var(--t-2) var(--t-4);
+  border-radius: var(--t-radius);
+  border: var(--t-border) solid var(--line-subtle);
+  background: var(--elem);
+  transition: background var(--t-fast), color var(--t-fast), border-color var(--t-fast);
+}
+.t-nav__link:hover { background: var(--elem-hover); color: var(--text); border-color: var(--line-hover); }
+.t-nav__link[aria-current="page"] { background: var(--solid); color: var(--on-solid); border-color: var(--solid); }
+.t-nav__avatar { width: 22px; height: 22px; border-radius: 50%; }
+
+/* Satellites (punk.tront.xyz, monke.tront.xyz) read as part of the network:
+   hub links with the satellite injected as the current item. */
+.t-nav--satellite { justify-content: center; flex-wrap: wrap; }
+
+/* Crosslink: the sideways move a copy-pasted navbar can never offer. */
+.t-nav__more { position: relative; }
+.t-nav__more > summary { list-style: none; cursor: pointer; }
+.t-nav__more > summary::-webkit-details-marker { display: none; }
+.t-nav__more > summary::after { content: ' \25BE'; opacity: .7; }
+.t-nav__menu {
+  position: absolute; right: 0; top: calc(100% + var(--t-2)); z-index: 200;
+  min-width: 190px; max-height: 60vh; overflow-y: auto;
+  display: flex; flex-direction: column;
+  background: var(--panel);
+  border: var(--t-border) solid var(--line);
+  border-radius: var(--t-radius);
+  box-shadow: var(--t-shadow-lg);
+  padding: var(--t-1);
+}
+.t-nav__menu a {
+  font-family: var(--t-display); font-size: .8rem; font-weight: 700;
+  color: var(--muted); text-decoration: none;
+  padding: var(--t-2) var(--t-3); border-radius: 6px; white-space: nowrap;
+}
+.t-nav__menu a:hover { background: var(--elem-hover); color: var(--text); }
+
+/* the parent mark for product pages */
+.t-nav__mark {
+  display: inline-flex; align-items: center; gap: var(--t-2);
+  font-family: var(--t-display); font-size: .85rem; font-weight: 700;
+  color: var(--muted); text-decoration: none;
+}
+.t-nav__mark:hover { color: var(--accent); }
+.t-nav__mark img { width: 20px; height: 20px; border-radius: 50%; }
+
+/* ============================================================ 5. CARD
+ * The games-page DNA: every project carries its own hue. Set --item via
+ * Tront.applyItemHue(el, '#ff79c6') and the ink, border and chip all come back
+ * guaranteed readable against the current ground.
+ */
+
+.t-card {
+  display: flex; flex-direction: column;
+  background: var(--panel-fill, var(--panel));
+  backdrop-filter: blur(var(--panel-blur, 0px));
+  -webkit-backdrop-filter: blur(var(--panel-blur, 0px));
+  border: var(--t-border-strong) solid var(--item-line, var(--line));
+  border-radius: var(--t-radius);
+  overflow: hidden;
+  text-decoration: none;
+  transition: border-color var(--t-fast), box-shadow var(--t-fast), transform var(--t-fast);
+}
+.t-card:hover { transform: translateY(-2px); box-shadow: var(--t-shadow-lg); }
+.t-card__media { aspect-ratio: 16 / 9; background: var(--elem); overflow: hidden; }
+.t-card__media img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.t-card__body { padding: var(--t-3) var(--t-4) var(--t-4); display: flex; flex-direction: column; flex: 1; gap: var(--t-2); }
+.t-card__title {
+  font-family: var(--t-display); font-size: 1.05rem; font-weight: 700;
+  line-height: 1.25; color: var(--text);
+}
+.t-card__title .yr { color: var(--item-ink, var(--accent)); }
+.t-card__text { font-family: var(--t-body); font-size: .9rem; color: var(--muted); flex: 1; }
+.t-card__foot { display: flex; flex-wrap: wrap; gap: var(--t-1); justify-content: flex-end; margin-top: var(--t-2); }
+
+/* ============================================================ 6. TAG + FILTER */
+
+.t-tag {
+  font-family: var(--t-display); font-size: .62rem; font-weight: 700;
+  letter-spacing: .04em;
+  color: var(--item-ink, var(--accent));
+  border: var(--t-border) solid var(--item-line, var(--line));
+  background: var(--elem);
+  padding: 2px var(--t-2);
+  border-radius: var(--t-radius-pill);
+  white-space: nowrap;
+}
+
+.t-filter {
+  font-family: var(--t-display); font-size: .85rem; font-weight: 700;
+  color: var(--muted);
+  background: var(--elem);
+  border: var(--t-border) solid var(--line-subtle);
+  padding: var(--t-2) var(--t-4);
+  border-radius: var(--t-radius-pill);
+  cursor: pointer;
+  transition: background var(--t-fast), color var(--t-fast), border-color var(--t-fast);
+}
+.t-filter:hover { background: var(--elem-hover); color: var(--text); }
+.t-filter[aria-pressed="true"] { background: var(--solid); color: var(--on-solid); border-color: var(--solid); }
+
+/* ============================================================ 7. SURFACES + WASH
+ *
+ * The background gradient, ported from the egui fleet. The wash paints the
+ * page; panels float on top at --frost opacity. Frost is asymmetric per mode
+ * because white bleaches colour and dark preserves it.
+ *
+ * The important consequence: at low frost, text sits on the WASH, not on the
+ * panel it was contrast-matched against. --panel-frosted is the colour actually
+ * behind the text, which is how the guarantee stays honest here. (This is
+ * open task #20 on the Rust side, and it is easier to solve on the web because
+ * the scrim is a real element rather than a composited paint.)
+ */
+
+.t-wash {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background-image: var(--wash);
+  pointer-events: none;
+}
+
+/* EVERY surface paints with --panel-fill, never with --panel directly. That is
+   what makes frost actually visible: a surface that reaches for --panel silently
+   opts out of the wash and the slider appears broken. */
+.t-panel, .t-surface {
+  background: var(--panel-fill, var(--panel));
+  backdrop-filter: blur(var(--panel-blur, 0px));
+  -webkit-backdrop-filter: blur(var(--panel-blur, 0px));
+  border: var(--t-border) solid var(--line-subtle);
+  border-radius: var(--t-radius);
+  padding: var(--t-5);
+}
+.t-surface { padding: 0; }
+.t-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: var(--t-4);
+}
+.t-stack > * + * { margin-top: var(--t-4); }
+.t-wrap { max-width: 1400px; margin: 0 auto; padding: 0 var(--t-4); }
+
+/* ============================================================ 8. SEMANTIC */
+
+.t-ok     { color: var(--ok); }
+.t-warn   { color: var(--warn); }
+.t-danger { color: var(--danger); }
+
+/* ============================================================ 9. A11Y */
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+  .t-btn:hover, .t-card:hover { transform: none; }
+}
