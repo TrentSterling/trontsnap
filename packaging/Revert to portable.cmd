@@ -11,7 +11,19 @@ if %errorlevel%==0 goto :admin
 if /i "%~1"=="admin" goto :admin
 
 echo Reverting TrontSnap to the portable build ^(one administrator prompt^)...
-powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -ArgumentList 'admin','%LOCALAPPDATA%' -Verb RunAs -Wait"
+REM One argument only, and the exit code is checked. See the long note in
+REM "Install TrontSnap.cmd": forwarding %LOCALAPPDATA% through cmd -> powershell
+REM -> -ArgumentList could not be quoted reliably, and the elevated branch's own
+REM %LOCALAPPDATA% is correct for same-account UAC anyway.
+powershell -NoProfile -Command "$p = Start-Process -FilePath '%~f0' -ArgumentList 'admin' -Verb RunAs -Wait -PassThru; if ($null -eq $p) { exit 1 }; exit $p.ExitCode"
+if errorlevel 1 (
+    echo.
+    echo  REVERT FAILED - see C:\ProgramData\TrontSnap\bootstrap.log
+    echo.
+    if /i "%~1"=="nopause" exit /b 1
+    pause
+    exit /b 1
+)
 echo.
 echo Launching the portable build...
 start "" "%LOCALAPPDATA%\TrontSnap\trontsnap.exe"

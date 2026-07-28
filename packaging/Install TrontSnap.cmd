@@ -17,11 +17,17 @@ if /i "%~1"=="admin" goto :admin
 echo Installing TrontSnap ^(one administrator prompt^)...
 REM -PassThru + ExitCode: without it a cancelled UAC prompt, or any `exit 1` in
 REM bootstrap.ps1, is invisible and we cheerfully print the success banner below.
-REM %LOCALAPPDATA% is read INSIDE PowerShell rather than substituted by cmd,
-REM because a username containing an apostrophe would otherwise terminate the
-REM single-quoted string and a username containing a space would split the
-REM argument in two (-ArgumentList joins with spaces and adds no quoting).
-powershell -NoProfile -Command "$p = Start-Process -FilePath '%~f0' -ArgumentList @('admin', ('\"' + $env:LOCALAPPDATA + '\"')) -Verb RunAs -Wait -PassThru; exit $p.ExitCode"
+REM
+REM Only ONE argument is passed. An earlier version also forwarded %LOCALAPPDATA%
+REM so the portable cleanup would target the right profile if UAC consent landed
+REM on a different admin account, but every attempt to quote a path through
+REM cmd -> powershell -> -ArgumentList -> cmd %~2 was fragile, and the version
+REM that shipped was simply broken (inside PowerShell SINGLE quotes, \" is a
+REM literal backslash-quote, not an escaped quote). The elevated branch falls
+REM back to its own %LOCALAPPDATA%, which is correct for same-account UAC, i.e.
+REM every normal case. Split-account installs just skip the portable cleanup,
+REM which is cosmetic rather than harmful.
+powershell -NoProfile -Command "$p = Start-Process -FilePath '%~f0' -ArgumentList 'admin' -Verb RunAs -Wait -PassThru; if ($null -eq $p) { exit 1 }; exit $p.ExitCode"
 if errorlevel 1 (
     echo.
     echo ------------------------------------------------------------
