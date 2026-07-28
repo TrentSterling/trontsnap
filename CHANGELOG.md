@@ -1,3 +1,24 @@
+## v0.21.0
+
+Copy the TEXT out of anything on screen. Ctrl+Alt+PrtSc opens the same
+freeze-frame region picker, and the region's text lands on the clipboard
+instead of pixels; ShareX does not have this one.
+
+- Powered by the OCR engine Windows already ships (`Windows.Media.Ocr`):
+  no cloud, no model download, no new dependency, works offline. If no OCR
+  language pack is installed it says so instead of dying.
+- Lines are joined as lines, not flattened into one long space-separated
+  string, so pasted code, logs and tables keep their shape. Oversized regions
+  are downscaled to the engine's limit instead of failing.
+- The gallery grows **Copy text (OCR)** in the right-click menu, so any
+  screenshot in the whole ~18,800 timeline can give up its text after the
+  fact. Decode + recognition run off-thread; the status chip reports the line
+  count.
+- Text goes through the same clipboard writer thread as images (the v0.16.0
+  discipline), so retries and newest-wins apply to it too. Fourth rebindable
+  hotkey everywhere: Settings row, tray menu, Capture menu, About shortcuts,
+  the uiAccess broker, and a one-shot `trontsnap ocr` CLI mode.
+
 ## v0.20.0
 
 Multi-select lands in the gallery, which finally gives ~18,800 shots a cleanup

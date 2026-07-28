@@ -16,7 +16,7 @@
 //!   trontsnap.exe          Medium, no uiAccess -> UI, gallery, capture, DRAG-OUT
 //!   trontsnap-hotkeys.exe  uiAccess, signed    -> owns RegisterHotKey, no UI
 //!
-//! This process has no window, no tray icon and no UI. It registers the three
+//! This process has no window, no tray icon and no UI. It registers the
 //! binds, and when one fires it opens a loopback connection to the UI's existing
 //! single-instance port and writes one word. That port already existed for
 //! second-launch handling, so this adds a vocabulary rather than a new channel.
@@ -74,6 +74,7 @@ const APP_KEY: &str = r"Software\TrontSnap";
 const ID_FULL: i32 = 1;
 const ID_REGION: i32 = 2;
 const ID_RECORD: i32 = 3;
+const ID_OCR: i32 = 4;
 
 /// Re-read the binds and re-register. Must run ON the pump thread, because
 /// RegisterHotKey binds to whichever thread called it.
@@ -87,12 +88,14 @@ struct Bind {
     vk: u32,
 }
 
-/// Defaults must match settings.rs: bare PrtSc / Ctrl+PrtSc / Ctrl+Shift+PrtSc.
-fn read_binds() -> [Bind; 3] {
+/// Defaults must match settings.rs: bare PrtSc / Ctrl+PrtSc / Ctrl+Shift+PrtSc
+/// / Ctrl+Alt+PrtSc (region OCR).
+fn read_binds() -> [Bind; 4] {
     let mut binds = [
         Bind { mods: 0x0000, vk: 0x2C },
         Bind { mods: 0x0002, vk: 0x2C },
         Bind { mods: 0x0002 | 0x0004, vk: 0x2C },
+        Bind { mods: 0x0002 | 0x0001, vk: 0x2C },
     ];
     let Ok(key) = RegKey::predef(WR_HKCU).open_subkey_with_flags(APP_KEY, KEY_READ) else {
         return binds;
@@ -101,6 +104,7 @@ fn read_binds() -> [Bind; 3] {
         ("HotkeyFullMods", "HotkeyFullVk"),
         ("HotkeyRegionMods", "HotkeyRegionVk"),
         ("HotkeyRecordMods", "HotkeyRecordVk"),
+        ("HotkeyOcrMods", "HotkeyOcrVk"),
     ];
     for (i, (m, v)) in names.iter().enumerate() {
         if let Ok(x) = key.get_value::<u32, _>(m) {
@@ -125,8 +129,8 @@ fn send(cmd: &str) -> bool {
     }
 }
 
-fn register_all(binds: &[Bind; 3]) {
-    for (id, b) in [ID_FULL, ID_REGION, ID_RECORD].iter().zip(binds.iter()) {
+fn register_all(binds: &[Bind; 4]) {
+    for (id, b) in [ID_FULL, ID_REGION, ID_RECORD, ID_OCR].iter().zip(binds.iter()) {
         unsafe {
             let _ = UnregisterHotKey(HWND(0), *id);
             // Failure is not fatal: another app may own that combo. The other two
@@ -244,6 +248,7 @@ fn main() {
                         ID_FULL => "full",
                         ID_REGION => "region",
                         ID_RECORD => "record",
+                        ID_OCR => "ocr",
                         _ => continue,
                     };
                     // If the UI is gone the watchdog will retire us shortly; drop
@@ -261,7 +266,7 @@ fn main() {
                 _ => {}
             }
         }
-        for id in [ID_FULL, ID_REGION, ID_RECORD] {
+        for id in [ID_FULL, ID_REGION, ID_RECORD, ID_OCR] {
             let _ = UnregisterHotKey(HWND(0), id);
         }
     }

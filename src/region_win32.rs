@@ -73,20 +73,55 @@ fn rgb(r: u8, g: u8, b: u8) -> COLORREF {
 /// grab the primary monitor, enumerate smart-capture targets, run the picker, and
 /// deliver the crop (clipboard + disk + shutter). No involvement of the app's UI thread.
 pub fn capture_region() {
-    let Some((img, sel)) = run_picker() else { return };
+    let Some(cropped) = picked_crop() else { return };
+    let (rw, rh) = (cropped.width(), cropped.height());
+    match capture::deliver(&cropped) {
+        Ok(path) => println!("captured {rw}x{rh} -> clipboard + {}", path.display()),
+        Err(e) => eprintln!("trontsnap: region deliver failed: {e:#}"),
+    }
+}
+
+/// Same freeze-frame picker, different delivery: the crop goes through the
+/// Windows OCR engine and its TEXT lands on the clipboard. Nothing is saved to
+/// disk; this is a read, not a capture. Blocks; run on a dedicated thread.
+pub fn capture_region_ocr() {
+    let Some(cropped) = picked_crop() else { return };
+    let (rw, rh) = (cropped.width(), cropped.height());
+    match crate::ocr::recognize(&cropped) {
+        Ok(text) if text.trim().is_empty() => {
+            // Nothing recognized is a normal outcome (a region of pure UI
+            // chrome), not an error; stay quiet beyond the log.
+            crate::clipboard::log_line(&format!("ocr: no text found in {rw}x{rh} region"));
+        }
+        Ok(text) => {
+            let lines = text.lines().count();
+            let _ = crate::clipboard::set_text(&text);
+            // The shutter is the only feedback a background grab has; OCR
+            // earns it the same way a capture does.
+            crate::sound::play_shutter();
+            println!("ocr {rw}x{rh} -> {lines} lines to clipboard");
+        }
+        Err(e) => {
+            eprintln!("trontsnap: ocr failed: {e:#}");
+            crate::clipboard::log_line(&format!("ocr failed: {e:#}"));
+        }
+    }
+}
+
+/// Run the picker and return the cropped selection, clamped to the frame.
+/// Shared by the image and OCR delivery paths; None on cancel or a degenerate
+/// (zero-area) selection.
+fn picked_crop() -> Option<image::RgbaImage> {
+    let (img, sel) = run_picker()?;
     let w = img.width() as i32;
     let x = sel.left.clamp(0, w) as u32;
     let y = sel.top.clamp(0, img.height() as i32) as u32;
     let rw = ((sel.right - sel.left).max(0) as u32).min(img.width().saturating_sub(x));
     let rh = ((sel.bottom - sel.top).max(0) as u32).min(img.height().saturating_sub(y));
     if rw == 0 || rh == 0 {
-        return;
+        return None;
     }
-    let cropped = image::imageops::crop_imm(&img, x, y, rw, rh).to_image();
-    match capture::deliver(&cropped) {
-        Ok(path) => println!("captured {rw}x{rh} -> clipboard + {}", path.display()),
-        Err(e) => eprintln!("trontsnap: region deliver failed: {e:#}"),
-    }
+    Some(image::imageops::crop_imm(&img, x, y, rw, rh).to_image())
 }
 
 /// Interactive rect selection only (for the video recorder): freeze the screen, run

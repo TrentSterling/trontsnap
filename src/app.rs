@@ -239,6 +239,7 @@ impl App {
         let full_i = MenuItem::new("Capture Fullscreen   (PrtSc)", true, None);
         let region_i = MenuItem::new("Capture Region   (Ctrl+PrtSc)", true, None);
         let record_i = MenuItem::new("Record Region   (Ctrl+Shift+PrtSc)", true, None);
+        let ocr_i = MenuItem::new("Copy Text from Region   (Ctrl+Alt+PrtSc)", true, None);
         let cursor_i =
             CheckMenuItem::new("Capture cursor", true, crate::settings::capture_cursor(), None);
         let audio_i =
@@ -250,6 +251,7 @@ impl App {
         menu.append(&full_i)?;
         menu.append(&region_i)?;
         menu.append(&record_i)?;
+        menu.append(&ocr_i)?;
         menu.append(&PredefinedMenuItem::separator())?;
         menu.append(&cursor_i)?;
         menu.append(&audio_i)?;
@@ -284,6 +286,7 @@ impl App {
             let full = full_i.id().clone();
             let region = region_i.id().clone();
             let record = record_i.id().clone();
+            let ocr = ocr_i.id().clone();
             let quit = quit_i.id().clone();
             MenuEvent::set_event_handler(Some(move |ev: MenuEvent| {
                 if ev.id == open {
@@ -298,6 +301,8 @@ impl App {
                 } else if ev.id == record {
                     // Toggle: first click picks a region + records, second stops.
                     crate::recorder::toggle();
+                } else if ev.id == ocr {
+                    std::thread::spawn(region_win32::capture_region_ocr);
                 } else if ev.id == quit {
                     std::process::exit(0);
                 } else {
@@ -388,9 +393,9 @@ impl App {
         // cannot fire over elevated windows. See hotkeyd/src/main.rs.
         //
         // Vocabulary:
-        //   "full" / "region" / "record"  -> same actions as a local hotkey
-        //   "ping"                        -> broker liveness probe, ignore it
-        //   anything else (incl. "open")  -> surface the window
+        //   "full" / "region" / "record" / "ocr"  -> same actions as a local hotkey
+        //   "ping"                                -> broker liveness probe, ignore it
+        //   anything else (incl. "open")          -> surface the window
         //
         // An unrecognised payload MUST keep meaning "show the window": that is
         // what a second launch sends, and older builds sent nothing at all.
@@ -408,6 +413,7 @@ impl App {
                         "full" => dispatch_hotkey(HotkeyEvent::Full),
                         "region" => dispatch_hotkey(HotkeyEvent::Region),
                         "record" => dispatch_hotkey(HotkeyEvent::Record),
+                        "ocr" => dispatch_hotkey(HotkeyEvent::Ocr),
                         _ => {
                             flag.store(true, Ordering::SeqCst);
                             ctx.request_repaint();
@@ -594,6 +600,10 @@ impl App {
                             }
                             if ui.button("Record   (Ctrl+Shift+PrtSc)").clicked() {
                                 crate::recorder::toggle();
+                                ui.close_menu();
+                            }
+                            if ui.button("Copy text   (Ctrl+Alt+PrtSc)").clicked() {
+                                std::thread::spawn(region_win32::capture_region_ocr);
                                 ui.close_menu();
                             }
                         });
@@ -993,6 +1003,8 @@ fn settings_tab_ui(ui: &mut egui::Ui) {
                 hotkey_row(ui, "Region", crate::settings::HotkeyAction::Region);
                 ui.add_space(14.0);
                 hotkey_row(ui, "Record", crate::settings::HotkeyAction::Record);
+                ui.add_space(14.0);
+                hotkey_row(ui, "Copy text (OCR)", crate::settings::HotkeyAction::Ocr);
                 ui.add_space(10.0);
                 if ui.button("Reset hotkeys to defaults").clicked() {
                     crate::settings::reset_hotkeys();
@@ -1551,6 +1563,7 @@ impl App {
                 shortcut_row(ui, "PrtSc", "Grab the full screen");
                 shortcut_row(ui, "Ctrl + PrtSc", "Freeze, then click a window or drag a region");
                 shortcut_row(ui, "Ctrl + Shift + PrtSc", "Start or stop a screen recording");
+                shortcut_row(ui, "Ctrl + Alt + PrtSc", "Copy the TEXT out of a region (OCR)");
                 shortcut_row(ui, "Tray icon", "Left-click for an instant region capture");
                 ui.add_space(18.0);
                 ui.separator();
@@ -1614,6 +1627,11 @@ fn dispatch_hotkey(ev: HotkeyEvent) {
         }
         // Toggle: first press picks a region + starts recording, second stops.
         HotkeyEvent::Record => crate::recorder::toggle(),
+        // Same picker as Region; the crop goes to Windows OCR and its TEXT
+        // lands on the clipboard instead of pixels.
+        HotkeyEvent::Ocr => {
+            std::thread::spawn(region_win32::capture_region_ocr);
+        }
     }
 }
 

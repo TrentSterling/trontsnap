@@ -46,18 +46,21 @@ use crate::settings::HotkeyAction;
 /// is a thread message (hwnd == NULL), which GetMessageW still returns normally.
 const WM_RELOAD: u32 = WM_APP + 1;
 
-/// What the hotkey pump saw: plain PrintScreen, PrintScreen with Ctrl held, or
-/// PrintScreen with Ctrl+Shift held (video record toggle).
+/// What the hotkey pump saw. Defaults: plain PrintScreen (full), Ctrl+PrtSc
+/// (region), Ctrl+Shift+PrtSc (record toggle), Ctrl+Alt+PrtSc (region OCR:
+/// text to clipboard). All rebindable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HotkeyEvent {
     Full,
     Region,
     Record,
+    Ocr,
 }
 
 const ID_FULL: i32 = 1;
 const ID_REGION: i32 = 2;
 const ID_RECORD: i32 = 3;
+const ID_OCR: i32 = 4;
 
 // The pump thread is the only place these ids are registered/unregistered, but the
 // send side of the channel is set once at install time and read from there.
@@ -125,6 +128,7 @@ fn pump_thread(tid_tx: std::sync::mpsc::Sender<u32>) {
                     ID_FULL => Some(HotkeyEvent::Full),
                     ID_REGION => Some(HotkeyEvent::Region),
                     ID_RECORD => Some(HotkeyEvent::Record),
+                    ID_OCR => Some(HotkeyEvent::Ocr),
                     _ => None,
                 };
                 if let (Some(ev), Some(tx)) = (ev, TX.get()) {
@@ -138,6 +142,7 @@ fn pump_thread(tid_tx: std::sync::mpsc::Sender<u32>) {
         let _ = UnregisterHotKey(HWND(0), ID_FULL);
         let _ = UnregisterHotKey(HWND(0), ID_REGION);
         let _ = UnregisterHotKey(HWND(0), ID_RECORD);
+        let _ = UnregisterHotKey(HWND(0), ID_OCR);
     }
 }
 
@@ -150,6 +155,7 @@ unsafe fn register_all() {
     let _ = UnregisterHotKey(HWND(0), ID_FULL);
     let _ = UnregisterHotKey(HWND(0), ID_REGION);
     let _ = UnregisterHotKey(HWND(0), ID_RECORD);
+    let _ = UnregisterHotKey(HWND(0), ID_OCR);
 
     let (mods, vk) = crate::settings::hotkey(HotkeyAction::Full);
     register_or_log(ID_FULL, HOT_KEY_MODIFIERS(mods | MOD_NOREPEAT.0), vk, "Fullscreen");
@@ -159,6 +165,9 @@ unsafe fn register_all() {
 
     let (mods, vk) = crate::settings::hotkey(HotkeyAction::Record);
     register_or_log(ID_RECORD, HOT_KEY_MODIFIERS(mods | MOD_NOREPEAT.0), vk, "Record");
+
+    let (mods, vk) = crate::settings::hotkey(HotkeyAction::Ocr);
+    register_or_log(ID_OCR, HOT_KEY_MODIFIERS(mods | MOD_NOREPEAT.0), vk, "OCR");
 }
 
 /// Best-effort RegisterHotKey: logs and continues on failure (e.g. another app

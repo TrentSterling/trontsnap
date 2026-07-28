@@ -43,6 +43,8 @@ enum Action {
     Delete(PathBuf),
     Drag(PathBuf),
     ExportGif(PathBuf),
+    // Stills only: run the shot through Windows OCR, text to clipboard.
+    CopyText(PathBuf),
     // Multi-select: toggle one (Ctrl+click), extend from the anchor
     // (Shift+click), and the context-menu bulk ops, which resolve the CURRENT
     // visible selection inside apply() rather than snapshotting it per cell.
@@ -599,6 +601,34 @@ impl Gallery {
                     }
                 });
             }
+            Action::CopyText(path) => {
+                // Decode + OCR off-thread (a full-res PNG decode is tens of
+                // ms and RecognizeAsync more); the result comes back through
+                // the same notice channel GIF export uses.
+                self.set_status("Reading text...");
+                let tx = self.notice_tx.clone();
+                std::thread::spawn(move || {
+                    let r: anyhow::Result<String> = (|| {
+                        let img = image::open(&path)?.to_rgba8();
+                        crate::ocr::recognize(&img)
+                    })();
+                    match r {
+                        Ok(text) if text.trim().is_empty() => {
+                            let _ = tx.send("No text found".into());
+                        }
+                        Ok(text) => {
+                            let n = text.lines().count();
+                            let _ = crate::clipboard::set_text(&text);
+                            let _ = tx.send(format!("Copied {n} lines of text"));
+                        }
+                        Err(e) => {
+                            eprintln!("trontsnap: gallery ocr failed: {e:#}");
+                            crate::clipboard::log_line(&format!("gallery ocr failed: {e:#}"));
+                            let _ = tx.send("OCR failed (see log)".into());
+                        }
+                    }
+                });
+            }
             Action::ToggleSelect(path) => {
                 if !self.selected.insert(path.clone()) {
                     self.selected.remove(&path);
@@ -783,6 +813,10 @@ fn draw_cell(
         }
         if shot.is_video() && ui.button("Export GIF").clicked() {
             *action = Some(Action::ExportGif(shot.path.clone()));
+            ui.close_menu();
+        }
+        if !shot.is_video() && ui.button("Copy text (OCR)").clicked() {
+            *action = Some(Action::CopyText(shot.path.clone()));
             ui.close_menu();
         }
         ui.separator();

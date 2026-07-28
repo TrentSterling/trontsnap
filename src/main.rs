@@ -5,6 +5,7 @@
 //   "--startup"     -> same, but start hidden in the tray (used by the autostart entry)
 //   "region"        -> one-shot freeze-frame region picker, deliver, exit
 //   "full"          -> one-shot fullscreen grab, deliver, exit
+//   "ocr"           -> one-shot region picker, TEXT to clipboard (Windows OCR), exit
 //
 // Hotkeys owned by the app: PrintScreen = fullscreen, Ctrl+PrintScreen = region.
 // Every capture goes to the clipboard (lossless) AND saves a PNG to Pictures\TrontSnap.
@@ -21,6 +22,7 @@ mod gallery;
 mod gifexport;
 mod index;
 mod keyhook;
+mod ocr;
 mod overlay;
 mod printscreen;
 mod recorder;
@@ -52,6 +54,10 @@ fn main() {
         "full" => capture::capture_full(),
         "region" => {
             region_win32::capture_region();
+            Ok(())
+        }
+        "ocr" => {
+            region_win32::capture_region_ocr();
             Ok(())
         }
         "toast" => match std::env::args().nth(2) {

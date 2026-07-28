@@ -7,7 +7,7 @@ members = ["hotkeyd"]
 
 [package]
 name = "trontsnap"
-version = "0.20.0"
+version = "0.21.0"
 edition = "2021"
 description = "Fast screenshot tool: global-hotkey capture (full + freeze-frame region) straight to clipboard, plus a lazy-loading gallery over your whole screenshot history"
 
@@ -32,6 +32,13 @@ raw-window-handle = "0.6"
 # trash/opener), so this only adds features to the resolved version, no
 # duplicate copy.
 windows = { version = "0.56", features = [
+    # WinRT namespaces for region OCR (Windows.Media.Ocr): the engine, the
+    # SoftwareBitmap it reads, and the IBuffer plumbing to feed it pixels.
+    "Foundation",
+    "Foundation_Collections",
+    "Graphics_Imaging",
+    "Media_Ocr",
+    "Storage_Streams",
     "Win32_Foundation",
     "Win32_Graphics_Direct3D",
     "Win32_Graphics_Direct3D11",

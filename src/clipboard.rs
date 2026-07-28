@@ -25,7 +25,7 @@ use windows::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
 };
 use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GHND};
-use windows::Win32::System::Ole::{CF_DIB, CF_DIBV5, CF_HDROP};
+use windows::Win32::System::Ole::{CF_DIB, CF_DIBV5, CF_HDROP, CF_UNICODETEXT};
 use windows::Win32::UI::Shell::DROPFILES;
 
 /// Put `img` on the clipboard as CF_DIB + CF_DIBV5 + "PNG" + CF_HDROP in one
@@ -61,6 +61,9 @@ pub fn log_line(msg: &str) {
 enum Payload {
     All { dib: Vec<u8>, dibv5: Vec<u8>, png: Vec<u8>, dropfiles: Vec<u8> },
     File { dropfiles: Vec<u8> },
+    // Plain text (the OCR delivery): UTF-16LE bytes WITH the trailing null,
+    // ready for CF_UNICODETEXT.
+    Text { unicode: Vec<u8> },
 }
 
 impl Payload {
@@ -73,6 +76,12 @@ impl Payload {
                 EmptyClipboard().map_err(win_err)?;
                 let h = alloc_global_copy(dropfiles)?;
                 SetClipboardData(CF_HDROP.0 as u32, HANDLE(h.0 as isize)).map_err(win_err)?;
+                Ok(())
+            }
+            Payload::Text { unicode } => {
+                EmptyClipboard().map_err(win_err)?;
+                let h = alloc_global_copy(unicode)?;
+                SetClipboardData(CF_UNICODETEXT.0 as u32, HANDLE(h.0 as isize)).map_err(win_err)?;
                 Ok(())
             }
         }
@@ -229,6 +238,20 @@ unsafe fn set_all_formats(
 /// open-retry as `set_all`.
 pub fn set_file(file_path: &Path) -> anyhow::Result<()> {
     enqueue(Payload::File { dropfiles: build_dropfiles(file_path) }, file_path);
+    Ok(())
+}
+
+/// Put plain TEXT on the clipboard (CF_UNICODETEXT) — the OCR delivery. Goes
+/// through the same writer thread + retry as images, and newest-wins applies
+/// across kinds too: a fresh capture rightly replaces a pending OCR result.
+/// There is no backing file for text, hence the empty path.
+pub fn set_text(text: &str) -> anyhow::Result<()> {
+    let mut unicode: Vec<u8> = Vec::with_capacity((text.len() + 1) * 2);
+    for u in text.encode_utf16() {
+        unicode.extend_from_slice(&u.to_le_bytes());
+    }
+    unicode.extend_from_slice(&[0, 0]);
+    enqueue(Payload::Text { unicode }, Path::new(""));
     Ok(())
 }
 

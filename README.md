@@ -33,6 +33,7 @@ Run modes (first CLI arg):
 | `--startup` / `tray` | Same, but starts hidden in the tray (used by the autostart entry) |
 | `region` | One-shot freeze-frame region picker, deliver, exit |
 | `full` | One-shot fullscreen grab, deliver, exit |
+| `ocr` | One-shot region picker; the region's TEXT lands on the clipboard (Windows OCR, offline) |
 | `toast <path>` | Internal: shows the corner toast for a capture (spawned as its own process) |
 
 Release builds matter here: `opt-level = 3`, LTO, single codegen unit, since the gallery decodes a lot of images.

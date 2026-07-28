@@ -23,6 +23,8 @@ const HOTKEY_REGION_MODS_VALUE: &str = "HotkeyRegionMods";
 const HOTKEY_REGION_VK_VALUE: &str = "HotkeyRegionVk";
 const HOTKEY_RECORD_MODS_VALUE: &str = "HotkeyRecordMods";
 const HOTKEY_RECORD_VK_VALUE: &str = "HotkeyRecordVk";
+const HOTKEY_OCR_MODS_VALUE: &str = "HotkeyOcrMods";
+const HOTKEY_OCR_VK_VALUE: &str = "HotkeyOcrVk";
 const THEME_NAME_VALUE: &str = "ThemeName";
 const THEME_SOURCE_VALUE: &str = "ThemeSource";
 const GRADIENT_VALUE: &str = "Gradient";
@@ -53,7 +55,7 @@ static SHOW_ABOUT: AtomicBool = AtomicBool::new(false);
 // launch opens on About (welcome + author credit), then this flips true forever.
 static HAS_RUN: AtomicBool = AtomicBool::new(false);
 
-/// Which of the three global hotkeys a bind belongs to. Used both to key
+/// Which of the four global hotkeys a bind belongs to. Used both to key
 /// settings::hotkey()/set_hotkey() and by keyhook::register_all() to look up
 /// each RegisterHotKey id's current (modifiers, vk) pair.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,6 +63,8 @@ pub enum HotkeyAction {
     Full,
     Region,
     Record,
+    /// Region OCR: drag a region, its TEXT lands on the clipboard.
+    Ocr,
 }
 
 // Persisted (modifiers, virtual-key) pairs for the three rebindable hotkeys. The
@@ -83,7 +87,9 @@ pub enum HotkeyAction {
 pub const DEFAULT_FULL_MODS: u32 = 0x0000;
 pub const DEFAULT_REGION_MODS: u32 = 0x0002;
 pub const DEFAULT_RECORD_MODS: u32 = 0x0002 | 0x0004;
-/// VK_SNAPSHOT. All three defaults sit on PrintScreen.
+/// Ctrl+Alt: the next open PrintScreen chord (Ctrl and Ctrl+Shift are taken).
+pub const DEFAULT_OCR_MODS: u32 = 0x0002 | 0x0001;
+/// VK_SNAPSHOT. All four defaults sit on PrintScreen.
 pub const DEFAULT_HOTKEY_VK: u32 = 0x2C;
 
 static HOTKEY_FULL_MODS: AtomicU32 = AtomicU32::new(DEFAULT_FULL_MODS);
@@ -92,6 +98,8 @@ static HOTKEY_REGION_MODS: AtomicU32 = AtomicU32::new(DEFAULT_REGION_MODS);
 static HOTKEY_REGION_VK: AtomicU32 = AtomicU32::new(DEFAULT_HOTKEY_VK);
 static HOTKEY_RECORD_MODS: AtomicU32 = AtomicU32::new(DEFAULT_RECORD_MODS);
 static HOTKEY_RECORD_VK: AtomicU32 = AtomicU32::new(DEFAULT_HOTKEY_VK);
+static HOTKEY_OCR_MODS: AtomicU32 = AtomicU32::new(DEFAULT_OCR_MODS);
+static HOTKEY_OCR_VK: AtomicU32 = AtomicU32::new(DEFAULT_HOTKEY_VK);
 
 // Persisted theme selection: a name ("Cyan" = the hardcoded default built-in,
 // a premade palette name, "Custom" for a picked accent, or "Random <flavor>")
@@ -163,6 +171,12 @@ pub fn load() {
         }
         if let Ok(v) = key.get_value::<u32, _>(HOTKEY_RECORD_VK_VALUE) {
             HOTKEY_RECORD_VK.store(v, Ordering::Relaxed);
+        }
+        if let Ok(v) = key.get_value::<u32, _>(HOTKEY_OCR_MODS_VALUE) {
+            HOTKEY_OCR_MODS.store(v, Ordering::Relaxed);
+        }
+        if let Ok(v) = key.get_value::<u32, _>(HOTKEY_OCR_VK_VALUE) {
+            HOTKEY_OCR_VK.store(v, Ordering::Relaxed);
         }
         if let Ok(v) = key.get_value::<String, _>(THEME_NAME_VALUE) {
             *THEME_NAME.write().unwrap() = v;
@@ -261,6 +275,9 @@ pub fn hotkey(action: HotkeyAction) -> (u32, u32) {
         HotkeyAction::Record => {
             (HOTKEY_RECORD_MODS.load(Ordering::Relaxed), HOTKEY_RECORD_VK.load(Ordering::Relaxed))
         }
+        HotkeyAction::Ocr => {
+            (HOTKEY_OCR_MODS.load(Ordering::Relaxed), HOTKEY_OCR_VK.load(Ordering::Relaxed))
+        }
     }
 }
 
@@ -278,6 +295,9 @@ pub fn set_hotkey(action: HotkeyAction, mods: u32, vk: u32) {
             HOTKEY_REGION_MODS_VALUE,
             HOTKEY_REGION_VK_VALUE,
         ),
+        HotkeyAction::Ocr => {
+            (&HOTKEY_OCR_MODS, &HOTKEY_OCR_VK, HOTKEY_OCR_MODS_VALUE, HOTKEY_OCR_VK_VALUE)
+        }
         HotkeyAction::Record => (
             &HOTKEY_RECORD_MODS,
             &HOTKEY_RECORD_VK,
@@ -291,7 +311,7 @@ pub fn set_hotkey(action: HotkeyAction, mods: u32, vk: u32) {
     persist_u32(vk_value, vk);
 }
 
-/// Restore all three hotkeys to their compiled-in defaults and persist. Caller
+/// Restore all four hotkeys to their compiled-in defaults and persist. Caller
 /// still needs to call keyhook::reload() to make the OS-level rebind take
 /// effect. Fullscreen resets to Alt+PrtSc on the portable build and bare PrtSc
 /// on the installed one (see DEFAULT_FULL_MODS).
@@ -299,6 +319,7 @@ pub fn reset_hotkeys() {
     set_hotkey(HotkeyAction::Full, DEFAULT_FULL_MODS, DEFAULT_HOTKEY_VK);
     set_hotkey(HotkeyAction::Region, DEFAULT_REGION_MODS, DEFAULT_HOTKEY_VK);
     set_hotkey(HotkeyAction::Record, DEFAULT_RECORD_MODS, DEFAULT_HOTKEY_VK);
+    set_hotkey(HotkeyAction::Ocr, DEFAULT_OCR_MODS, DEFAULT_HOTKEY_VK);
 }
 
 fn persist_u32(value: &str, v: u32) {
