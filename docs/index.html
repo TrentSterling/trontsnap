@@ -12,7 +12,7 @@
 <link rel="icon" href="assets/icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=Chakra+Petch:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
   :root{
     --bg:#07090d; --bg2:#0b0f16; --panel:#0e131c; --panel2:#121a26;
@@ -20,7 +20,7 @@
     --spectrum:linear-gradient(90deg,#ff3b3b,#ff9e2c,#ffe83b,#42e05a,#00e0ff,#3b7bff,#a24bff,#ff4bd0);
     --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
     --disp:"Rajdhani",system-ui,sans-serif;
-    --body:"Inter",system-ui,-apple-system,sans-serif;
+    --body:"Chakra Petch",system-ui,-apple-system,sans-serif;
   }
   *{box-sizing:border-box}
   html{scroll-behavior:smooth}
@@ -45,16 +45,19 @@
     display:inline-flex;align-items:center;gap:9px;transition:transform .12s,border-color .15s,box-shadow .15s}
   .btn:hover{transform:translateY(-2px)}
   .btn.primary{color:#04121a;background:var(--cyan);border-color:var(--cyan)}
-  .btn.primary:hover{box-shadow:0 10px 30px -8px rgba(0,224,255,.6)}
+  .btn.primary:hover{box-shadow:0 10px 30px -10px rgba(0,0,0,.55)}
   .btn.ghost:hover{border-color:var(--cyan);color:var(--cyan)}
 
   /* ---- hero with capture-marquee ---- */
   header.hero{position:relative;padding:88px 0 70px;text-align:center;isolation:isolate}
+  /* Wash companion hue is DERIVED, not freehand: the cyan seed (#00e0ff, h187)
+     through colormagic's analogous rule (+30deg) = h217 blue. One seed, one
+     derived neighbor, no orphan purple. */
   .hero::before{content:"";position:absolute;inset:-10% -20% auto;height:520px;z-index:-1;
-    background:radial-gradient(58% 100% at 50% 0%,rgba(162,75,255,.16),rgba(0,224,255,.10),transparent 72%)}
+    background:radial-gradient(58% 100% at 50% 0%,rgba(26,113,255,.14),rgba(0,224,255,.10),transparent 72%)}
   .marquee{position:relative;width:200px;height:200px;margin:0 auto 34px}
   .marquee img{width:200px;height:200px;border-radius:36px;display:block;
-    box-shadow:0 30px 90px -30px rgba(162,75,255,.55)}
+    box-shadow:0 30px 90px -30px rgba(0,0,0,.6)}
   .marquee .cnr{position:absolute;width:26px;height:26px;border:3px solid var(--cyan)}
   .marquee .tl{top:-14px;left:-14px;border-right:0;border-bottom:0}
   .marquee .tr{top:-14px;right:-14px;border-left:0;border-bottom:0}
@@ -65,12 +68,9 @@
   h1 .grad{background:var(--spectrum);-webkit-background-clip:text;background-clip:text;color:transparent}
   .sub{max-width:640px;margin:22px auto 0;color:#c2ccd8;font-size:19px}
   .cta-row{display:flex;gap:14px;justify-content:center;margin-top:32px;flex-wrap:wrap}
-
-  .specs{border-top:1px solid var(--line);border-bottom:1px solid var(--line);background:var(--bg2)}
-  .specs .wrap{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--line)}
-  .spec{background:var(--bg2);padding:26px 16px;text-align:center}
-  .spec b{display:block;font-family:var(--disp);font-weight:700;font-size:26px;color:var(--cyan);line-height:1.05}
-  .spec span{font-family:var(--mono);font-size:11.5px;letter-spacing:1.4px;text-transform:uppercase;color:var(--muted);margin-top:9px;display:block}
+  /* One quiet line where the stats belt used to be. */
+  .hero-facts{font-family:var(--mono);font-size:12px;letter-spacing:2px;text-transform:uppercase;
+    color:var(--muted);margin-top:30px}
 
   /* ---- feature grid ---- */
   section.grid-sec{padding:88px 0}
@@ -97,8 +97,8 @@
   .step h3{font-family:var(--disp);font-weight:600;font-size:22px;margin:8px 0 8px}
   .step p{color:var(--muted);font-size:15px;margin:0}
   .step code{font-family:var(--mono);font-size:13px;color:#dfe7ef;background:#0a0e15;border:1px solid var(--line);border-radius:5px;padding:1px 6px}
-  .note{border:1px solid var(--line);border-left:3px solid var(--cyan);background:var(--panel);border-radius:10px;padding:20px 22px;max-width:760px;margin:0 auto}
-  .note b{font-family:var(--disp);font-weight:600;letter-spacing:.3px}
+  .note{border:1px solid var(--line);background:var(--panel);border-radius:10px;padding:20px 22px;max-width:760px;margin:0 auto}
+  .note b{font-family:var(--disp);font-weight:600;letter-spacing:.3px;color:var(--cyan)}
   .note p{color:#b7c1cd;margin:8px 0 0;font-size:15.5px}
   .dl .cta-row{margin-top:36px}
 
@@ -144,15 +144,9 @@
       <a class="btn primary" href="https://github.com/TrentSterling/trontsnap/releases/latest">Download for Windows</a>
       <a class="btn ghost" href="https://github.com/TrentSterling/trontsnap">View source</a>
     </div>
+    <div class="hero-facts rise" style="animation-delay:.28s">4 keys &middot; MP4 + audio &middot; drag-out &middot; full history</div>
   </div>
 </header>
-
-<div class="specs"><div class="wrap">
-  <div class="spec"><b>4 keys</b><span>shot &middot; region &middot; record &middot; OCR</span></div>
-  <div class="spec"><b>MP4 + audio</b><span>hardware encoded</span></div>
-  <div class="spec"><b>drag-out</b><span>drop straight into apps</span></div>
-  <div class="spec"><b>full history</b><span>lazy-loaded gallery</span></div>
-</div></div>
 
 <section class="grid-sec" id="features">
   <div class="wrap">
