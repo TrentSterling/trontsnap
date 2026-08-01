@@ -22,7 +22,10 @@ const GAP: f32 = 10.0;
 // Source colors follow the live theme (accent = TrontSnap, amber = ShareX archive)
 // so the legend dots, cell badges, and hover glow restyle with the palette.
 fn accent() -> Color32 {
-    crate::theme::t().accent
+    // INK: source dots, labels and legend text on the panel. The verbatim pick
+    // lives on `t().accent` and is free to be pure black; this is its guaranteed
+    // legible form (ladder step 9), which is what marks on a ground need.
+    crate::theme::accent_ink()
 }
 fn amber() -> Color32 {
     crate::theme::t().amber

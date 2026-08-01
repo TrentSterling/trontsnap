@@ -735,6 +735,249 @@ pub const PREMADE_PALETTES: &[PremadePalette] = &[
     PremadePalette { name: "Sepia Vintage", colors: &["#2b1d0e", "#4a3520", "#7d5a3c", "#a98467", "#d4b996", "#ede0d4"] },
 ];
 
+// ============ AUTO AWESOME: guaranteed-readable theme scales ============
+//
+// Ported from SpaceView's `color.rs` (the reference implementation) on
+// 2026-07-31. TrontSnap's colormagic was vendored from Boxel on 2026-07-11 and
+// then never picked up this generation, which is why a custom accent only ever
+// recolored three tokens on a frozen navy ground while SpaceView rebuilt its
+// whole chrome from the pick.
+//
+// The rule that makes "any color in, readable UI out" work:
+//
+//     THE USER CONTROLS HUE. THE SYSTEM CONTROLS LIGHTNESS.
+//
+// A seed contributes its hue and its chroma character; every functional step's
+// LIGHTNESS comes from a fixed tonal ladder this module owns. Text is therefore
+// never derived-and-hoped: it is PLACED at a tone far enough from the ground
+// that it cannot be invisible, then APCA-verified and walked toward the extreme
+// if some gamut edge case still falls short. Feed it vomit green, feed it pure
+// black, feed it four clashing colors: the hues move, the structure does not.
+//
+// The 12 steps follow the Radix functional scale (the vocabulary Radix UI and
+// egui_colors both use), so every step has exactly one job:
+//    1 app background     5 active UI fill    9  solid (the accent)
+//    2 subtle background  6 subtle border     10 solid hover
+//    3 UI element fill    7 border            11 low-contrast text
+//    4 hover UI fill      8 border hover      12 high-contrast text
+
+/// Target for non-text UI: solid fills, borders, focus rings.
+pub const LC_NONTEXT: f32 = 30.0;
+
+/// The system-owned lightness ladder (OKLCH L per step). Not user-tunable: this
+/// IS the guarantee.
+const L_DARK: [f32; 12] = [
+    0.17, 0.21, 0.25, 0.29, 0.33, 0.38, 0.44, 0.53, 0.62, 0.68, 0.77, 0.95,
+];
+const L_LIGHT: [f32; 12] = [
+    0.99, 0.975, 0.95, 0.925, 0.90, 0.87, 0.83, 0.76, 0.62, 0.56, 0.52, 0.24,
+];
+
+/// Fraction of the seed's chroma each step keeps. Grounds stay tinted (not
+/// painted), the solid steps carry the full accent, text is nearly neutral.
+const C_DARK: [f32; 12] = [
+    0.35, 0.42, 0.50, 0.55, 0.58, 0.55, 0.52, 0.55, 1.00, 1.00, 0.30, 0.16,
+];
+const C_LIGHT: [f32; 12] = [
+    0.30, 0.38, 0.45, 0.50, 0.55, 0.55, 0.55, 0.60, 1.00, 1.00, 0.35, 0.22,
+];
+
+/// Absolute chroma ceiling for the three ground steps, so even a screaming seed
+/// yields a ground you can stare at for hours. Tint, not paint.
+const C_GROUND_CEIL: f32 = 0.045;
+/// Overall chroma ceiling: past this OKLCH starts clipping the sRGB gamut and
+/// the round-trip stops being trustworthy.
+const C_CEIL: f32 = 0.33;
+
+/// A Radix-style 12-step functional scale whose text steps are APCA-guaranteed
+/// against its own grounds.
+#[derive(Clone, Copy)]
+pub struct Scale {
+    pub steps: [Rgb; 12],
+    pub dark: bool,
+}
+
+impl Scale {
+    /// 1-based step access, matching the Radix numbering used in the docs above.
+    pub fn step(&self, n: usize) -> Rgb {
+        self.steps[n.clamp(1, 12) - 1]
+    }
+}
+
+/// Is this OKLCH triple inside sRGB without clipping?
+fn in_gamut(big_l: f32, c: f32, hdeg: f32) -> bool {
+    let hrad = hdeg * std::f32::consts::PI / 180.0;
+    let a = c * hrad.cos();
+    let bv = c * hrad.sin();
+    let l_ = big_l + 0.396_337_78 * a + 0.215_803_76 * bv;
+    let m_ = big_l - 0.105_561_346 * a - 0.063_854_17 * bv;
+    let s_ = big_l - 0.089_484_18 * a - 1.291_485_5 * bv;
+    let l = l_ * l_ * l_;
+    let m = m_ * m_ * m_;
+    let s = s_ * s_ * s_;
+    let lr = 4.076_741_7 * l - 3.307_711_6 * m + 0.230_969_94 * s;
+    let lg = -1.268_438 * l + 2.609_757_4 * m - 0.341_319_38 * s;
+    let lb = -0.004_196_086_3 * l - 0.703_418_6 * m + 1.707_614_7 * s;
+    const E: f32 = 0.001;
+    (-E..=1.0 + E).contains(&lr) && (-E..=1.0 + E).contains(&lg) && (-E..=1.0 + E).contains(&lb)
+}
+
+/// The lightness at which a hue reaches its maximum chroma: the gamut cusp.
+///
+/// This is why yellow used to come out brown. The ladder puts the solid step at
+/// L 0.62, which is near blue's cusp but far below yellow's (~0.86). Yellow
+/// forced to 0.62 IS brown, and no amount of chroma rescues it. Bright hues have
+/// to be allowed to sit where they actually live.
+///
+/// The ladder still owns structure: only the two SOLID steps follow the cusp, and
+/// their label is chosen by APCA afterwards, so a bright yellow fill simply gets
+/// dark text the way a real one does.
+pub fn cusp_lightness(hdeg: f32) -> f32 {
+    let mut best_l = 0.62;
+    let mut best_c = -1.0f32;
+    let mut big_l = 0.30;
+    while big_l <= 0.96 {
+        let mut lo = 0.0f32;
+        let mut hi = 0.4f32;
+        for _ in 0..14 {
+            let mid = (lo + hi) * 0.5;
+            if in_gamut(big_l, mid, hdeg) { lo = mid } else { hi = mid }
+        }
+        if lo > best_c {
+            best_c = lo;
+            best_l = big_l;
+        }
+        big_l += 0.02;
+    }
+    best_l
+}
+
+/// Push a color's lightness away from `bg` until APCA says it passes `target`,
+/// shedding chroma as it approaches the extremes (high chroma caps achievable
+/// luminance). Returns the best candidate found; falls back to pure white/black,
+/// which is what makes the guarantee unconditional rather than aspirational.
+fn walk_to_target(
+    start_l: f32,
+    start_c: f32,
+    h: f32,
+    bg: Rgb,
+    target: f32,
+    floor: f32,
+    dark: bool,
+) -> Rgb {
+    let mut l = start_l;
+    let mut c = start_c;
+    let mut best = oklch_to_rgb(l, c, h);
+    let mut best_lc = apca_abs(best, bg);
+    if best_lc >= target {
+        return best;
+    }
+    for _ in 0..48 {
+        l = if dark { (l + 0.015).min(1.0) } else { (l - 0.015).max(0.0) };
+        c *= 0.94;
+        let cand = oklch_to_rgb(l, c, h);
+        let lc = apca_abs(cand, bg);
+        if lc > best_lc {
+            best_lc = lc;
+            best = cand;
+        }
+        if lc >= target {
+            return cand;
+        }
+    }
+    if best_lc < floor {
+        let extreme: Rgb = if dark { [255, 255, 255] } else { [0, 0, 0] };
+        if apca_abs(extreme, bg) > best_lc {
+            return extreme;
+        }
+    }
+    best
+}
+
+/// Build the 12-step scale for a seed color. This is the whole AUTO AWESOME
+/// mechanism: tones from the ladder, hue/chroma from the seed, text steps
+/// APCA-enforced against the hardest ground they will ever sit on.
+pub fn scale_from_seed(seed: Rgb, dark: bool) -> Scale {
+    let [_, c_seed, h] = rgb_to_oklch(seed);
+    let ls = if dark { &L_DARK } else { &L_LIGHT };
+    let cs = if dark { &C_DARK } else { &C_LIGHT };
+
+    let mut steps = [[0u8; 3]; 12];
+    for i in 0..12 {
+        let mut c = c_seed * cs[i];
+        if i < 3 {
+            c = c.min(C_GROUND_CEIL);
+        }
+        steps[i] = oklch_to_rgb(ls[i], c.min(C_CEIL), h);
+    }
+
+    // Steps 9/10 are SOLID FILLS that carry labels (buttons, selected chips), so
+    // they must be able to HOST text. There is a crossover band (Y ~ 0.3) where
+    // neither white nor black reads well; nudge the fill's lightness out of it,
+    // toward the ground's side so the fill stays theme-coherent.
+    // Pull the solid steps toward THIS hue's chroma peak first. Without it every
+    // hue is judged by blue's ladder and the bright ones (yellow, lime, cyan)
+    // come out muddy: yellow at L 0.62 is brown.
+    let cusp = cusp_lightness(h);
+    for i in [8usize, 9] {
+        let c = (c_seed * cs[i]).min(C_CEIL);
+        let mut l = ls[i] + (cusp - ls[i]) * 0.72;
+        // step 10 stays a shade off step 9 so hover is still visible
+        if i == 9 {
+            l = if dark { (l + 0.06).min(0.97) } else { (l - 0.06).max(0.12) };
+        }
+        for _ in 0..24 {
+            let cand = oklch_to_rgb(l, c, h);
+            let best = apca_abs([255, 255, 255], cand).max(apca_abs([0, 0, 0], cand));
+            if best >= LC_MUTED {
+                break;
+            }
+            l = if dark { (l - 0.02).max(0.30) } else { (l + 0.02).min(0.80) };
+        }
+        steps[i] = oklch_to_rgb(l, c, h);
+    }
+
+    // Body text aims for the PREFERRED Lc against the ground it actually lives
+    // on (the panel), and merely guarantees the MINIMUM against transient
+    // interactive fills. Chasing Lc 90 against a bright hover fill drags light
+    // themes to pure black and burns off all their tint for no real gain.
+    let primary_ground = steps[1];
+    let worst_ground = steps[4];
+    let c_text = (c_seed * cs[11]).min(C_CEIL);
+    let mut text = walk_to_target(ls[11], c_text, h, primary_ground, LC_TEXT, LC_TEXT_MIN, dark);
+    if apca_abs(text, worst_ground) < LC_TEXT_MIN {
+        let [l_now, c_now, _] = rgb_to_oklch(text);
+        text = walk_to_target(l_now, c_now, h, worst_ground, LC_TEXT_MIN, LC_TEXT_MIN, dark);
+    }
+    steps[11] = text;
+
+    let c_muted = (c_seed * cs[10]).min(C_CEIL);
+    let mut muted = walk_to_target(ls[10], c_muted, h, primary_ground, LC_MUTED, LC_MUTED, dark);
+    if apca_abs(muted, worst_ground) < LC_MUTED {
+        let [l_now, c_now, _] = rgb_to_oklch(muted);
+        muted = walk_to_target(l_now, c_now, h, worst_ground, LC_MUTED, LC_MUTED, dark);
+    }
+    steps[10] = muted;
+
+    Scale { steps, dark }
+}
+
+/// Pick the label color for text sitting ON a solid fill. Prefers the theme's
+/// own text steps so a button label still reads as part of the theme, and only
+/// falls back to pure white/black when neither step clears the floor against
+/// what is ACTUALLY drawn. This is why even a midtone pick gets a readable label.
+pub fn on_color(fill: Rgb, scale: &Scale) -> Rgb {
+    let hi = scale.step(12);
+    let lo = scale.step(1);
+    let cand = if apca_abs(hi, fill) >= apca_abs(lo, fill) { hi } else { lo };
+    if apca_abs(cand, fill) >= LC_TEXT_MIN {
+        return cand;
+    }
+    let white: Rgb = [255, 255, 255];
+    let black: Rgb = [0, 0, 0];
+    if apca_abs(white, fill) >= apca_abs(black, fill) { white } else { black }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -205,7 +205,7 @@ impl eframe::App for Toast {
 
         let frame = egui::Frame::none()
             .fill(crate::theme::t().panel_bg)
-            .stroke(egui::Stroke::new(1.0, crate::theme::t().accent))
+            .stroke(egui::Stroke::new(1.0, crate::theme::accent_ink()))
             .rounding(8.0)
             .inner_margin(10.0);
 
@@ -275,7 +275,7 @@ impl eframe::App for Toast {
                 egui::Align2::LEFT_TOP,
                 title,
                 egui::FontId::proportional(14.0),
-                crate::theme::t().accent,
+                crate::theme::accent_ink(),
             );
             painter.text(
                 egui::pos2(x, band.top() + 26.0),
@@ -306,7 +306,7 @@ impl eframe::App for Toast {
                     egui::Color32::from_black_alpha(160)
                 };
                 painter.rect_filled(chip, 5.0, fill);
-                painter.rect_stroke(chip, 5.0, egui::Stroke::new(1.0, crate::theme::t().accent));
+                painter.rect_stroke(chip, 5.0, egui::Stroke::new(1.0, crate::theme::accent_ink()));
                 let text_color = if over_edit {
                     crate::theme::on_accent()
                 } else {

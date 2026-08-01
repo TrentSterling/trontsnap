@@ -326,7 +326,7 @@ impl eframe::App for Editor {
         // ---- toolbar ---------------------------------------------------
         egui::SidePanel::left("edit-tools").exact_width(TOOLS_W).show(ctx, |ui| {
             ui.add_space(8.0);
-            ui.label(egui::RichText::new("Tools").strong().color(crate::theme::t().accent));
+            ui.label(egui::RichText::new("Tools").strong().color(crate::theme::accent_ink()));
             ui.add_space(4.0);
             for (tool, label, hint) in [
                 (Tool::Arrow, "Arrow", "Drag from tail to tip"),
@@ -462,7 +462,7 @@ impl eframe::App for Editor {
                 );
                 if let Some((msg, _)) = &self.status {
                     ui.separator();
-                    ui.colored_label(crate::theme::t().accent, msg.clone());
+                    ui.colored_label(crate::theme::accent_ink(), msg.clone());
                 }
             });
         });
@@ -573,7 +573,7 @@ impl eframe::App for Editor {
                         painter.rect_filled(r, 0.0, shade);
                     }
                 }
-                painter.rect_stroke(keep, 0.0, egui::Stroke::new(1.5, crate::theme::t().accent));
+                painter.rect_stroke(keep, 0.0, egui::Stroke::new(1.5, crate::theme::accent_ink()));
             }
 
             // ---- interaction ------------------------------------------
@@ -623,7 +623,7 @@ impl eframe::App for Editor {
                         painter.rect_stroke(
                             egui::Rect::from_two_pos(to_screen(from), to_screen(cur)),
                             0.0,
-                            egui::Stroke::new(1.5, crate::theme::t().accent),
+                            egui::Stroke::new(1.5, crate::theme::accent_ink()),
                         );
                     }
                     Tool::Text => {}

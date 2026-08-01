@@ -23,7 +23,11 @@ param(
     # The portable install to clean up. Passed by Install TrontSnap.cmd from the
     # NON-elevated window, because if UAC consent lands on a different admin account
     # this script's own %LOCALAPPDATA% would point at the wrong profile.
-    [string]$PortableDir = (Join-Path $env:LOCALAPPDATA 'TrontSnap')
+    [string]$PortableDir = (Join-Path $env:LOCALAPPDATA 'TrontSnap'),
+
+    # Permit installing an OLDER build over a newer one. Off by default; see the
+    # downgrade guard in step 1. Only pass this if you actually mean to roll back.
+    [switch]$AllowDowngrade
 )
 
 # 'Continue', not 'Stop': native tools (taskkill, signtool) write to stderr even on
@@ -54,21 +58,86 @@ New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
 Log "== TrontSnap install @ $(Get-Date) as $(whoami) =="
 
 # --- 1. locate the exe to install (prebuilt beside script, or source build) -----
+#
+# ALWAYS BUILD when installing from source. This used to be
+# `if (-not (Test-Path $srcExe)) { build }`, i.e. it skipped the build whenever
+# ANY exe was already sitting in target\release, then installed that. Combined
+# with a UI that displayed no version anywhere, a months-old binary could be
+# installed and debugged as if it were current; a v0.16.0 install was found
+# masquerading as v0.22.0 on 2026-07-31. cargo is incremental, so an
+# unconditional build costs ~nothing when the tree is already up to date and is
+# the only thing that makes "reinstall" actually mean "install what I wrote".
+#
+# The `--features uiaccess` flag is also gone from that build line: the feature
+# was removed from Cargo.toml in v0.15.0, so the command errored out. The build
+# branch was therefore BOTH skipped by default and broken when reached, which is
+# why nothing ever surfaced the drift.
+function Get-ExeVersion($path) {
+    if (Test-Path $path) { (Get-Item $path).VersionInfo.FileVersion } else { $null }
+}
+
 $prebuilt = Join-Path $root 'trontsnap.exe'
 $srcExe   = Join-Path $root 'target\release\trontsnap.exe'
 if (Test-Path $prebuilt) {
     $srcBuilt = $prebuilt
     Log "layout: prebuilt ($prebuilt)"
 } else {
-    if (-not (Test-Path $srcExe)) {
-        Log "building: cargo build --release --features uiaccess"
-        Push-Location $root
-        try { & cargo build --release --features uiaccess 2>&1 | ForEach-Object { Log "  $_" } }
-        finally { Pop-Location }
+    Log "building: cargo build --release (UI + hotkey broker)"
+    Push-Location $root
+    try {
+        & cargo build --release 2>&1 | ForEach-Object { Log "  $_" }
+        $uiExit = $LASTEXITCODE
+        & cargo build --release -p trontsnap-hotkeys 2>&1 | ForEach-Object { Log "  $_" }
+        $brokerExit = $LASTEXITCODE
     }
+    finally { Pop-Location }
+    if ($uiExit -ne 0)     { Log "ERROR: cargo build --release failed (exit $uiExit)"; exit 1 }
+    if ($brokerExit -ne 0) { Log "ERROR: broker build failed (exit $brokerExit)"; exit 1 }
     if (-not (Test-Path $srcExe)) { Log "ERROR: $srcExe not found and the build did not produce it"; exit 1 }
     $srcBuilt = $srcExe
     Log "layout: source ($srcExe)"
+}
+
+# Say out loud what is replacing what. A silent no-op install is the failure
+# mode this whole section exists to prevent, so make the version change visible
+# in the log even when everything works.
+$destExeVer = Get-ExeVersion $destExe
+$srcExeVer  = Get-ExeVersion $srcBuilt
+if ($destExeVer) {
+    Log "version: installed v$destExeVer  ->  incoming v$srcExeVer"
+    if ($destExeVer -eq $srcExeVer) { Log "  (same version number; the binary is still replaced byte-for-byte below)" }
+} else {
+    Log "version: no existing install  ->  incoming v$srcExeVer"
+}
+
+# --- DOWNGRADE GUARD -------------------------------------------------------------
+#
+# Installing an OLDER build over a newer one is never what you meant, and it is
+# the exact trap this repo already sprung: `dist\` holds packaged copies
+# (v0.15.0, v0.16.0, v0.17.0 as of 2026-07-31), and because `$root` comes from
+# $PSScriptRoot, running a COPY of this script that sits beside one of them takes
+# the "prebuilt" branch above and installs the fossil without building anything.
+# That is how a v0.16.0 install ended up masquerading as current for four days
+# while the tree was at v0.22.0.
+#
+# Refuse by default. A rollback is a legitimate thing to want, so -AllowDowngrade
+# exists, but it has to be asked for out loud.
+if ($destExeVer -and $srcExeVer) {
+    $cmpOk = $false
+    try { $older = ([version]$srcExeVer -lt [version]$destExeVer); $cmpOk = $true }
+    catch { Log "  (version strings not comparable; skipping the downgrade check)" }
+    if ($cmpOk -and $older) {
+        if ($AllowDowngrade) {
+            Log "WARN: DOWNGRADING v$destExeVer -> v$srcExeVer because -AllowDowngrade was passed."
+        } else {
+            Log "ERROR: refusing to DOWNGRADE the install from v$destExeVer to v$srcExeVer."
+            Log "       Source of the older binary: $srcBuilt"
+            Log "       You are probably running a copy of this script that sits next to a"
+            Log "       packaged build (check dist\). Run bootstrap.ps1 from the REPO ROOT to"
+            Log "       build and install current source, or pass -AllowDowngrade to roll back."
+            exit 1
+        }
+    }
 }
 
 # The UI must NOT have uiAccess. It would be raised to HIGH integrity and lose

@@ -28,33 +28,37 @@ pub struct Tokens {
     pub card_bg: Color32,
     pub widget_bg: Color32,
     pub widget_hover: Color32,
+    /// THE PRIMARY, VERBATIM. Exactly the color that was picked, never walked,
+    /// never clamped. Pure black stays pure black. This is what the picker shows,
+    /// what gets persisted, and what gradient peg 0 IS (not a copy of: the same
+    /// value). Do not draw small text in it; use `accent_readable` for that.
     pub accent: Color32,
+    /// The primary walked onto the guaranteed ladder (step 9), for ACCENT AS INK:
+    /// hyperlinks, warn text, hover strokes, focus edges. Splitting these two is
+    /// the whole fix; a single field meant the readability correction had to
+    /// overwrite the pick, so the pick could never survive.
+    pub accent_readable: Color32,
     pub accent_dim: Color32,
+    /// Label color for text sitting ON an `accent` fill, chosen by APCA against
+    /// what is actually drawn, so even a midtone primary gets a readable label.
+    pub on_accent: Color32,
     pub amber: Color32,
     pub text_primary: Color32,
     pub text_muted: Color32,
     pub stroke: Color32,
 }
 
-/// TrontSnap "Cyan" palette: near-black blue-tinted ground, the #5AD1FF cyan
-/// accent it already uses in the overlay/gallery, amber for the ShareX archive.
-/// This is the default theme, verbatim from the original hardcoded `T` const;
-/// every other theme derives from a color list instead.
+/// The house seed: the #5AD1FF cyan TrontSnap already uses in the overlay and
+/// gallery. "Cyan" is no longer a hand-tuned token dump; it is simply this seed
+/// run through the same ladder as every other theme, which is what makes the
+/// system UNIVERSAL. One code path, no privileged default that behaves
+/// differently from anything you pick yourself.
+pub const HOUSE_SEED: Rgb = [90, 209, 255];
+
+/// The default theme: the house seed through AUTO AWESOME. Kept under the old
+/// name so every `unwrap_or_else(cyan_default)` fallback still reads right.
 fn cyan_default() -> Tokens {
-    Tokens {
-        window_bg: Color32::from_rgb(9, 13, 19),
-        panel_bg: Color32::from_rgb(14, 21, 30),
-        header_strip: Color32::from_rgb(19, 28, 40),
-        card_bg: Color32::from_rgb(17, 26, 37),
-        widget_bg: Color32::from_rgb(24, 35, 47),
-        widget_hover: Color32::from_rgb(34, 50, 66),
-        accent: Color32::from_rgb(90, 209, 255),
-        accent_dim: Color32::from_rgb(44, 110, 138),
-        amber: Color32::from_rgb(255, 183, 77),
-        text_primary: Color32::from_rgb(216, 240, 248),
-        text_muted: Color32::from_rgb(110, 150, 168),
-        stroke: Color32::from_rgb(30, 42, 56),
-    }
+    auto_theme(&[HOUSE_SEED])
 }
 
 fn c32(rgb: Rgb) -> Color32 {
@@ -88,7 +92,14 @@ pub fn stroke() -> Color32 {
 /// Deliberately NOT used for `widgets.active.fg_stroke`, where the pressed-widget
 /// label sits over the DARK panel and would turn dark-on-dark — see `build_visuals()`.
 pub fn on_accent() -> Color32 {
-    c32(color::contrast_color(rgb_of(t().accent)))
+    t().on_accent
+}
+
+/// The accent in its INK form: guaranteed legible against the panel. Use this
+/// for hyperlinks, warn text, hover strokes and focus edges. Use `t().accent`
+/// (verbatim) for FILLS, and pair it with `on_accent()` for the label.
+pub fn accent_ink() -> Color32 {
+    t().accent_readable
 }
 
 /// The color the title-bar theme swatch paints: the USER'S pick, never the
@@ -100,13 +111,12 @@ pub fn on_accent() -> Color32 {
 /// truth), one = the exact custom pick, several = the most saturated stop,
 /// which is what a palette reads as at a glance.
 pub fn swatch_seed() -> Color32 {
-    let source = crate::settings::theme_source();
-    let cols: Vec<Rgb> = source.iter().filter_map(|h| color::hex_to_rgb(h)).collect();
-    match cols.len() {
-        0 => t().accent,
-        1 => c32(cols[0]),
-        _ => most_saturated(&cols).map(c32).unwrap_or_else(|| t().accent),
-    }
+    // Under AUTO AWESOME `accent` IS the verbatim primary: seed 0, unwalked and
+    // unclamped. So the swatch, the picker and gradient peg 0 can all just read
+    // it. This used to reach back into persisted settings to dig the raw pick
+    // out from under a correction that had already overwritten the token; there
+    // is no longer a correction to route around.
+    t().accent
 }
 
 pub fn rounding() -> Rounding {
@@ -190,34 +200,23 @@ pub fn apply(ctx: &egui::Context) {
 /// against the surfaces they actually sit on, with pure black/white as the
 /// unconditional backstop. `amber` is a SEMANTIC colour (the ShareX-archive
 /// marker) so it keeps its meaning and only its lightness moves.
+/// AMBER ONLY, and that is the point.
+///
+/// This used to walk `text_primary`, `text_muted` AND `accent`. Under AUTO
+/// AWESOME the first three come off the guaranteed ladder already: text is
+/// PLACED at a readable tone rather than derived and hoped for, and the accent's
+/// ink form is `accent_readable` (step 9). Walking them again did nothing except
+/// destroy `accent`, which is exactly how a pure-red pick turned into #ff9999
+/// and then overwrote itself.
+///
+/// `amber` is different: it is a hardcoded SEMANTIC literal (the ShareX-archive
+/// marker) that never passes through the ladder, so it is precisely the kind of
+/// value that survives every theme change and then vanishes on the one ground
+/// that happens to match it. Hardcoded literals still need the walk.
 fn enforce_readability(mut tk: Tokens) -> Tokens {
-    let rgb = |c: Color32| [c.r(), c.g(), c.b()];
-    let c32 = |v: [u8; 3]| Color32::from_rgb(v[0], v[1], v[2]);
-
-    // Body text has to work on the panel, on cards, and on widget fills.
-    let mut text = rgb(tk.text_primary);
-    for ground in [tk.panel_bg, tk.card_bg, tk.widget_bg] {
-        text = color::readable_against(text, rgb(ground), color::LC_TEXT_MIN);
-    }
-    tk.text_primary = c32(text);
-
-    // Secondary captions: the timestamps, counts and hints under thumbnails.
-    let mut muted = rgb(tk.text_muted);
-    for ground in [tk.panel_bg, tk.card_bg] {
-        muted = color::readable_against(muted, rgb(ground), color::LC_MUTED);
-    }
-    tk.text_muted = c32(muted);
-
-    // Accent + amber are drawn as INK (source dots, labels, legend) as well as
-    // fills; keep the hue, guarantee the legibility.
-    tk.accent = c32(color::readable_against(
-        rgb(tk.accent),
-        rgb(tk.panel_bg),
-        color::LC_MUTED,
-    ));
     tk.amber = c32(color::readable_against(
-        rgb(tk.amber),
-        rgb(tk.panel_bg),
+        rgb_of(tk.amber),
+        rgb_of(tk.panel_bg),
         color::LC_MUTED,
     ));
     tk
@@ -286,9 +285,13 @@ fn build_visuals(tk: Tokens) -> egui::Visuals {
     // painted ON the bright accent bg_fill, so this text needs to be the contrast
     // color for THAT accent (dark on a light accent, light on a dark one) — the
     // smart-contrast guarantee, not a fixed dark constant.
-    v.selection.stroke = Stroke::new(1.0, on_accent());
-    v.hyperlink_color = tk.accent;
-    v.warn_fg_color = tk.accent;
+    // FILL vs INK, the distinction the single-accent model could not express.
+    // `selection.bg_fill` above is the VERBATIM pick (a fill), so its label is
+    // `on_accent`, chosen by APCA against that exact fill. Hyperlinks and warn
+    // text are INK on the panel, so they take the ladder's step-9 form.
+    v.selection.stroke = Stroke::new(1.0, tk.on_accent);
+    v.hyperlink_color = tk.accent_readable;
+    v.warn_fg_color = tk.accent_readable;
     v.error_fg_color = Color32::from_rgb(220, 80, 60);
 
     let r = rounding();
@@ -313,7 +316,7 @@ fn build_visuals(tk: Tokens) -> egui::Visuals {
     w.weak_bg_fill = tk.widget_hover;
     // Full accent (not the dimmed variant) so hover reads as a crisp, deliberate
     // edge on tabs/chips/buttons/menu items — everything sharing this token.
-    w.bg_stroke = Stroke::new(1.2, tk.accent);
+    w.bg_stroke = Stroke::new(1.2, tk.accent_readable);
     w.fg_stroke = Stroke::new(1.5, tk.text_primary);
     w.rounding = r;
     w.expansion = 1.0;
@@ -321,7 +324,7 @@ fn build_visuals(tk: Tokens) -> egui::Visuals {
     let w = &mut v.widgets.active;
     w.bg_fill = tk.accent;
     w.weak_bg_fill = tk.accent_dim;
-    w.bg_stroke = Stroke::new(1.0, tk.accent);
+    w.bg_stroke = Stroke::new(1.0, tk.accent_readable);
     // Was on_accent() (dark) — but egui only fills bg_fill for a handful of
     // widgets (e.g. a pressed Button). Checkbox/SelectableLabel/RadioButton read
     // this same fg_stroke for their label text while pressed, painted straight
@@ -347,89 +350,73 @@ fn build_visuals(tk: Tokens) -> egui::Visuals {
 /// picks bg/surface/primary, then WCAG contrast rules guarantee readable text
 /// and an accent that pops on the panel — randomize all day, stays readable.
 /// Mirrors TrontEQ's `Palette::from_colors`, mapped onto TrontSnap's Tokens shape.
-fn tokens_from_colors(colors: &[Rgb]) -> Option<Tokens> {
-    let auto = color::generate_auto_theme(colors)?;
-    let dark = auto.is_dark;
-    let bg = auto.bg;
-    let surface = auto.surface;
-    let toward: Rgb = if dark { [255, 255, 255] } else { [0, 0, 0] };
+/// AUTO AWESOME: build the complete token set from 1..=4 seed colors.
+///
+/// **SEED 0 OWNS THE CHROME.** Every ground, border and text tone is a step on
+/// the ladder `color::scale_from_seed` lays down from it, so picking a color
+/// re-tints the WHOLE app instead of swapping three fields on a frozen navy.
+/// That frozen ground is what made every custom accent look "just blue": the
+/// old `from_accent` returned `..cyan_default()` and only replaced `accent`,
+/// `accent_dim` and `widget_hover`.
+///
+/// Seeds 1.. feed the gradient ramp (see `gradient_pegs_raw`), which is why one
+/// pick and four picks both produce a coherent theme.
+///
+/// TrontSnap is always-dark, so `dark` is pinned true here; the ladder itself
+/// carries both tables, so a light mode stays a drop-in rather than a rewrite.
+pub fn auto_theme(seeds: &[Rgb]) -> Tokens {
+    let seed = seeds.first().copied().unwrap_or(HOUSE_SEED);
+    let sc = color::scale_from_seed(seed, true);
 
-    // Primary accent must read against the panel; walk lightness until it does
-    // (bounded), keeping saturation up so it doesn't wash out to gray.
-    let mut accent = auto.primary;
-    let mut guard = 0;
-    while color::contrast_ratio(accent, surface) < 2.2 && guard < 14 {
-        let h = color::rgb_to_hsl(accent);
-        let l = if dark { (h.l + 6.0).min(92.0) } else { (h.l - 6.0).max(8.0) };
-        accent = color::hsl_to_rgb(h.h, h.s.max(45.0), l);
-        guard += 1;
-    }
-    let accent_dim = color::mix_colors(accent, bg, 0.45);
-
-    // Header strip / card sit a couple of steps above the panel (dark themes)
-    // or below it (light themes), header a touch further than the card.
-    let header_strip = color::mix_colors(surface, toward, 0.08);
-    let card_bg = color::mix_colors(surface, toward, 0.05);
-    let widget_bg = color::mix_colors(surface, accent, 0.10);
-    let widget_hover = color::mix_colors(widget_bg, accent, 0.14);
-    let stroke = auto.border;
-
-    // Text: WCAG 4.5 on the panel or it gets replaced outright.
-    let mut text_primary = auto.text;
-    if color::contrast_ratio(text_primary, surface) < 4.5 {
-        text_primary = color::contrast_color(surface);
-    }
-    let text_muted = color::mix_colors(text_primary, surface, 0.45);
-
-    // Amber (ShareX legend / warn color) must stay visually distinct from the
-    // accent; if the derived warning hue lands too close to it, keep the
-    // classic amber instead of two same-looking dots.
-    let mut amber = auto.warning;
-    let amber_h = color::rgb_to_hsl(amber).h;
-    let accent_h = color::rgb_to_hsl(accent).h;
-    let hue_gap = (amber_h - accent_h).rem_euclid(360.0);
-    let hue_gap = hue_gap.min(360.0 - hue_gap);
-    if hue_gap < 30.0 {
-        amber = [255, 183, 77];
-    }
-
-    Some(Tokens {
-        window_bg: c32(bg),
-        panel_bg: c32(surface),
-        header_strip: c32(header_strip),
-        card_bg: c32(card_bg),
-        widget_bg: c32(widget_bg),
-        widget_hover: c32(widget_hover),
-        accent: c32(accent),
-        accent_dim: c32(accent_dim),
-        amber: c32(amber),
-        text_primary: c32(text_primary),
-        text_muted: c32(text_muted),
-        stroke: c32(stroke),
-    })
+    // Radix roles, mapped onto TrontSnap's surface names. The original hand-tuned
+    // ordering (window < panel < card/header < widget < hover) is preserved, it
+    // is just tones off the ladder now instead of twelve magic literals.
+    let tk = Tokens {
+        window_bg: c32(sc.step(1)),
+        panel_bg: c32(sc.step(2)),
+        card_bg: c32(sc.step(3)),
+        header_strip: c32(sc.step(3)),
+        widget_bg: c32(sc.step(4)),
+        widget_hover: c32(sc.step(5)),
+        stroke: c32(sc.step(6)),
+        // THE PICK STAYS VERBATIM. Black is allowed to be black.
+        accent: c32(seed),
+        // Step 9 is the SOLID step: the ladder guarantees it can HOST a label,
+        // which is not the same as being legible AS a label on the panel. A deep
+        // purple seed lands its step 9 at Lc ~29 against step 2, and TrontSnap
+        // draws real text in this token (section headers, the title bar, gallery
+        // source labels), so it gets walked onto the muted-text floor. Hue is
+        // preserved, so the theme still reads as itself.
+        accent_readable: c32(color::readable_against(
+            sc.step(9),
+            sc.step(2),
+            color::LC_MUTED,
+        )),
+        accent_dim: c32(color::mix_colors(sc.step(9), sc.step(1), 0.45)),
+        on_accent: c32(color::on_color(seed, &sc)),
+        text_primary: c32(sc.step(12)),
+        text_muted: c32(sc.step(11)),
+        // Semantic, not derived: the ShareX-archive marker keeps its meaning.
+        // `enforce_readability` walks only its lightness onto this ground.
+        amber: c32([255, 183, 77]),
+    };
+    enforce_readability(tk)
 }
 
-/// "Your accent color on the standard dark UI": start from `cyan_default()`
-/// (the proven dark ground) and only swap the accent-derived fields. Text
-/// stays put since it's already readable on that dark ground.
-pub fn from_accent(accent: Rgb) -> Tokens {
-    let base = cyan_default();
-    let panel = rgb_of(base.panel_bg);
-
-    let mut chosen = accent;
-    let mut guard = 0;
-    while color::contrast_ratio(chosen, panel) < 2.2 && guard < 14 {
-        let h = color::rgb_to_hsl(chosen);
-        // The standard ground is dark, so lightening is what gains contrast.
-        let l = (h.l + 6.0).min(92.0);
-        chosen = color::hsl_to_rgb(h.h, h.s.max(45.0), l);
-        guard += 1;
+/// Derive tokens from a color list. Now just AUTO AWESOME: seed 0 owns the
+/// chrome, the rest are extra gradient stops. Kept as an `Option` so the
+/// existing `unwrap_or_else(cyan_default)` call sites are unchanged.
+fn tokens_from_colors(colors: &[Rgb]) -> Option<Tokens> {
+    if colors.is_empty() {
+        return None;
     }
+    Some(auto_theme(colors))
+}
 
-    let accent_dim = color::mix_colors(chosen, rgb_of(base.window_bg), 0.45);
-    let widget_hover = color::mix_colors(rgb_of(base.widget_bg), chosen, 0.14);
-
-    Tokens { accent: c32(chosen), accent_dim: c32(accent_dim), widget_hover: c32(widget_hover), ..base }
+/// Single-primary entry point (the picker, premades, presets and Random all
+/// funnel here). Thin wrapper so every source shares one guaranteed path.
+pub fn from_accent(accent: Rgb) -> Tokens {
+    auto_theme(&[accent])
 }
 
 /// Pick the most saturated color in a list — the one swatch a palette (or a
@@ -440,6 +427,34 @@ pub fn most_saturated(colors: &[Rgb]) -> Option<Rgb> {
     colors.iter().copied().max_by(|a, b| {
         color::rgb_to_hsl(*a).s.partial_cmp(&color::rgb_to_hsl(*b).s).unwrap_or(std::cmp::Ordering::Equal)
     })
+}
+
+/// Reorder a palette so its most saturated swatch leads, then trim to the four
+/// the gradient can hold.
+///
+/// SEED 0 OWNS THE CHROME now, so which color leads decides what the entire app
+/// looks like. Premade palettes are authored background-first (Dracula opens on
+/// #282a36, Tokyo Night on #1a1b26), and seeding on that would derive a whole
+/// theme from a near-black: no hue to spread, no identity, every palette landing
+/// on the same charcoal. The most saturated stop is what a palette reads as at a
+/// glance, so that is the primary; the rest follow as gradient stops.
+fn seeds_primary_first(colors: &[Rgb]) -> Vec<Rgb> {
+    let Some(primary) = most_saturated(colors) else {
+        return Vec::new();
+    };
+    let mut out = vec![primary];
+    // Compare by value, not index: a palette may legitimately repeat a color,
+    // and dropping every copy would silently shorten the ramp.
+    let mut skipped = false;
+    for &c in colors {
+        if !skipped && c == primary {
+            skipped = true;
+            continue;
+        }
+        out.push(c);
+    }
+    out.truncate(4);
+    out
 }
 
 /// Roll a new theme: random flavor palette, random harmony spread, or a
@@ -474,6 +489,10 @@ pub fn randomize() -> (Tokens, String, Vec<String>) {
             (p.name.to_string(), rgb)
         }
     };
+    // Same rule as the premades: the most saturated roll leads, so a Random
+    // theme actually LOOKS like the color it advertises instead of seeding the
+    // whole app on whichever stop happened to come out darkest.
+    let cols = seeds_primary_first(&cols);
     let source: Vec<String> = cols.iter().map(|&c| color::rgb_to_hex(c)).collect();
     let tokens = tokens_from_colors(&cols).unwrap_or_else(cyan_default);
     (tokens, name, source)
@@ -484,8 +503,11 @@ pub fn randomize() -> (Tokens, String, Vec<String>) {
 pub fn premade_tokens(name: &str) -> Option<(Tokens, Vec<String>)> {
     let p = color::PREMADE_PALETTES.iter().find(|p| p.name == name)?;
     let rgb: Vec<Rgb> = p.colors.iter().filter_map(|h| color::hex_to_rgb(h)).collect();
-    let tokens = tokens_from_colors(&rgb)?;
-    let source: Vec<String> = p.colors.iter().map(|s| s.to_string()).collect();
+    let seeds = seeds_primary_first(&rgb);
+    let tokens = tokens_from_colors(&seeds)?;
+    // Persist in SEED ORDER, not authoring order, so `resolve` rebuilds the same
+    // theme next launch instead of re-seeding on whatever color came first.
+    let source: Vec<String> = seeds.iter().map(|&c| color::rgb_to_hex(c)).collect();
     Some((tokens, source))
 }
 
@@ -712,6 +734,10 @@ fn gradient_pegs_raw(tk: &Tokens) -> Vec<Rgb> {
         }
         return mono_partner(pegs);
     }
+    // NOTE for both branches below: `tk.accent` is the VERBATIM primary now, so
+    // "peg 0 is the accent" finally means what it says. It used to be the
+    // readability-walked token, which is why slot 0 showed a pale salmon for a
+    // pure-red theme and why editing it could never give you red back.
 
     // Curated preset: designed stops used verbatim.
     if cfg.preset >= 0 {
@@ -721,21 +747,28 @@ fn gradient_pegs_raw(tk: &Tokens) -> Vec<Rgb> {
     }
 
     // Harmony mode: pegs derived from the live accent, clash-proof by rule.
+    // Harmony mode: peg 0 IS the primary, verbatim; pegs 1.. are derived from it
+    // by the rule and shaped to sit deep and rich on a dark ground.
+    //
+    // The shaping used to be applied to the WHOLE spread including its first
+    // entry, which is the base itself. That silently clamped the primary into
+    // L 20..42, so peg 0 disagreed with both the accent picker and the title-bar
+    // swatch and a bright pick showed up muddy in its own gradient. Only the
+    // DERIVED stops get shaped; the one the user actually chose is passed
+    // through untouched.
     let rule = color::HARMONY_RULES[(cfg.harmony as usize) % color::HARMONY_RULES.len()];
     let base = color::rgb_to_hsl(rgb_of(tk.accent));
     let spread = color::generate_harmony(base, rule);
-    let derived: Vec<Rgb> = spread
-        .into_iter()
-        .take((cfg.pegs.clamp(1, 4)) as usize)
-        .map(|h| {
-            // Deep + rich (dark ground). Saturation is only capped, never
-            // forced UP — a gray/black accent legitimately yields a
-            // monochrome ramp (go nuts).
-            let l = h.l.clamp(20.0, 42.0);
-            let s = h.s.min(90.0);
-            color::hsl_to_rgb(h.h, s, l)
-        })
-        .collect();
+    let n = cfg.pegs.clamp(1, 4) as usize;
+    let mut derived: Vec<Rgb> = Vec::with_capacity(n);
+    derived.push(rgb_of(tk.accent));
+    for h in spread.into_iter().skip(1).take(n.saturating_sub(1)) {
+        // Saturation is only capped, never forced UP: a gray/black primary
+        // legitimately yields a monochrome ramp (go nuts).
+        let l = h.l.clamp(20.0, 42.0);
+        let s = h.s.min(90.0);
+        derived.push(color::hsl_to_rgb(h.h, s, l));
+    }
     mono_partner(derived)
 }
 
@@ -826,4 +859,151 @@ pub fn ramp_sample_frosted(tk: &Tokens, t: f32) -> Color32 {
     let wash = ramp_sample(tk, t);
     let f = frost();
     c32(color::mix_colors(rgb_of(wash), rgb_of(tk.panel_bg), f))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A spread that covers the cases that actually broke: pure primaries, the
+    /// achromatic extremes, a bright hue whose cusp is far from the ladder's
+    /// solid step (yellow), and a muted near-gray.
+    const SEEDS: [Rgb; 9] = [
+        [255, 0, 0],
+        [0, 0, 0],
+        [255, 255, 255],
+        [128, 128, 128],
+        [255, 255, 0],
+        [90, 209, 255],
+        [18, 34, 30],
+        [140, 60, 200],
+        [0, 255, 0],
+    ];
+
+    /// THE INTENT RULE. The primary is stored and rendered EXACTLY as picked, for
+    /// every seed, with no exceptions. Pure red stays pure red; pure black stays
+    /// pure black. This is the guarantee the old single-accent model could not
+    /// make, because its readability walk had nowhere to put the result except on
+    /// top of the pick itself.
+    #[test]
+    fn primary_is_always_verbatim() {
+        for seed in SEEDS {
+            assert_eq!(
+                rgb_of(from_accent(seed).accent),
+                seed,
+                "the primary was altered for {seed:?}"
+            );
+        }
+    }
+
+    /// THE "IT'S JUST BLUE" GUARD. Seed 0 owns the chrome, so two different picks
+    /// must produce visibly different grounds. The old `from_accent` returned
+    /// `..cyan_default()` and swapped three fields, so every theme in the app had
+    /// an identical navy background no matter what was chosen.
+    #[test]
+    fn the_chrome_follows_the_seed() {
+        let red = from_accent([255, 0, 0]);
+        let cyan = from_accent([90, 209, 255]);
+        for (label, a, b) in [
+            ("window_bg", red.window_bg, cyan.window_bg),
+            ("panel_bg", red.panel_bg, cyan.panel_bg),
+            ("widget_bg", red.widget_bg, cyan.widget_bg),
+        ] {
+            let d = color::delta_e(rgb_of(a), rgb_of(b));
+            assert!(d > 8.0, "{label} barely moved between seeds (delta_e {d:.1})");
+        }
+    }
+
+    /// Grounds are TINTED, not painted: even a screaming seed yields a background
+    /// you can stare at for hours. Guards the ground chroma ceiling.
+    #[test]
+    fn grounds_stay_calm_for_every_seed() {
+        for seed in SEEDS {
+            let tk = from_accent(seed);
+            for (label, g) in [("window_bg", tk.window_bg), ("panel_bg", tk.panel_bg)] {
+                let [_, c, _] = color::rgb_to_oklch(rgb_of(g));
+                assert!(c <= 0.06, "{label} is painted, not tinted, for {seed:?} (chroma {c:.3})");
+            }
+        }
+    }
+
+    /// Body text is PLACED at a readable tone against every ground it can land
+    /// on, for every seed. This is the ladder's core promise.
+    #[test]
+    fn text_reads_on_every_ground() {
+        for seed in SEEDS {
+            let tk = from_accent(seed);
+            for (label, g) in [
+                ("window_bg", tk.window_bg),
+                ("panel_bg", tk.panel_bg),
+                ("card_bg", tk.card_bg),
+                ("widget_bg", tk.widget_bg),
+            ] {
+                let lc = color::apca_abs(rgb_of(tk.text_primary), rgb_of(g));
+                assert!(lc >= color::LC_TEXT_MIN, "text on {label} is Lc {lc:.1} for {seed:?}");
+            }
+            let lc = color::apca_abs(rgb_of(tk.text_muted), rgb_of(tk.panel_bg));
+            assert!(lc >= color::LC_MUTED, "muted text is Lc {lc:.1} for {seed:?}");
+        }
+    }
+
+    /// The accent's INK form clears its floor on the panel even when the verbatim
+    /// pick could not possibly (pure black on a near-black ground). Splitting the
+    /// two is what lets the pick stay verbatim without anything going invisible.
+    #[test]
+    fn accent_ink_reads_where_the_pick_cannot() {
+        for seed in SEEDS {
+            let tk = from_accent(seed);
+            let lc = color::apca_abs(rgb_of(tk.accent_readable), rgb_of(tk.panel_bg));
+            assert!(lc >= color::LC_MUTED, "accent ink is Lc {lc:.1} for {seed:?}");
+        }
+    }
+
+    /// A label drawn ON the verbatim accent fill stays readable, which is what
+    /// makes it safe to keep using the raw pick as a fill.
+    #[test]
+    fn labels_read_on_the_verbatim_fill() {
+        for seed in SEEDS {
+            let tk = from_accent(seed);
+            let lc = color::apca_abs(rgb_of(tk.on_accent), rgb_of(tk.accent));
+            assert!(lc >= 45.0, "on_accent is Lc {lc:.1} against the fill for {seed:?}");
+        }
+    }
+
+    /// PEG 0 IS THE PRIMARY, in both peg modes. Not linked to it, not a corrected
+    /// copy of it: the same color. Harmony mode used to shape the whole spread
+    /// including its first entry (which is the base itself), clamping the primary
+    /// into L 20..42 so it disagreed with its own picker.
+    #[test]
+    fn peg_zero_is_the_primary() {
+        let tk = from_accent([255, 0, 0]);
+        let mut cfg = GradientCfg { pegs: 3, ..GradientCfg::default() };
+
+        cfg.preset = -2; // custom
+        set_gradient_cfg(cfg);
+        assert_eq!(gradient_pegs_raw(&tk)[0], [255, 0, 0], "custom peg 0 is not the primary");
+
+        cfg.preset = -1; // harmony
+        set_gradient_cfg(cfg);
+        assert_eq!(gradient_pegs_raw(&tk)[0], [255, 0, 0], "harmony peg 0 is not the primary");
+
+        set_gradient_cfg(GradientCfg::default());
+    }
+
+    /// Premades seed on their most saturated stop, not their first. Authored
+    /// background-first, they would otherwise all derive from a near-black and
+    /// land on the same identity-free charcoal.
+    #[test]
+    fn premades_seed_on_their_identity() {
+        // Dracula opens on #282a36 (near-black) and carries #ff79c6 / #bd93f9.
+        let (tk, source) = premade_tokens("Dracula").expect("Dracula exists");
+        let seed = rgb_of(tk.accent);
+        assert_ne!(seed, [0x28, 0x2a, 0x36], "seeded on the background, not the identity");
+        assert_eq!(
+            color::hex_to_rgb(&source[0]),
+            Some(seed),
+            "persisted source must lead with the seed so resolve() rebuilds it"
+        );
+        assert!(color::rgb_to_hsl(seed).s > 50.0, "the seed should be the saturated stop");
+    }
 }

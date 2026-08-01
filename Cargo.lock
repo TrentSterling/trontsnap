@@ -4231,7 +4231,7 @@ dependencies = [
 
 [[package]]
 name = "trontsnap"
-version = "0.22.0"
+version = "0.23.0"
 dependencies = [
  "ab_glyph",
  "anyhow",
@@ -4255,7 +4255,7 @@ dependencies = [
 
 [[package]]
 name = "trontsnap-hotkeys"
-version = "0.22.0"
+version = "0.23.0"
 dependencies = [
  "windows 0.56.0",
  "winreg",

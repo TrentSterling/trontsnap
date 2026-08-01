@@ -570,12 +570,25 @@ impl App {
                     ui.add_space(6.0);
                     let wm = ui.add(egui::Label::new(
                         egui::RichText::new("TrontSnap")
-                            .color(crate::theme::t().accent)
+                            .color(crate::theme::accent_ink())
                             .strong()
                             .size(16.0),
                     )
                     .sense(egui::Sense::click_and_drag()));
                     drag_handle(ctx, &wm);
+                    // ALWAYS SHOW THE VERSION. A stale install used to be
+                    // completely invisible: nothing in the UI said what was
+                    // running, so a six-versions-old binary looked exactly like
+                    // a current one and bugs got re-reported against code that
+                    // had already changed. It costs one muted label.
+                    ui.add_space(5.0);
+                    let ver = ui.add(egui::Label::new(
+                        egui::RichText::new(concat!("v", env!("CARGO_PKG_VERSION")))
+                            .color(crate::theme::t().text_muted)
+                            .size(12.0),
+                    )
+                    .sense(egui::Sense::click_and_drag()));
+                    drag_handle(ctx, &ver);
                     ui.add_space(16.0);
 
                     // Uniform nav strip: the Capture action-menu and the three view tabs
@@ -1041,6 +1054,32 @@ fn settings_tab_ui(ui: &mut egui::Ui) {
 /// header, and the floating Theme window the title-bar swatch opens), so the
 /// two can never drift apart. Width comes from the caller: Settings caps it at
 /// 560, the Theme window at its own frame.
+/// When the RUNNING binary was built, read from the exe's OWN timestamp rather
+/// than a constant baked in at compile time. A baked constant only refreshes
+/// when cargo decides to rerun `build.rs`, which it skips for ordinary source
+/// edits, so it would report a stale date on exactly the rebuilds that matter.
+/// A file's mtime cannot lie about which binary this is.
+fn build_stamp() -> String {
+    std::env::current_exe()
+        .and_then(|p| p.metadata())
+        .and_then(|m| m.modified())
+        .map(|t| {
+            chrono::DateTime::<chrono::Local>::from(t)
+                .format("%Y-%m-%d %H:%M")
+                .to_string()
+        })
+        .unwrap_or_else(|_| "unknown".to_string())
+}
+
+/// WHICH trontsnap.exe this is. Version alone can't distinguish the installed
+/// copy in Program Files from a fresh `target\release` build of the same
+/// version, and confusing the two is how an old binary gets debugged for days.
+fn exe_path_label() -> String {
+    std::env::current_exe()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "unknown location".to_string())
+}
+
 fn appearance_ui(ui: &mut egui::Ui) {
     ui.label(
         egui::RichText::new(format!("Current theme: {}", crate::settings::theme_name()))
@@ -1049,7 +1088,16 @@ fn appearance_ui(ui: &mut egui::Ui) {
     );
     ui.add_space(10.0);
 
-    let mut accent = crate::theme::t().accent;
+    // SEED FROM THE PICK, NOT THE RENDERED TOKEN. `t().accent` is the value
+    // AFTER `enforce_readability` walked it lighter to clear its APCA floor, so
+    // binding the picker to it showed the correction instead of the choice
+    // (pick pure red, see #ff9999 staring back) and, worse, RATCHETED: the next
+    // edit re-seeded from the corrected value and persisted that as the new
+    // intent, so the original pick could never be recovered. `swatch_seed()`
+    // returns the raw persisted pick and already backs the title-bar swatch;
+    // the two theme entry points now agree. Correction still happens, it just
+    // happens to the RENDERED tokens instead of eating the source of truth.
+    let mut accent = crate::theme::swatch_seed();
     ui.horizontal(|ui| {
         ui.label("Accent color");
         ui.add_space(8.0);
@@ -1412,7 +1460,7 @@ fn gradient_editor_ui(ui: &mut egui::Ui) {
 
 /// Small accent section header, matching the About tab's "Shortcuts" heading style.
 fn settings_section_header(ui: &mut egui::Ui, title: &str) {
-    ui.label(egui::RichText::new(title).strong().color(crate::theme::t().accent));
+    ui.label(egui::RichText::new(title).strong().color(crate::theme::accent_ink()));
     ui.add_space(8.0);
 }
 
@@ -1515,7 +1563,7 @@ fn shortcut_row(ui: &mut egui::Ui, key: &str, desc: &str) {
         key,
         0.0,
         TextFormat {
-            color: crate::theme::t().accent,
+            color: crate::theme::accent_ink(),
             font_id: egui::FontId::proportional(14.0),
             ..Default::default()
         },
@@ -1546,7 +1594,7 @@ impl App {
                 );
                 ui.add_space(10.0);
                 ui.heading(
-                    egui::RichText::new("TrontSnap").color(crate::theme::t().accent).size(26.0),
+                    egui::RichText::new("TrontSnap").color(crate::theme::accent_ink()).size(26.0),
                 );
                 ui.add_space(2.0);
                 ui.label(
@@ -1554,11 +1602,27 @@ impl App {
                         .size(15.0)
                         .color(crate::theme::t().text_muted),
                 );
+                ui.add_space(6.0);
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Version {}   ·   built {}",
+                        env!("CARGO_PKG_VERSION"),
+                        build_stamp()
+                    ))
+                    .small()
+                    .color(crate::theme::t().text_muted),
+                );
+                ui.add_space(2.0);
+                ui.label(
+                    egui::RichText::new(exe_path_label())
+                        .small()
+                        .color(crate::theme::t().text_muted),
+                );
                 ui.add_space(18.0);
                 ui.separator();
                 ui.add_space(14.0);
 
-                ui.label(egui::RichText::new("Shortcuts").strong().color(crate::theme::t().accent));
+                ui.label(egui::RichText::new("Shortcuts").strong().color(crate::theme::accent_ink()));
                 ui.add_space(10.0);
                 shortcut_row(ui, "PrtSc", "Grab the full screen");
                 shortcut_row(ui, "Ctrl + PrtSc", "Freeze, then click a window or drag a region");

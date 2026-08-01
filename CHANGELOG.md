@@ -1,3 +1,75 @@
+## v0.23.0
+
+**AUTO AWESOME.** TrontSnap's colormagic was vendored from Boxel on 2026-07-11
+and never picked up the generation SpaceView grew after it, so a custom accent
+recolored three tokens on a frozen navy ground while SpaceView rebuilt its whole
+chrome from the pick. This closes that gap. One system, one code path.
+
+> **THE USER CONTROLS HUE. THE SYSTEM CONTROLS LIGHTNESS.**
+
+- **The chrome follows your pick.** `color::scale_from_seed` lays a Radix-style
+  12-step OKLCH ladder from seed 0 and every ground, border and text tone is a
+  step on it. Picking a color re-tints the entire app. Previously `from_accent`
+  returned `..cyan_default()` and swapped exactly three fields, which is why
+  every theme was "just blue" no matter what you chose. Grounds are chroma-capped
+  at 0.045: tint, not paint.
+- **The primary is verbatim, always.** The token set now carries `accent` (the
+  exact pick, never walked) alongside `accent_readable` (ladder step 9, walked
+  onto the muted-text floor) and `on_accent` (APCA-chosen against the fill that
+  is actually drawn). One field could not express fill-versus-ink, so the
+  readability correction had nowhere to land except on top of the pick itself.
+  Pure red stays pure red. Pure black stays pure black.
+- **Peg 0 IS the primary.** Not linked to it, not a corrected copy: the same
+  color. Harmony mode used to shape the whole spread including its first entry
+  (which is the base itself), clamping the primary into L 20..42 so a peg
+  disagreed with its own picker. Only derived stops get shaped now.
+- **Premades and Random seed on their identity.** Palettes are authored
+  background-first (Dracula opens on #282a36), and seed 0 owns the chrome, so
+  seeding on the first entry derived every theme from a near-black. The most
+  saturated stop leads, and the persisted source is stored in seed order so
+  `resolve` rebuilds the same theme next launch.
+- **"Cyan" is no longer privileged.** The house look is just `#5AD1FF` through
+  the same ladder as anything else, so there is no default that behaves
+  differently from what you pick.
+- `enforce_readability` now touches **only** `amber`, the hardcoded ShareX marker
+  that never passes through the ladder. Text, muted and accent come off the
+  ladder already guaranteed.
+- Ten theme tests, including the two regressions above: `primary_is_always_verbatim`
+  and `the_chrome_follows_the_seed`.
+
+## v0.22.1
+
+Your color pick is yours. Two bugs let the theme system overwrite intent, and
+one blind spot let a stale binary pretend to be current for four days.
+
+- **The accent picker showed the correction, not the choice.** It was bound to
+  `theme::t().accent`, which is the value AFTER the APCA readability walk
+  brightens it to clear its floor. Pick pure red and #ff9999 stared back. Worse,
+  it ratcheted: the next edit re-seeded from the corrected value and persisted
+  THAT as the new intent, so the original pick was gone for good. It now seeds
+  from `swatch_seed()`, the raw persisted pick that already backed the title-bar
+  swatch. Correction still happens, it just lands on the rendered tokens instead
+  of eating the source of truth.
+- **Picking black gave you a dark red accent.** The contrast walk floored
+  saturation with `h.s.max(45.0)` so a brightened accent wouldn't wash out to
+  gray, but `rgb_to_hsl` reports hue 0 for EVERY achromatic color, so the floor
+  read that placeholder zero as "red" and invented a hue nobody chose. Walking
+  lightness already preserves saturation by construction, so the floor only ever
+  ADDED saturation. Gone from both derivation paths. Pick black, get gray; pick
+  something muted, it stays muted. Five tests pin the rule down.
+- **The UI now states its version** in the title bar, and version + build time +
+  exe path in About. There was previously nothing anywhere that identified the
+  running binary. Build time is read from the exe's own mtime rather than baked
+  in at compile time, because cargo skips rerunning `build.rs` on ordinary
+  source edits and a baked constant would go stale on exactly the rebuilds that
+  matter.
+- **`bootstrap.ps1` always builds now.** It used to skip the build whenever any
+  exe was already in `target\release` and install that one instead; the build it
+  skipped was itself broken, still passing the `--features uiaccess` flag that
+  was removed in v0.15.0. So "reinstall" could silently install a months-old
+  binary. It also builds the hotkey broker, and logs `installed vX -> incoming
+  vY` so a no-op install is visible in the log.
+
 ## v0.22.0
 
 The annotation editor: the single biggest gap versus ShareX, and the reason
