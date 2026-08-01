@@ -31,6 +31,8 @@ const GRADIENT_VALUE: &str = "Gradient";
 const GRADIENT_ANGLE_VALUE: &str = "GradientAngle";
 const GRADIENT_INTENSITY_VALUE: &str = "GradientIntensity";
 const GRADIENT_FROST_VALUE: &str = "GradientFrost";
+const GRADIENT_FROST_LIGHT_VALUE: &str = "GradientFrostLight";
+const THEME_MODE_VALUE: &str = "ThemeMode";
 const GRADIENT_PEGS_VALUE: &str = "GradientPegs";
 const GRADIENT_HARMONY_VALUE: &str = "GradientHarmony";
 const GRADIENT_PRESET_VALUE: &str = "GradientPreset";
@@ -118,13 +120,18 @@ static GRADIENT: AtomicBool = AtomicBool::new(true);
 // whether picking a preset also re-themes the app. Intensity/frost are stored
 // as integer percent (0-100) so the registry stays plain DWORDs; preset is
 // stored as a signed decimal string since winreg's DWORD helpers are u32-only.
-// FROST is DARK-ONLY here (TrontSnap has no light mode) — a single value,
-// unlike SpaceView's frost_dark/frost_light pair — but kept as its own
-// get/set pair (mirroring theme::frost()/set_frost()) so a future light mode
-// is a trivial extension, not a rewrite.
+// FROST IS PER MODE, matching SpaceView's frost_dark/frost_light pair. The
+// values are asymmetric on purpose: white bleaches colour and dark preserves
+// it, so light needs thinner panels (59%) than dark (85%) to let a comparable
+// amount of the wash through. Sharing one value made light themes look like the
+// gradient was off. (The old comment here promised this would be a trivial
+// extension rather than a rewrite when light mode arrived; it was.)
 static GRADIENT_ANGLE: AtomicU32 = AtomicU32::new(135);
 static GRADIENT_INTENSITY_PCT: AtomicU32 = AtomicU32::new(45);
 static GRADIENT_FROST_PCT: AtomicU32 = AtomicU32::new(85);
+static GRADIENT_FROST_LIGHT_PCT: AtomicU32 = AtomicU32::new(59);
+/// "Auto" | "Dark" | "Light". Auto follows the Windows app-theme setting.
+static THEME_MODE: LazyLock<RwLock<String>> = LazyLock::new(|| RwLock::new("Dark".to_string()));
 static GRADIENT_PEGS: AtomicU32 = AtomicU32::new(3);
 static GRADIENT_HARMONY: AtomicU32 = AtomicU32::new(0);
 static GRADIENT_PRESET: LazyLock<RwLock<i16>> = LazyLock::new(|| RwLock::new(-1));
@@ -197,6 +204,12 @@ pub fn load() {
         }
         if let Ok(v) = key.get_value::<u32, _>(GRADIENT_FROST_VALUE) {
             GRADIENT_FROST_PCT.store(v.min(100), Ordering::Relaxed);
+        }
+        if let Ok(v) = key.get_value::<u32, _>(GRADIENT_FROST_LIGHT_VALUE) {
+            GRADIENT_FROST_LIGHT_PCT.store(v.min(100), Ordering::Relaxed);
+        }
+        if let Ok(v) = key.get_value::<String, _>(THEME_MODE_VALUE) {
+            *THEME_MODE.write().unwrap() = v;
         }
         if let Ok(v) = key.get_value::<u32, _>(GRADIENT_PEGS_VALUE) {
             GRADIENT_PEGS.store(v.clamp(1, 4), Ordering::Relaxed);
@@ -386,15 +399,30 @@ pub fn set_gradient_intensity(v: f32) {
     persist_u32(GRADIENT_INTENSITY_VALUE, pct);
 }
 
-/// Panel opacity over the wash (0..1), dark-only (see the FROST comment near
-/// the statics above). Mirrors `theme::frost()`/`set_frost()`.
-pub fn gradient_frost() -> f32 {
-    GRADIENT_FROST_PCT.load(Ordering::Relaxed) as f32 / 100.0
+/// Panel opacity over the wash (0..1), PER MODE (see the FROST comment near the
+/// statics above). Mirrors `theme::frost()`/`set_frost()`.
+pub fn gradient_frost(dark: bool) -> f32 {
+    let a = if dark { &GRADIENT_FROST_PCT } else { &GRADIENT_FROST_LIGHT_PCT };
+    a.load(Ordering::Relaxed) as f32 / 100.0
 }
-pub fn set_gradient_frost(v: f32) {
+pub fn set_gradient_frost(dark: bool, v: f32) {
     let pct = (v.clamp(0.0, 1.0) * 100.0).round() as u32;
-    GRADIENT_FROST_PCT.store(pct, Ordering::Relaxed);
-    persist_u32(GRADIENT_FROST_VALUE, pct);
+    if dark {
+        GRADIENT_FROST_PCT.store(pct, Ordering::Relaxed);
+        persist_u32(GRADIENT_FROST_VALUE, pct);
+    } else {
+        GRADIENT_FROST_LIGHT_PCT.store(pct, Ordering::Relaxed);
+        persist_u32(GRADIENT_FROST_LIGHT_VALUE, pct);
+    }
+}
+
+/// Dark / light preference: "Auto" (follow Windows), "Dark" or "Light".
+pub fn theme_mode() -> String {
+    THEME_MODE.read().unwrap().clone()
+}
+pub fn set_theme_mode(mode: &str) {
+    *THEME_MODE.write().unwrap() = mode.to_string();
+    persist_str(THEME_MODE_VALUE, mode);
 }
 
 /// Number of gradient pegs in play (1..=4; harmony/custom modes only).

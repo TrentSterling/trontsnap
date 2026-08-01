@@ -705,7 +705,9 @@ fn draw_cell(
                 // Play badge over the frame.
                 let c = fitted.center();
                 painter.circle_filled(c, 19.0, Color32::from_black_alpha(150));
-                painter.circle_stroke(c, 19.0, Stroke::new(1.0, accent()));
+                // On the badge's black scrim, not on the panel: needs the
+                // overlay form or it vanishes in light mode.
+                painter.circle_stroke(c, 19.0, Stroke::new(1.0, crate::theme::accent_over_media()));
                 let r = 10.0;
                 painter.add(egui::Shape::convex_polygon(
                     vec![
@@ -713,7 +715,7 @@ fn draw_cell(
                         egui::pos2(c.x + r, c.y),
                         egui::pos2(c.x - r * 0.55, c.y + r),
                     ],
-                    accent(),
+                    crate::theme::accent_over_media(),
                     Stroke::NONE,
                 ));
             }
@@ -728,7 +730,7 @@ fn draw_cell(
                         egui::pos2(c.x + r, c.y),
                         egui::pos2(c.x - r * 0.6, c.y + r),
                     ],
-                    accent(),
+                    crate::theme::accent_over_media(),
                     Stroke::NONE,
                 ));
             }

@@ -62,9 +62,11 @@ const LOUPE_STEP: i32 = 48;
 /// theme is active, not a hardcoded cyan. Runs on the picker's own worker
 /// thread; a RwLock read there is fine.
 fn accent() -> COLORREF {
-    // INK: the selection border is drawn over arbitrary screen content, so it
-    // needs the guaranteed-legible form, not a pick that may be near-black.
-    let a = crate::theme::accent_ink();
+    // The selection border is drawn over the FROZEN SCREEN under a dim scrim,
+    // never on a panel, so it takes the overlay form: `accent_ink()` is walked
+    // against the panel and would come back dark in light mode, which is the one
+    // thing a selection border on a darkened screen must not be.
+    let a = crate::theme::accent_over_media();
     rgb(a.r(), a.g(), a.b())
 }
 fn rgb(r: u8, g: u8, b: u8) -> COLORREF {

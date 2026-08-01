@@ -921,6 +921,11 @@ impl eframe::App for App {
             self.hide(ctx);
         }
 
+        // In Auto mode, keep following Windows rather than sampling it once at
+        // startup. Self-throttling to a registry read every couple of seconds,
+        // and a no-op entirely unless the preference is Auto.
+        crate::theme::poll_system_mode(ctx);
+
         // Discord-style background wash: one quad painted into the background
         // layer before any panel draws (panel fills go translucent to let it
         // read through — see theme::build_visuals). Default ON; the Settings >
@@ -1088,6 +1093,32 @@ fn appearance_ui(ui: &mut egui::Ui) {
     );
     ui.add_space(10.0);
 
+    // MODE. Auto follows the Windows app-theme setting and keeps following it
+    // (polled each frame, throttled), so flipping Windows flips TrontSnap; Dark
+    // and Light pin it regardless of what the OS is doing.
+    ui.horizontal(|ui| {
+        ui.label("Mode");
+        ui.add_space(8.0);
+        let cur = crate::theme::mode_pref();
+        for m in crate::theme::ModePref::ALL {
+            if ui.selectable_label(cur == m, m.label()).clicked() && cur != m {
+                crate::theme::set_mode_pref(ui.ctx(), m);
+            }
+        }
+    });
+    if crate::theme::mode_pref() == crate::theme::ModePref::Auto {
+        ui.label(
+            egui::RichText::new(if crate::theme::dark_mode() {
+                "Following Windows: currently dark."
+            } else {
+                "Following Windows: currently light."
+            })
+            .small()
+            .color(crate::theme::t().text_muted),
+        );
+    }
+    ui.add_space(10.0);
+
     // SEED FROM THE PICK, NOT THE RENDERED TOKEN. `t().accent` is the value
     // AFTER `enforce_readability` walked it lighter to clear its APCA floor, so
     // binding the picker to it showed the correction instead of the choice
@@ -1111,7 +1142,7 @@ fn appearance_ui(ui: &mut egui::Ui) {
             .inner;
         if changed {
             let rgb = [accent.r(), accent.g(), accent.b()];
-            let tokens = crate::theme::from_accent(rgb);
+            let tokens = crate::theme::from_accent(rgb, crate::theme::dark_mode());
             crate::theme::set_theme(ui.ctx(), tokens);
             crate::settings::set_theme("Custom", &[crate::color::rgb_to_hex(rgb)]);
         }
@@ -1124,7 +1155,9 @@ fn appearance_ui(ui: &mut egui::Ui) {
         .show_ui(ui, |ui| {
             for p in crate::color::PREMADE_PALETTES {
                 if ui.selectable_label(current_name == p.name, p.name).clicked() {
-                    if let Some((tokens, source)) = crate::theme::premade_tokens(p.name) {
+                    if let Some((tokens, source)) =
+                        crate::theme::premade_tokens(p.name, crate::theme::dark_mode())
+                    {
                         crate::theme::set_theme(ui.ctx(), tokens);
                         crate::settings::set_theme(p.name, &source);
                     }
@@ -1140,7 +1173,7 @@ fn appearance_ui(ui: &mut egui::Ui) {
             crate::settings::set_theme(&name, &source);
         }
         if ui.button("Reset to default").clicked() {
-            let tokens = crate::theme::resolve("Cyan", &[]);
+            let tokens = crate::theme::resolve("Cyan", &[], crate::theme::dark_mode());
             crate::theme::set_theme(ui.ctx(), tokens);
             crate::settings::set_theme("Cyan", &[]);
         }
@@ -1246,7 +1279,10 @@ fn gradient_editor_ui(ui: &mut egui::Ui) {
     // the preview ramp (WYSIWYG); high = solid chrome. A user slider — Random
     // never touches it, and Reset below restores it explicitly.
     ui.label("Frost");
-    let mut frost = crate::theme::frost();
+    // Frost is stored per mode, so the slider edits whichever polarity is live;
+    // switching modes brings back the value you tuned for that one.
+    let dark = crate::theme::dark_mode();
+    let mut frost = crate::theme::frost(dark);
     if ui
         .add(
             egui::Slider::new(&mut frost, 0.0..=1.0)
@@ -1254,8 +1290,8 @@ fn gradient_editor_ui(ui: &mut egui::Ui) {
         )
         .changed()
     {
-        crate::theme::set_frost(frost);
-        crate::settings::set_gradient_frost(frost);
+        crate::theme::set_frost(dark, frost);
+        crate::settings::set_gradient_frost(dark, frost);
         crate::theme::set_theme(ui.ctx(), crate::theme::t());
     }
     ui.add_space(6.0);
@@ -1354,7 +1390,7 @@ fn gradient_editor_ui(ui: &mut egui::Ui) {
                 let rgbs: Vec<crate::color::Rgb> =
                     stops.iter().filter_map(|h| crate::color::hex_to_rgb(h)).collect();
                 if let Some(acc) = crate::theme::most_saturated(&rgbs) {
-                    let tk2 = crate::theme::from_accent(acc);
+                    let tk2 = crate::theme::from_accent(acc, crate::theme::dark_mode());
                     crate::theme::set_theme(ui.ctx(), tk2);
                     crate::settings::set_theme(pname, &[crate::color::rgb_to_hex(acc)]);
                 }
@@ -1389,7 +1425,7 @@ fn gradient_editor_ui(ui: &mut egui::Ui) {
                 .on_hover_text("Slot 1 = your theme accent (linked)")
                 .changed()
             {
-                let tk2 = crate::theme::from_accent(rgb);
+                let tk2 = crate::theme::from_accent(rgb, crate::theme::dark_mode());
                 crate::theme::set_theme(ui.ctx(), tk2);
                 crate::settings::set_theme("Custom", &[crate::color::rgb_to_hex(rgb)]);
                 dirty = true;
@@ -1435,8 +1471,14 @@ fn gradient_editor_ui(ui: &mut egui::Ui) {
             // that looked good earlier" trap returns: Reset fixes the ramp
             // but leaves frost wherever it was, so the sweet spot stays
             // unreachable.
-            crate::theme::set_frost(0.85);
-            crate::settings::set_gradient_frost(0.85);
+            // Restore the known-good frost FOR THIS MODE. Dark's sweet spot is
+            // 85%; light needs thinner panels (59%) to pass the same amount of
+            // wash, so resetting a light theme to 85% would look like the reset
+            // had turned the gradient off.
+            let d = crate::theme::dark_mode();
+            let good = if d { 0.85 } else { 0.59 };
+            crate::theme::set_frost(d, good);
+            crate::settings::set_gradient_frost(d, good);
             crate::theme::set_theme(ui.ctx(), crate::theme::t());
             dirty = true;
         }

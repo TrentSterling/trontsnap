@@ -22,6 +22,11 @@ use crate::color::{self, Rgb};
 #[derive(Clone, Copy)]
 #[allow(dead_code)] // full palette kept as house-style tokens; not all read yet
 pub struct Tokens {
+    /// Which polarity this token set was built for. Carried on the tokens rather
+    /// than read from a global so every consumer (visuals, gradient pegs, the
+    /// shadow alphas) sees the mode the colors were actually derived for, and a
+    /// half-applied switch can never paint dark shadows on a light ground.
+    pub dark: bool,
     pub window_bg: Color32,
     pub panel_bg: Color32,
     pub header_strip: Color32,
@@ -55,10 +60,11 @@ pub struct Tokens {
 /// differently from anything you pick yourself.
 pub const HOUSE_SEED: Rgb = [90, 209, 255];
 
-/// The default theme: the house seed through AUTO AWESOME. Kept under the old
-/// name so every `unwrap_or_else(cyan_default)` fallback still reads right.
+/// The default theme: the house seed through AUTO AWESOME, in whatever mode is
+/// currently active. Kept under the old name so every `unwrap_or_else(...)`
+/// fallback still reads right.
 fn cyan_default() -> Tokens {
-    auto_theme(&[HOUSE_SEED])
+    auto_theme(&[HOUSE_SEED], dark_mode())
 }
 
 fn c32(rgb: Rgb) -> Color32 {
@@ -76,6 +82,113 @@ static CURRENT: LazyLock<RwLock<Tokens>> = LazyLock::new(|| RwLock::new(cyan_def
 /// keep the familiar `theme::t().field` access pattern (was `theme::T.field`).
 pub fn t() -> Tokens {
     *CURRENT.read().unwrap()
+}
+
+// ---- dark / light mode ---------------------------------------------------
+
+/// What the user asked for, which is NOT the same as which polarity is active.
+/// `Auto` follows Windows, so the resolved answer can change while the app runs
+/// without the preference changing at all. Keeping the two separate is what lets
+/// "Auto" survive a theme flip instead of silently freezing into whatever it
+/// resolved to at startup.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ModePref {
+    Auto,
+    Dark,
+    Light,
+}
+
+impl ModePref {
+    pub fn label(self) -> &'static str {
+        match self {
+            ModePref::Auto => "Auto",
+            ModePref::Dark => "Dark",
+            ModePref::Light => "Light",
+        }
+    }
+    pub fn from_str(s: &str) -> ModePref {
+        match s {
+            "Dark" => ModePref::Dark,
+            "Light" => ModePref::Light,
+            _ => ModePref::Auto,
+        }
+    }
+    pub const ALL: [ModePref; 3] = [ModePref::Auto, ModePref::Dark, ModePref::Light];
+}
+
+static MODE_PREF: LazyLock<RwLock<ModePref>> = LazyLock::new(|| RwLock::new(ModePref::Dark));
+/// The RESOLVED polarity actually in force. Cached so the per-frame paths never
+/// touch the registry.
+static DARK: LazyLock<RwLock<bool>> = LazyLock::new(|| RwLock::new(true));
+
+pub fn dark_mode() -> bool {
+    *DARK.read().unwrap()
+}
+pub fn mode_pref() -> ModePref {
+    *MODE_PREF.read().unwrap()
+}
+
+/// Does Windows want dark app chrome? `AppsUseLightTheme` is a DWORD where 0
+/// means dark; a missing value (older builds, or a policy-managed machine) is
+/// treated as light, which is what Windows itself defaults to.
+pub fn windows_prefers_dark() -> bool {
+    use winreg::enums::HKEY_CURRENT_USER;
+    use winreg::RegKey;
+    RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize")
+        .and_then(|k| k.get_value::<u32, _>("AppsUseLightTheme"))
+        .map(|v| v == 0)
+        .unwrap_or(false)
+}
+
+fn resolve_dark(pref: ModePref) -> bool {
+    match pref {
+        ModePref::Dark => true,
+        ModePref::Light => false,
+        ModePref::Auto => windows_prefers_dark(),
+    }
+}
+
+/// Apply a mode preference: resolve it, persist it, and rebuild the CURRENT
+/// theme from its own stored seed so the accent survives the flip. Rebuilding
+/// (rather than recoloring in place) is the point: the ladder produces a
+/// different tone for every role in light, and only a rebuild goes through it.
+pub fn set_mode_pref(ctx: &egui::Context, pref: ModePref) {
+    *MODE_PREF.write().unwrap() = pref;
+    crate::settings::set_theme_mode(pref.label());
+    apply_resolved_mode(ctx, resolve_dark(pref));
+}
+
+fn apply_resolved_mode(ctx: &egui::Context, dark: bool) {
+    if dark_mode() == dark {
+        return;
+    }
+    *DARK.write().unwrap() = dark;
+    let name = crate::settings::theme_name();
+    let source = crate::settings::theme_source();
+    set_theme(ctx, resolve(&name, &source, dark));
+}
+
+/// Cheap poll so `Auto` FOLLOWS Windows instead of sampling it once at startup.
+/// The registry read is throttled to a couple of seconds; egui has no system
+/// theme-change event and a `WM_SETTINGCHANGE` hook would mean owning a window
+/// proc this app does not otherwise need. Call once per frame.
+pub fn poll_system_mode(ctx: &egui::Context) {
+    if mode_pref() != ModePref::Auto {
+        return;
+    }
+    static LAST: LazyLock<RwLock<Option<std::time::Instant>>> = LazyLock::new(|| RwLock::new(None));
+    let now = std::time::Instant::now();
+    {
+        let last = *LAST.read().unwrap();
+        if let Some(t) = last {
+            if now.duration_since(t) < std::time::Duration::from_secs(2) {
+                return;
+            }
+        }
+    }
+    *LAST.write().unwrap() = Some(now);
+    apply_resolved_mode(ctx, windows_prefers_dark());
 }
 
 // Accessors (so call sites never hardcode a Color32 — matches his house style).
@@ -100,6 +213,22 @@ pub fn on_accent() -> Color32 {
 /// (verbatim) for FILLS, and pair it with `on_accent()` for the label.
 pub fn accent_ink() -> Color32 {
     t().accent_readable
+}
+
+/// The accent for marks drawn on a DARK SCRIM over other imagery: the capture
+/// toast's caption band, the gallery's play badge, the region-select border.
+///
+/// These are not app chrome and their ground does not follow the theme; it is a
+/// black wash over a screenshot or the live screen either way. `accent_ink()` is
+/// walked against the PANEL, so in light mode it comes back dark, and dark ink
+/// on a black scrim is invisible. This walks against the scrim instead, so the
+/// mark stays bright in both modes.
+pub fn accent_over_media() -> Color32 {
+    c32(color::readable_against(
+        rgb_of(t().accent),
+        [20, 20, 20],
+        color::LC_MUTED,
+    ))
 }
 
 /// The color the title-bar theme swatch paints: the USER'S pick, never the
@@ -236,8 +365,8 @@ pub fn set_theme(ctx: &egui::Context, tk: Tokens) {
 /// (noninteractive/inactive/hovered/active/open) uses `text_primary` (light on
 /// dark) — that was a real invisible-text bug fix, not a style choice.
 fn build_visuals(tk: Tokens) -> egui::Visuals {
-    let mut v = egui::Visuals::dark();
-    v.dark_mode = true;
+    let mut v = if tk.dark { egui::Visuals::dark() } else { egui::Visuals::light() };
+    v.dark_mode = tk.dark;
 
     // Discord-style background wash (see `paint_gradient` below): when it's on,
     // panel/window fills go translucent by FROST (a user slider, default 0.85)
@@ -246,7 +375,7 @@ fn build_visuals(tk: Tokens) -> egui::Visuals {
     // (`(255.0 * f) as u8`) — TrontSnap has no light mode, so only that one
     // branch is needed.
     let panel_alpha: u8 =
-        if crate::settings::gradient() { (255.0 * frost()) as u8 } else { 255 };
+        if crate::settings::gradient() { (255.0 * frost(tk.dark)) as u8 } else { 255 };
     let panel = Color32::from_rgba_unmultiplied(tk.panel_bg.r(), tk.panel_bg.g(), tk.panel_bg.b(), panel_alpha);
 
     // MENUS AND POPUPS STAY OPAQUE. `window_fill` is what `Frame::popup`,
@@ -264,17 +393,21 @@ fn build_visuals(tk: Tokens) -> egui::Visuals {
     v.menu_rounding = rounding_lg();
     // Layered drop shadows so popups/menus read as raised (flat panels were the
     // biggest "default egui" tell).
+    // Shadows are DEPTH, not darkness. Dark-mode alphas dropped onto a light
+    // ground read as soot around every popup, so light mode uses a much softer
+    // cast; the offsets and blur stay identical so the sense of lift matches.
+    let (popup_a, window_a) = if tk.dark { (110, 130) } else { (38, 46) };
     v.popup_shadow = egui::epaint::Shadow {
         offset: egui::vec2(0.0, 4.0),
         blur: 18.0,
         spread: 0.0,
-        color: Color32::from_black_alpha(110),
+        color: Color32::from_black_alpha(popup_a),
     };
     v.window_shadow = egui::epaint::Shadow {
         offset: egui::vec2(0.0, 8.0),
         blur: 28.0,
         spread: 1.0,
-        color: Color32::from_black_alpha(130),
+        color: Color32::from_black_alpha(window_a),
     };
     v.clip_rect_margin = 3.0;
     v.indent_has_left_vline = false;
@@ -292,7 +425,14 @@ fn build_visuals(tk: Tokens) -> egui::Visuals {
     v.selection.stroke = Stroke::new(1.0, tk.on_accent);
     v.hyperlink_color = tk.accent_readable;
     v.warn_fg_color = tk.accent_readable;
-    v.error_fg_color = Color32::from_rgb(220, 80, 60);
+    // Semantic red, but a hardcoded literal, so it gets the same treatment amber
+    // does: keep the meaning, guarantee it is legible on THIS panel. A fixed
+    // #dc503c is fine on near-black and turns to mud on a pale ground.
+    v.error_fg_color = c32(color::readable_against(
+        [220, 80, 60],
+        rgb_of(tk.panel_bg),
+        color::LC_MUTED,
+    ));
 
     let r = rounding();
     let txt = Stroke::new(1.0, tk.text_primary);
@@ -362,22 +502,39 @@ fn build_visuals(tk: Tokens) -> egui::Visuals {
 /// Seeds 1.. feed the gradient ramp (see `gradient_pegs_raw`), which is why one
 /// pick and four picks both produce a coherent theme.
 ///
-/// TrontSnap is always-dark, so `dark` is pinned true here; the ladder itself
-/// carries both tables, so a light mode stays a drop-in rather than a rewrite.
-pub fn auto_theme(seeds: &[Rgb]) -> Tokens {
+pub fn auto_theme(seeds: &[Rgb], dark: bool) -> Tokens {
     let seed = seeds.first().copied().unwrap_or(HOUSE_SEED);
-    let sc = color::scale_from_seed(seed, true);
+    let sc = color::scale_from_seed(seed, dark);
 
-    // Radix roles, mapped onto TrontSnap's surface names. The original hand-tuned
-    // ordering (window < panel < card/header < widget < hover) is preserved, it
-    // is just tones off the ladder now instead of twelve magic literals.
+    // Radix roles mapped onto TrontSnap's surface names.
+    //
+    // THE ORDERING INVERTS BY MODE, it does not just get lighter. On dark the
+    // app background is the darkest thing and panels/cards lift off it. On light
+    // it flips: cards and panels float LIGHTER than a slightly tinted page, the
+    // way every paper-style UI works. Reusing the dark indices in light mode
+    // would bury white cards under a whiter page and the depth would read
+    // backwards. Interactive fills still walk AWAY from the panel in both modes,
+    // which on light means progressively darker (the ladder's light table
+    // descends), so hover and active stay visible without special-casing.
+    let (window, panel, card) = if dark {
+        (sc.step(1), sc.step(2), sc.step(3))
+    } else {
+        (sc.step(2), sc.step(1), sc.step(1))
+    };
+    let (header, widget, hover) = if dark {
+        (sc.step(3), sc.step(4), sc.step(5))
+    } else {
+        (sc.step(3), sc.step(3), sc.step(4))
+    };
+
     let tk = Tokens {
-        window_bg: c32(sc.step(1)),
-        panel_bg: c32(sc.step(2)),
-        card_bg: c32(sc.step(3)),
-        header_strip: c32(sc.step(3)),
-        widget_bg: c32(sc.step(4)),
-        widget_hover: c32(sc.step(5)),
+        dark,
+        window_bg: c32(window),
+        panel_bg: c32(panel),
+        card_bg: c32(card),
+        header_strip: c32(header),
+        widget_bg: c32(widget),
+        widget_hover: c32(hover),
         stroke: c32(sc.step(6)),
         // THE PICK STAYS VERBATIM. Black is allowed to be black.
         accent: c32(seed),
@@ -387,12 +544,12 @@ pub fn auto_theme(seeds: &[Rgb]) -> Tokens {
         // draws real text in this token (section headers, the title bar, gallery
         // source labels), so it gets walked onto the muted-text floor. Hue is
         // preserved, so the theme still reads as itself.
-        accent_readable: c32(color::readable_against(
-            sc.step(9),
-            sc.step(2),
-            color::LC_MUTED,
-        )),
-        accent_dim: c32(color::mix_colors(sc.step(9), sc.step(1), 0.45)),
+        // Walked against the ACTUAL panel for this mode, not a fixed step index:
+        // light mode swaps which step the panel is, and checking legibility
+        // against the wrong ground is how ink passes its test and still
+        // disappears on screen.
+        accent_readable: c32(color::readable_against(sc.step(9), panel, color::LC_MUTED)),
+        accent_dim: c32(color::mix_colors(sc.step(9), window, 0.45)),
         on_accent: c32(color::on_color(seed, &sc)),
         text_primary: c32(sc.step(12)),
         text_muted: c32(sc.step(11)),
@@ -406,17 +563,17 @@ pub fn auto_theme(seeds: &[Rgb]) -> Tokens {
 /// Derive tokens from a color list. Now just AUTO AWESOME: seed 0 owns the
 /// chrome, the rest are extra gradient stops. Kept as an `Option` so the
 /// existing `unwrap_or_else(cyan_default)` call sites are unchanged.
-fn tokens_from_colors(colors: &[Rgb]) -> Option<Tokens> {
+fn tokens_from_colors(colors: &[Rgb], dark: bool) -> Option<Tokens> {
     if colors.is_empty() {
         return None;
     }
-    Some(auto_theme(colors))
+    Some(auto_theme(colors, dark))
 }
 
 /// Single-primary entry point (the picker, premades, presets and Random all
 /// funnel here). Thin wrapper so every source shares one guaranteed path.
-pub fn from_accent(accent: Rgb) -> Tokens {
-    auto_theme(&[accent])
+pub fn from_accent(accent: Rgb, dark: bool) -> Tokens {
+    auto_theme(&[accent], dark)
 }
 
 /// Pick the most saturated color in a list — the one swatch a palette (or a
@@ -494,17 +651,17 @@ pub fn randomize() -> (Tokens, String, Vec<String>) {
     // whole app on whichever stop happened to come out darkest.
     let cols = seeds_primary_first(&cols);
     let source: Vec<String> = cols.iter().map(|&c| color::rgb_to_hex(c)).collect();
-    let tokens = tokens_from_colors(&cols).unwrap_or_else(cyan_default);
+    let tokens = tokens_from_colors(&cols, dark_mode()).unwrap_or_else(cyan_default);
     (tokens, name, source)
 }
 
 /// Look up a premade palette by name and derive tokens from it, returning the
 /// source hex list too (for persistence).
-pub fn premade_tokens(name: &str) -> Option<(Tokens, Vec<String>)> {
+pub fn premade_tokens(name: &str, dark: bool) -> Option<(Tokens, Vec<String>)> {
     let p = color::PREMADE_PALETTES.iter().find(|p| p.name == name)?;
     let rgb: Vec<Rgb> = p.colors.iter().filter_map(|h| color::hex_to_rgb(h)).collect();
     let seeds = seeds_primary_first(&rgb);
-    let tokens = tokens_from_colors(&seeds)?;
+    let tokens = tokens_from_colors(&seeds, dark)?;
     // Persist in SEED ORDER, not authoring order, so `resolve` rebuilds the same
     // theme next launch instead of re-seeding on whatever color came first.
     let source: Vec<String> = seeds.iter().map(|&c| color::rgb_to_hex(c)).collect();
@@ -515,31 +672,41 @@ pub fn premade_tokens(name: &str) -> Option<(Tokens, Vec<String>)> {
 /// source color is the accent-on-dark-ground path, two or more source colors
 /// rebuild via colormagic, and no source at all falls back to the premade
 /// list by name (or Cyan if that name is unknown too).
-pub fn resolve(name: &str, source: &[String]) -> Tokens {
+pub fn resolve(name: &str, source: &[String], dark: bool) -> Tokens {
     if name == "Cyan" {
-        return cyan_default();
+        return auto_theme(&[HOUSE_SEED], dark);
     }
     if source.len() == 1 {
         if let Some(rgb) = color::hex_to_rgb(&source[0]) {
-            return from_accent(rgb);
+            return from_accent(rgb, dark);
         }
     } else if source.len() >= 2 {
         let rgb: Vec<Rgb> = source.iter().filter_map(|h| color::hex_to_rgb(h)).collect();
-        return tokens_from_colors(&rgb).unwrap_or_else(cyan_default);
+        return tokens_from_colors(&rgb, dark).unwrap_or_else(|| auto_theme(&[HOUSE_SEED], dark));
     }
-    premade_tokens(name).map(|(tk, _)| tk).unwrap_or_else(cyan_default)
+    premade_tokens(name, dark)
+        .map(|(tk, _)| tk)
+        .unwrap_or_else(|| auto_theme(&[HOUSE_SEED], dark))
 }
 
 /// Resolve the persisted theme name/source (written by `settings::set_theme`)
 /// into `CURRENT`. Called once at the top of `apply()`, after `settings::load()`
 /// already ran in `main()`.
 fn load_from_settings() {
+    // MODE FIRST. Every token below is derived for a polarity, so resolving the
+    // palette before knowing which one would build the whole theme against the
+    // wrong ladder and then have to throw it away.
+    let pref = ModePref::from_str(&crate::settings::theme_mode());
+    *MODE_PREF.write().unwrap() = pref;
+    *DARK.write().unwrap() = resolve_dark(pref);
+    let dark = resolve_dark(pref);
+
     let name = crate::settings::theme_name();
     let source = crate::settings::theme_source();
     // Startup path installs a palette directly, so it needs the same guarantee
     // `set_theme` applies — otherwise the very first frame can ship unreadable
     // text and only fix itself once the user touches a theme control.
-    *CURRENT.write().unwrap() = enforce_readability(resolve(&name, &source));
+    *CURRENT.write().unwrap() = enforce_readability(resolve(&name, &source, dark));
 
     // Gradient v2 knobs + frost — settings::load() already ran in main()
     // before apply(), so these reads see whatever was persisted last session.
@@ -551,7 +718,8 @@ fn load_from_settings() {
         preset: crate::settings::gradient_preset(),
         custom: crate::settings::gradient_custom(),
     };
-    *FROST.write().unwrap() = crate::settings::gradient_frost();
+    *FROST_DARK.write().unwrap() = crate::settings::gradient_frost(true);
+    *FROST_LIGHT.write().unwrap() = crate::settings::gradient_frost(false);
 }
 
 // ---- background gradient v2 (Discord parity) --------------------------------
@@ -645,13 +813,24 @@ static GRAD_CFG: LazyLock<RwLock<GradientCfg>> = LazyLock::new(|| RwLock::new(Gr
 /// the raw ramp, WYSIWYG with the editor preview; 1.0 = solid panels, wash
 /// hidden). TrontSnap is always-dark, so this is a single value — SpaceView's
 /// dark/light pair collapses to just the dark default (0.85) here.
-static FROST: LazyLock<RwLock<f32>> = LazyLock::new(|| RwLock::new(0.85));
+/// FROST IS PER MODE, and asymmetrically so: white bleaches colour and dark
+/// preserves it, so the same panel opacity that leaves a dark wash rich washes a
+/// light one out to grey. Light therefore runs thinner panels (0.59) than dark
+/// (0.85) to get a comparable amount of colour through. Sharing one value made
+/// every light theme look like the gradient was switched off.
+static FROST_DARK: LazyLock<RwLock<f32>> = LazyLock::new(|| RwLock::new(0.85));
+static FROST_LIGHT: LazyLock<RwLock<f32>> = LazyLock::new(|| RwLock::new(0.59));
 
-pub fn frost() -> f32 {
-    *FROST.read().unwrap()
+pub fn frost(dark: bool) -> f32 {
+    if dark { *FROST_DARK.read().unwrap() } else { *FROST_LIGHT.read().unwrap() }
 }
-pub fn set_frost(v: f32) {
-    *FROST.write().unwrap() = v.clamp(0.0, 1.0);
+pub fn set_frost(dark: bool, v: f32) {
+    let v = v.clamp(0.0, 1.0);
+    if dark {
+        *FROST_DARK.write().unwrap() = v;
+    } else {
+        *FROST_LIGHT.write().unwrap() = v;
+    }
 }
 
 pub fn gradient_cfg() -> GradientCfg {
@@ -715,7 +894,7 @@ fn enforce_wash_readability(pegs: Vec<Rgb>, exposure: f32, ink: Rgb) -> Vec<Rgb>
 /// harmony spread) resolves through `gradient_pegs_raw` and then through
 /// `enforce_wash_readability`, so no mode can produce a wash text cannot sit on.
 pub fn gradient_pegs(tk: &Tokens) -> Vec<Rgb> {
-    let exposure = gradient_cfg().intensity.clamp(0.0, 1.0) * (1.0 - frost());
+    let exposure = gradient_cfg().intensity.clamp(0.0, 1.0) * (1.0 - frost(tk.dark));
     enforce_wash_readability(gradient_pegs_raw(tk), exposure, rgb_of(tk.text_primary))
 }
 
@@ -742,7 +921,15 @@ fn gradient_pegs_raw(tk: &Tokens) -> Vec<Rgb> {
     // Curated preset: designed stops used verbatim.
     if cfg.preset >= 0 {
         if let Some((_, hexes)) = GRADIENT_PRESETS.get(cfg.preset as usize) {
-            return hexes.iter().filter_map(|h| color::hex_to_rgb(h)).collect();
+            return hexes
+                .iter()
+                .filter_map(|h| color::hex_to_rgb(h))
+                // The curated ramps were hand-picked against a near-black
+                // ground. Used verbatim under dark text they turn the page into
+                // a bruise, so light mode lifts them toward white and keeps it
+                // airy. Dark still gets them exactly as authored.
+                .map(|rgb| if tk.dark { rgb } else { color::mix_colors(rgb, [255, 255, 255], 0.40) })
+                .collect();
         }
     }
 
@@ -763,10 +950,13 @@ fn gradient_pegs_raw(tk: &Tokens) -> Vec<Rgb> {
     let mut derived: Vec<Rgb> = Vec::with_capacity(n);
     derived.push(rgb_of(tk.accent));
     for h in spread.into_iter().skip(1).take(n.saturating_sub(1)) {
+        // Deep and rich on dark; on light the stops run RICHER than "airy"
+        // (55..78, not 68..88). On a near-white ground the wash has to carry
+        // real colour or a light theme reads as gradient-off entirely.
         // Saturation is only capped, never forced UP: a gray/black primary
         // legitimately yields a monochrome ramp (go nuts).
-        let l = h.l.clamp(20.0, 42.0);
-        let s = h.s.min(90.0);
+        let l = if tk.dark { h.l.clamp(20.0, 42.0) } else { h.l.clamp(55.0, 78.0) };
+        let s = if tk.dark { h.s.min(90.0) } else { h.s.min(75.0) };
         derived.push(color::hsl_to_rgb(h.h, s, l));
     }
     mono_partner(derived)
@@ -857,7 +1047,7 @@ pub fn ramp_sample(tk: &Tokens, t: f32) -> Color32 {
 /// included) — so the editor preview can show reality, not just the raw ramp.
 pub fn ramp_sample_frosted(tk: &Tokens, t: f32) -> Color32 {
     let wash = ramp_sample(tk, t);
-    let f = frost();
+    let f = frost(tk.dark);
     c32(color::mix_colors(rgb_of(wash), rgb_of(tk.panel_bg), f))
 }
 
@@ -885,13 +1075,57 @@ mod tests {
     /// pure black. This is the guarantee the old single-accent model could not
     /// make, because its readability walk had nowhere to put the result except on
     /// top of the pick itself.
+    /// Both polarities. Every guarantee below has to hold in light too, or
+    /// "light mode" is just a differently-broken theme.
+    const MODES: [bool; 2] = [true, false];
+
     #[test]
     fn primary_is_always_verbatim() {
+        for dark in MODES {
+            for seed in SEEDS {
+                assert_eq!(
+                    rgb_of(from_accent(seed, dark).accent),
+                    seed,
+                    "the primary was altered for {seed:?} (dark={dark})"
+                );
+            }
+        }
+    }
+
+    /// Light mode must actually be LIGHT: its grounds sit on the opposite side
+    /// of the lightness range from dark's, for every seed. Guards against the
+    /// mode flag being threaded through but never reaching the ladder.
+    #[test]
+    fn light_mode_grounds_are_light() {
         for seed in SEEDS {
-            assert_eq!(
-                rgb_of(from_accent(seed).accent),
-                seed,
-                "the primary was altered for {seed:?}"
+            let d = from_accent(seed, true);
+            let l = from_accent(seed, false);
+            let lum = |c: Color32| color::luminance(rgb_of(c));
+            assert!(
+                lum(l.window_bg) > lum(d.window_bg),
+                "light window_bg is not lighter than dark's for {seed:?}"
+            );
+            assert!(lum(l.window_bg) > 0.5, "light window_bg is not light for {seed:?}");
+            assert!(lum(d.window_bg) < 0.2, "dark window_bg is not dark for {seed:?}");
+        }
+    }
+
+    /// In light mode panels/cards float LIGHTER than the page, the way paper
+    /// UIs work; in dark they lift off a darker ground. If the step mapping
+    /// failed to invert, depth would read backwards in one of the two.
+    #[test]
+    fn surface_depth_points_the_right_way() {
+        for seed in SEEDS {
+            let lum = |c: Color32| color::luminance(rgb_of(c));
+            let d = from_accent(seed, true);
+            assert!(
+                lum(d.panel_bg) >= lum(d.window_bg),
+                "dark panels should lift off the ground for {seed:?}"
+            );
+            let l = from_accent(seed, false);
+            assert!(
+                lum(l.panel_bg) >= lum(l.window_bg),
+                "light panels should float above the page for {seed:?}"
             );
         }
     }
@@ -902,15 +1136,17 @@ mod tests {
     /// an identical navy background no matter what was chosen.
     #[test]
     fn the_chrome_follows_the_seed() {
-        let red = from_accent([255, 0, 0]);
-        let cyan = from_accent([90, 209, 255]);
-        for (label, a, b) in [
-            ("window_bg", red.window_bg, cyan.window_bg),
-            ("panel_bg", red.panel_bg, cyan.panel_bg),
-            ("widget_bg", red.widget_bg, cyan.widget_bg),
-        ] {
-            let d = color::delta_e(rgb_of(a), rgb_of(b));
-            assert!(d > 8.0, "{label} barely moved between seeds (delta_e {d:.1})");
+        for dark in MODES {
+            let red = from_accent([255, 0, 0], dark);
+            let cyan = from_accent([90, 209, 255], dark);
+            for (label, a, b) in [
+                ("window_bg", red.window_bg, cyan.window_bg),
+                ("panel_bg", red.panel_bg, cyan.panel_bg),
+                ("widget_bg", red.widget_bg, cyan.widget_bg),
+            ] {
+                let d = color::delta_e(rgb_of(a), rgb_of(b));
+                assert!(d > 8.0, "{label} barely moved between seeds (delta_e {d:.1}, dark={dark})");
+            }
         }
     }
 
@@ -918,11 +1154,16 @@ mod tests {
     /// you can stare at for hours. Guards the ground chroma ceiling.
     #[test]
     fn grounds_stay_calm_for_every_seed() {
-        for seed in SEEDS {
-            let tk = from_accent(seed);
-            for (label, g) in [("window_bg", tk.window_bg), ("panel_bg", tk.panel_bg)] {
-                let [_, c, _] = color::rgb_to_oklch(rgb_of(g));
-                assert!(c <= 0.06, "{label} is painted, not tinted, for {seed:?} (chroma {c:.3})");
+        for dark in MODES {
+            for seed in SEEDS {
+                let tk = from_accent(seed, dark);
+                for (label, g) in [("window_bg", tk.window_bg), ("panel_bg", tk.panel_bg)] {
+                    let [_, c, _] = color::rgb_to_oklch(rgb_of(g));
+                    assert!(
+                        c <= 0.06,
+                        "{label} is painted, not tinted, for {seed:?} dark={dark} (chroma {c:.3})"
+                    );
+                }
             }
         }
     }
@@ -931,19 +1172,24 @@ mod tests {
     /// on, for every seed. This is the ladder's core promise.
     #[test]
     fn text_reads_on_every_ground() {
-        for seed in SEEDS {
-            let tk = from_accent(seed);
-            for (label, g) in [
-                ("window_bg", tk.window_bg),
-                ("panel_bg", tk.panel_bg),
-                ("card_bg", tk.card_bg),
-                ("widget_bg", tk.widget_bg),
-            ] {
-                let lc = color::apca_abs(rgb_of(tk.text_primary), rgb_of(g));
-                assert!(lc >= color::LC_TEXT_MIN, "text on {label} is Lc {lc:.1} for {seed:?}");
+        for dark in MODES {
+            for seed in SEEDS {
+                let tk = from_accent(seed, dark);
+                for (label, g) in [
+                    ("window_bg", tk.window_bg),
+                    ("panel_bg", tk.panel_bg),
+                    ("card_bg", tk.card_bg),
+                    ("widget_bg", tk.widget_bg),
+                ] {
+                    let lc = color::apca_abs(rgb_of(tk.text_primary), rgb_of(g));
+                    assert!(
+                        lc >= color::LC_TEXT_MIN,
+                        "text on {label} is Lc {lc:.1} for {seed:?} dark={dark}"
+                    );
+                }
+                let lc = color::apca_abs(rgb_of(tk.text_muted), rgb_of(tk.panel_bg));
+                assert!(lc >= color::LC_MUTED, "muted text is Lc {lc:.1} for {seed:?} dark={dark}");
             }
-            let lc = color::apca_abs(rgb_of(tk.text_muted), rgb_of(tk.panel_bg));
-            assert!(lc >= color::LC_MUTED, "muted text is Lc {lc:.1} for {seed:?}");
         }
     }
 
@@ -952,10 +1198,12 @@ mod tests {
     /// two is what lets the pick stay verbatim without anything going invisible.
     #[test]
     fn accent_ink_reads_where_the_pick_cannot() {
-        for seed in SEEDS {
-            let tk = from_accent(seed);
-            let lc = color::apca_abs(rgb_of(tk.accent_readable), rgb_of(tk.panel_bg));
-            assert!(lc >= color::LC_MUTED, "accent ink is Lc {lc:.1} for {seed:?}");
+        for dark in MODES {
+            for seed in SEEDS {
+                let tk = from_accent(seed, dark);
+                let lc = color::apca_abs(rgb_of(tk.accent_readable), rgb_of(tk.panel_bg));
+                assert!(lc >= color::LC_MUTED, "accent ink is Lc {lc:.1} for {seed:?} dark={dark}");
+            }
         }
     }
 
@@ -963,10 +1211,15 @@ mod tests {
     /// makes it safe to keep using the raw pick as a fill.
     #[test]
     fn labels_read_on_the_verbatim_fill() {
-        for seed in SEEDS {
-            let tk = from_accent(seed);
-            let lc = color::apca_abs(rgb_of(tk.on_accent), rgb_of(tk.accent));
-            assert!(lc >= 45.0, "on_accent is Lc {lc:.1} against the fill for {seed:?}");
+        for dark in MODES {
+            for seed in SEEDS {
+                let tk = from_accent(seed, dark);
+                let lc = color::apca_abs(rgb_of(tk.on_accent), rgb_of(tk.accent));
+                assert!(
+                    lc >= 45.0,
+                    "on_accent is Lc {lc:.1} against the fill for {seed:?} dark={dark}"
+                );
+            }
         }
     }
 
@@ -976,17 +1229,26 @@ mod tests {
     /// into L 20..42 so it disagreed with its own picker.
     #[test]
     fn peg_zero_is_the_primary() {
-        let tk = from_accent([255, 0, 0]);
-        let mut cfg = GradientCfg { pegs: 3, ..GradientCfg::default() };
+        for dark in MODES {
+            let tk = from_accent([255, 0, 0], dark);
+            let mut cfg = GradientCfg { pegs: 3, ..GradientCfg::default() };
 
-        cfg.preset = -2; // custom
-        set_gradient_cfg(cfg);
-        assert_eq!(gradient_pegs_raw(&tk)[0], [255, 0, 0], "custom peg 0 is not the primary");
+            cfg.preset = -2; // custom
+            set_gradient_cfg(cfg);
+            assert_eq!(
+                gradient_pegs_raw(&tk)[0],
+                [255, 0, 0],
+                "custom peg 0 is not the primary (dark={dark})"
+            );
 
-        cfg.preset = -1; // harmony
-        set_gradient_cfg(cfg);
-        assert_eq!(gradient_pegs_raw(&tk)[0], [255, 0, 0], "harmony peg 0 is not the primary");
-
+            cfg.preset = -1; // harmony
+            set_gradient_cfg(cfg);
+            assert_eq!(
+                gradient_pegs_raw(&tk)[0],
+                [255, 0, 0],
+                "harmony peg 0 is not the primary (dark={dark})"
+            );
+        }
         set_gradient_cfg(GradientCfg::default());
     }
 
@@ -996,7 +1258,7 @@ mod tests {
     #[test]
     fn premades_seed_on_their_identity() {
         // Dracula opens on #282a36 (near-black) and carries #ff79c6 / #bd93f9.
-        let (tk, source) = premade_tokens("Dracula").expect("Dracula exists");
+        let (tk, source) = premade_tokens("Dracula", true).expect("Dracula exists");
         let seed = rgb_of(tk.accent);
         assert_ne!(seed, [0x28, 0x2a, 0x36], "seeded on the background, not the identity");
         assert_eq!(

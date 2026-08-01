@@ -1,3 +1,40 @@
+## v0.24.0
+
+**Light mode**, and it follows Windows.
+
+v0.23.0 ported the AUTO AWESOME ladder, which already carried a full light tone
+table that nothing ever asked for; TrontSnap had been dark-only since day one and
+`theme.rs` said so in its own module docs. This wires the other half up.
+
+- **Mode is Auto / Dark / Light**, in Settings > Appearance. Auto reads the
+  Windows app-theme setting and KEEPS reading it (throttled to a registry poll
+  every couple of seconds), so flipping Windows flips TrontSnap live. Auto that
+  only samples at startup is just a slower Dark.
+- **The surface order inverts, it does not merely brighten.** On dark the app
+  background is the darkest thing and panels lift off it; on light, panels and
+  cards float LIGHTER than a slightly tinted page, the way paper UIs work.
+  Reusing the dark step indices would have buried white cards under a whiter
+  page and made depth read backwards.
+- **Frost is per mode** (85% dark, 59% light) because white bleaches color and
+  dark preserves it. One shared value made every light theme look like the
+  gradient had been switched off. Reset restores the right one for the mode
+  you're in.
+- **Light gradient pegs run richer**, L 55-78 rather than the airy 68-88, for
+  the same reason; curated presets are lifted toward white instead of being used
+  verbatim, since they were all authored against near-black.
+- **Shadows soften** in light (alpha 38/46 vs 110/130), same offsets and blur, so
+  popups still read as raised instead of sooty.
+- **A third accent form, `accent_over_media()`.** The capture toast's caption
+  band, the gallery play badge and the region-select border are dark scrims over
+  imagery, not app chrome. `accent_ink()` is walked against the panel and comes
+  back DARK in light mode, which would have made the region-select border
+  invisible on a darkened screen. These now walk against the scrim instead.
+  Semantic `error_fg_color` gets the same treatment amber does.
+- Every readability test now runs in **both** polarities across nine seeds
+  (pure primaries, both achromatic extremes, yellow, a muted near-gray). Two new
+  ones pin the mode down: `light_mode_grounds_are_light` and
+  `surface_depth_points_the_right_way`. 37 tests pass.
+
 ## v0.23.0
 
 **AUTO AWESOME.** TrontSnap's colormagic was vendored from Boxel on 2026-07-11
