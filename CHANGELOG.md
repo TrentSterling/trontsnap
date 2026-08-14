@@ -1,3 +1,28 @@
+## v0.24.1
+
+Tray-hidden means idle again.
+
+- **Fixed one full CPU core spinning while the gallery was hidden to the system
+  tray.** eframe 0.29 switches winit to `ControlFlow::Poll` when a delayed repaint
+  expires, then asks Windows for `RedrawRequested`. Windows does not deliver that
+  event to an invisible root window, so nothing switched the loop back to `Wait`.
+  Ordinary minimize was healthy because it follows a different native path.
+- **Backported current eframe's invisible-window repaint handling** in a pinned
+  local `eframe` 0.29.1 copy. A due hidden frame is drained synchronously instead
+  of leaving `Poll` latched. This avoids a breaking egui upgrade while keeping
+  the fix reviewable and reproducible.
+- **Removed the obsolete 150 ms whole-app tick.** Tray actions and the
+  single-instance channel already wake the UI directly. Auto theme polling now
+  arms its two-second repaint only while the native gallery window is visible.
+- **Tray hover traffic no longer repaints the gallery.** Only actions that alter
+  gallery state request a frame, so Enter, Move, and Leave events stay inert.
+- **Cleaned up both color pickers.** The theme accent picker is RGB-only, and the
+  annotation color picker keeps alpha blending without exposing the irrelevant
+  additive-compositing mode.
+- Verified against the optimized executable on Windows: close to tray, repeated
+  real notification-icon hovers, restore, close to tray again, and hover again.
+  Both ten-second hidden samples consumed 0 ms of process CPU. 37 tests pass.
+
 ## v0.24.0
 
 **Light mode**, and it follows Windows.

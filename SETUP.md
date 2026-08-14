@@ -28,44 +28,49 @@ So:
 - The **portable** build cannot be granted an exemption, so it defaults Fullscreen to
   `Alt+PrtSc`. Every bind then works everywhere, including over Task Manager and elevated
   terminals, with no install and no admin.
-- The **installed** build is Authenticode-signed and placed in `%ProgramFiles%`, which is
-  what lets Windows grant it **uiAccess**. uiAccess bypasses UIPI, so bare `PrtSc` works
-  everywhere. The process still runs at Medium integrity, so drag-out into Discord and the
-  browser keeps working.
+- The **installed** mode keeps the gallery UI at Medium integrity and adds a tiny,
+  Authenticode-signed hotkey broker in `%ProgramFiles%`. Windows grants **uiAccess** only
+  to that broker. It owns `RegisterHotKey` and relays captures to the UI over loopback, so
+  bare `PrtSc` works everywhere while drag-out from the UI into Discord and the browser
+  keeps working.
 
 Either way you can rebind all three hotkeys in **Settings > Hotkeys**.
 
 ## Install
 
-Double-click **`packaging\Install TrontSnap.cmd`** and approve the one admin prompt.
+Extract the Windows release bundle and double-click **`Install TrontSnap.cmd`**, or run
+**`packaging\Install TrontSnap.cmd`** from a source checkout. Approve the one admin
+prompt.
 
 It removes any portable copy in `%LOCALAPPDATA%\TrontSnap` (two copies would race for the
-same hotkey registration and the loser dies silently), signs `trontsnap.exe`, installs it
-to `%ProgramFiles%\TrontSnap`, points autostart there, and launches it. No reboot.
+same hotkey registration and the loser dies silently), signs the UI and hotkey broker,
+installs both to `%ProgramFiles%\TrontSnap`, points autostart at the UI, and launches it.
+No reboot.
 
-The launch at the end deliberately happens from the *non-elevated* window: Windows only
-grants uiAccess when the exe is started at Medium integrity, so launching it from inside
-the elevated installer would run it High and defeat the point. Open it later with
-**`packaging\Launch TrontSnap.cmd`**, the tray icon, or just let it start on login.
+The launch at the end deliberately happens from the *non-elevated* window so the gallery
+UI stays at Medium integrity. The UI then launches the installed broker, whose signed
+`uiAccess=true` manifest is what lets it receive bare hotkeys over elevated windows. Open
+the UI later with **`packaging\Launch TrontSnap.cmd`**, the tray icon, or just let it start
+on login.
 
 Signing reuses the already-trusted TrontEQ dev cert if present, otherwise it generates and
 trusts a machine-local one. The private key never ships.
 
 ## Developing
 
-`cargo run` / `cargo build` produce the plain `asInvoker` portable binary, so normal dev
-iteration works with no ceremony. uiAccess is opt-in behind a cargo feature:
+`cargo run` / `cargo build` produce the plain `asInvoker` UI binary, so normal dev
+iteration works with no ceremony. The broker has its own manifest and package:
 
 ```
-cargo build --release                      # portable
-cargo build --release --features uiaccess  # installed
+cargo build --release -p trontsnap          # portable UI, uiAccess=false
+cargo build --release -p trontsnap-hotkeys  # broker, uiAccess=true
 ```
 
 A `uiAccess=true` exe cannot be launched by bare `cargo run`/CreateProcess (it fails with
-`ERROR_ELEVATION_REQUIRED`, 740), and it only actually receives uiAccess when signed AND
-in Program Files. That is exactly why the feature is off by default. `bootstrap.ps1`
-refuses to install an exe whose manifest lacks `uiAccess="true"`, so you cannot
-accidentally ship the portable binary through the installer path.
+`ERROR_ELEVATION_REQUIRED`, 740), and it only receives uiAccess when signed and installed
+in a secure location such as Program Files. `bootstrap.ps1` enforces the split: it rejects
+a UI with `uiAccess=true`, rejects a broker without it, installs both, signs both, and
+verifies both signatures before changing autostart.
 
 ## Uninstall
 

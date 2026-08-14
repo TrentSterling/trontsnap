@@ -35,9 +35,13 @@ If you have an existing ShareX screenshot folder, TrontSnap merges it into the s
 
 ## Install
 
-Grab `trontsnap.exe` from the [latest release](https://github.com/TrentSterling/trontsnap/releases/latest): it is a portable single exe, no installer, no admin, no reboot. Run it and it lives in your tray.
+Grab `TrontSnap.exe` from the [latest release](https://github.com/TrentSterling/trontsnap/releases/latest): it is a portable single exe, no installer, no admin, no reboot. Run it and it lives in your tray.
 
-The optional installed mode (`packaging/Install TrontSnap.cmd`) signs and places the hotkey broker so bare PrtSc also works while an elevated window has focus; `packaging/verify-install.ps1` checks the whole install with 22 assertions, and `Revert to portable.cmd` undoes it. See `SETUP.md` for details.
+The release also includes `TrontSnap-vX.Y.Z-windows.zip`. Extract it and double-click
+`Install TrontSnap.cmd` for the installed mode, which signs and places the hotkey broker
+so bare PrtSc also works while an elevated window has focus. The bundle's
+`verify-install.ps1` checks the whole install with 22 assertions, and
+`Revert to portable.cmd` undoes it. See `SETUP.md` for details.
 
 ## Build / run
 

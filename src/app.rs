@@ -29,8 +29,8 @@ use tray_icon::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIc
 use windows::Win32::Foundation::HWND;
 use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetForegroundWindow, GetWindowThreadProcessId, SetForegroundWindow, ShowWindow, SW_HIDE,
-    SW_RESTORE,
+    GetForegroundWindow, GetWindowThreadProcessId, IsWindowVisible, SetForegroundWindow,
+    ShowWindow, SW_HIDE, SW_RESTORE,
 };
 
 use crate::autostart;
@@ -282,6 +282,7 @@ impl App {
         {
             let ctx = cc.egui_ctx.clone();
             let cell = hwnd_cell.clone();
+            let flag = show_flag.clone();
             let open = open_i.id().clone();
             let full = full_i.id().clone();
             let region = region_i.id().clone();
@@ -294,6 +295,8 @@ impl App {
                     if h != 0 {
                         restore_and_foreground(h);
                     }
+                    flag.store(true, Ordering::SeqCst);
+                    ctx.request_repaint();
                 } else if ev.id == full {
                     do_full();
                 } else if ev.id == region {
@@ -308,8 +311,8 @@ impl App {
                 } else {
                     // Autostart toggle -> update() (reads the check state off &self).
                     let _ = menu_tx.send(ev.id);
+                    ctx.request_repaint();
                 }
-                ctx.request_repaint();
             }));
         }
         {
@@ -380,10 +383,10 @@ impl App {
                         // flag lets update() re-sync eframe's own state once it
                         // starts running again.
                         flag.store(true, Ordering::SeqCst);
+                        ctx.request_repaint();
                     }
                     _ => {}
                 }
-                ctx.request_repaint();
             }));
         }
 
@@ -879,9 +882,6 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
-        // Keep ticking so tray/second-instance events are serviced even when hidden.
-        ctx.request_repaint_after(Duration::from_millis(150));
-
         // Clamp UI zoom to a usable range. Extreme zoom-out makes the huge virtualized
         // gallery grid thrash and flicker; extreme zoom-in lets the min content size push
         // the OS window bigger. Ctrl+scroll and Ctrl +/- still work inside this range.
@@ -919,12 +919,19 @@ impl eframe::App for App {
         if ctx.input(|i| i.viewport().close_requested()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.hide(ctx);
+            // Do not leave a repaint deadline armed after the native window is
+            // hidden. eframe does not produce another frame to clear it, and an
+            // expired WaitUntil makes winit's Windows event loop spin.
+            return;
         }
 
         // In Auto mode, keep following Windows rather than sampling it once at
         // startup. Self-throttling to a registry read every couple of seconds,
         // and a no-op entirely unless the preference is Auto.
-        crate::theme::poll_system_mode(ctx);
+        let window_visible = hwnd
+            .map(|h| unsafe { IsWindowVisible(HWND(h)).as_bool() })
+            .unwrap_or(false);
+        crate::theme::poll_system_mode(ctx, window_visible);
 
         // Discord-style background wash: one quad painted into the background
         // layer before any panel draws (panel fills go translucent to let it
@@ -1128,7 +1135,8 @@ fn appearance_ui(ui: &mut egui::Ui) {
     // returns the raw persisted pick and already backs the title-bar swatch;
     // the two theme entry points now agree. Correction still happens, it just
     // happens to the RENDERED tokens instead of eating the source of truth.
-    let mut accent = crate::theme::swatch_seed();
+    let seed = crate::theme::swatch_seed();
+    let mut accent = [seed.r(), seed.g(), seed.b()];
     ui.horizontal(|ui| {
         ui.label("Accent color");
         ui.add_space(8.0);
@@ -1137,11 +1145,13 @@ fn appearance_ui(ui: &mut egui::Ui) {
         let changed = ui
             .scope(|ui| {
                 ui.spacing_mut().interact_size = egui::vec2(96.0, 30.0);
-                ui.color_edit_button_srgba(&mut accent).changed()
+                // srgb, not srgba: the accent has no alpha, and the srgba
+                // picker drags in the dead Blending/Additive row with it.
+                ui.color_edit_button_srgb(&mut accent).changed()
             })
             .inner;
         if changed {
-            let rgb = [accent.r(), accent.g(), accent.b()];
+            let rgb = accent;
             let tokens = crate::theme::from_accent(rgb, crate::theme::dark_mode());
             crate::theme::set_theme(ui.ctx(), tokens);
             crate::settings::set_theme("Custom", &[crate::color::rgb_to_hex(rgb)]);

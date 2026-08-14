@@ -370,7 +370,16 @@ impl eframe::App for Editor {
                 let mut c = self.color;
                 ui.scope(|ui| {
                     ui.spacing_mut().interact_size = egui::vec2(30.0, 22.0);
-                    if ui.color_edit_button_srgba(&mut c).changed() {
+                    // OnlyBlend, not the default BlendOrAdditive: the additive
+                    // toggle is dead weight here (nothing composites additively)
+                    // and it keeps creeping back in via the plain helper.
+                    if egui::color_picker::color_edit_button_srgba(
+                        ui,
+                        &mut c,
+                        egui::color_picker::Alpha::OnlyBlend,
+                    )
+                    .changed()
+                    {
                         self.color = c;
                     }
                 });

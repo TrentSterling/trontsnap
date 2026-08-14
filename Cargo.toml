@@ -5,9 +5,15 @@
 # (so binds survive elevated windows). See hotkeyd/build.rs.
 members = ["hotkeyd"]
 
+[patch.crates-io]
+# eframe 0.29.1 leaves ControlFlow::Poll armed when a delayed repaint expires
+# after a Windows root viewport is hidden. The local copy backports upstream's
+# invisible-window repaint path without forcing an egui API migration.
+eframe = { path = "vendor/eframe" }
+
 [package]
 name = "trontsnap"
-version = "0.24.0"
+version = "0.24.1"
 edition = "2021"
 description = "Fast screenshot tool: global-hotkey capture (full + freeze-frame region) straight to clipboard, plus a lazy-loading gallery over your whole screenshot history"
 

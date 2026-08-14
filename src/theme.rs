@@ -173,9 +173,15 @@ fn apply_resolved_mode(ctx: &egui::Context, dark: bool) {
 /// The registry read is throttled to a couple of seconds; egui has no system
 /// theme-change event and a `WM_SETTINGCHANGE` hook would mean owning a window
 /// proc this app does not otherwise need. Call once per frame.
-pub fn poll_system_mode(ctx: &egui::Context) {
+pub fn poll_system_mode(ctx: &egui::Context, window_visible: bool) {
     if mode_pref() != ModePref::Auto {
         return;
+    }
+    // Keep Auto live while the gallery is on screen. A hidden root viewport
+    // cannot receive RedrawRequested on Windows, so never arm a new deadline
+    // after the tray-hide frame.
+    if window_visible {
+        ctx.request_repaint_after(std::time::Duration::from_secs(2));
     }
     static LAST: LazyLock<RwLock<Option<std::time::Instant>>> = LazyLock::new(|| RwLock::new(None));
     let now = std::time::Instant::now();
