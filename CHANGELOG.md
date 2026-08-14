@@ -1,3 +1,21 @@
+## v0.24.2
+
+Custom title-bar dragging is deterministic again.
+
+- **Window movement starts on the primary-button press**, without waiting for
+  egui's click-versus-drag movement threshold. This gives winit's native Windows
+  drag request the full lifetime of the press instead of a narrow tail after the
+  pointer has already moved.
+- **A focus transition can no longer eat the only drag request.** Focus is queued
+  before movement, and movement is retried while the press remains held. This
+  covers the first interaction immediately after restoring from the tray.
+- **Every exposed part of the 40 px custom chrome is a drag handle.** Buttons,
+  tabs, filters, search, the theme swatch, and the outer resize border retain
+  priority; padding and background gaps no longer look draggable while doing
+  nothing.
+- Added focused gesture-ordering coverage. 40 tests pass; 4 hardware/integration
+  smoke tests remain ignored by default.
+
 ## v0.24.1
 
 Tray-hidden means idle again.

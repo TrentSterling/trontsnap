@@ -167,6 +167,72 @@ fn window_button(ui: &mut egui::Ui, kind: WinBtn) -> egui::Response {
     resp
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ChromeGesture {
+    None,
+    StartDrag,
+    ToggleMaximize,
+}
+
+/// Resolve a chrome interaction with double-click taking priority over movement.
+///
+/// `Response::drag_started()` is deliberately not used here. For a response that
+/// senses both clicks and drags, egui waits for the pointer to cross its click/drag
+/// threshold before reporting `drag_started`. On Windows that delay leaves only a
+/// small window for winit's queued `WM_NCLBUTTONDOWN` to arrive while the primary
+/// button is still held. Using the held state starts the native operation on the
+/// press and also retries it on a later frame if egui-winit ignored the first
+/// request while the restored window was still gaining focus.
+fn chrome_gesture(double_clicked: bool, primary_down_on_response: bool) -> ChromeGesture {
+    if double_clicked {
+        ChromeGesture::ToggleMaximize
+    } else if primary_down_on_response {
+        ChromeGesture::StartDrag
+    } else {
+        ChromeGesture::None
+    }
+}
+
+fn handle_chrome_drag(ctx: &egui::Context, resp: &egui::Response, maximized: bool) {
+    let primary_down = ctx.input(|i| i.pointer.primary_down());
+    match chrome_gesture(
+        resp.double_clicked(),
+        primary_down && resp.is_pointer_button_down_on(),
+    ) {
+        ChromeGesture::None => {}
+        ChromeGesture::StartDrag => {
+            // egui-winit drops StartDrag when winit still reports the window as
+            // unfocused. Queue Focus first, and keep requesting StartDrag while
+            // held so a focus transition cannot eat the only attempt.
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+        }
+        ChromeGesture::ToggleMaximize => {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+        }
+    }
+}
+
+#[cfg(test)]
+mod chrome_tests {
+    use super::{chrome_gesture, ChromeGesture};
+
+    #[test]
+    fn primary_press_starts_drag_without_waiting_for_motion() {
+        assert_eq!(chrome_gesture(false, true), ChromeGesture::StartDrag);
+    }
+
+    #[test]
+    fn double_click_wins_over_drag_state() {
+        assert_eq!(chrome_gesture(true, true), ChromeGesture::ToggleMaximize);
+    }
+
+    #[test]
+    fn idle_chrome_emits_no_window_command() {
+        assert_eq!(chrome_gesture(false, false), ChromeGesture::None);
+    }
+}
+
 pub struct App {
     gallery: Gallery,
     tab: Tab,
@@ -533,7 +599,7 @@ impl App {
 
     /// Draw the single top chrome: app icon + wordmark, the Capture quick-menu, the
     /// tab strip, (on the Gallery tab) the filter chips/count/legend inline, a
-    /// draggable middle strip, and minimize/maximize/close buttons — all in ONE
+    /// draggable exposed background, and minimize/maximize/close buttons — all in ONE
     /// row / one `TopBottomPanel`. This replaces the OS title bar entirely, so it
     /// also owns window move (StartDrag / double-click-to-maximize) and the
     /// close-hides-to-tray behavior. No separate header strip inside the gallery
@@ -542,7 +608,7 @@ impl App {
         let maximized = ctx.input(|i| i.viewport().maximized).unwrap_or(false);
         let on_gallery = self.tab == Tab::Gallery;
 
-        egui::TopBottomPanel::top("trontsnap_chrome_main")
+        let chrome = egui::TopBottomPanel::top("trontsnap_chrome_main")
             .exact_height(40.0)
             .frame(
                 egui::Frame::none()
@@ -557,19 +623,12 @@ impl App {
                     // Logo + wordmark are drag handles (boxel-campaign rule:
                     // a packed chrome row always keeps a grab point) — drag
                     // moves the window, double-click toggles maximize.
-                    let drag_handle = |ctx: &egui::Context, resp: &egui::Response| {
-                        if resp.drag_started() {
-                            ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
-                        } else if resp.double_clicked() {
-                            ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
-                        }
-                    };
                     let logo = ui.add(
                         egui::Image::new(&self.icon_tex)
                             .fit_to_exact_size(egui::vec2(22.0, 22.0))
                             .sense(egui::Sense::click_and_drag()),
                     );
-                    drag_handle(ctx, &logo);
+                    handle_chrome_drag(ctx, &logo, maximized);
                     ui.add_space(6.0);
                     let wm = ui.add(egui::Label::new(
                         egui::RichText::new("TrontSnap")
@@ -578,7 +637,7 @@ impl App {
                             .size(16.0),
                     )
                     .sense(egui::Sense::click_and_drag()));
-                    drag_handle(ctx, &wm);
+                    handle_chrome_drag(ctx, &wm, maximized);
                     // ALWAYS SHOW THE VERSION. A stale install used to be
                     // completely invisible: nothing in the UI said what was
                     // running, so a six-versions-old binary looked exactly like
@@ -591,7 +650,7 @@ impl App {
                             .size(12.0),
                     )
                     .sense(egui::Sense::click_and_drag()));
-                    drag_handle(ctx, &ver);
+                    handle_chrome_drag(ctx, &ver, maximized);
                     ui.add_space(16.0);
 
                     // Uniform nav strip: the Capture action-menu and the three view tabs
@@ -671,14 +730,19 @@ impl App {
                             ui.available_size(),
                             egui::Sense::click_and_drag(),
                         );
-                        if drag.drag_started() {
-                            ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
-                        } else if drag.double_clicked() {
-                            ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
-                        }
+                        handle_chrome_drag(ctx, &drag, maximized);
                     });
                 });
             });
+
+        // Make every exposed part of the 40 px chrome draggable, including the
+        // padding above/below its short labels and gaps around controls. The frame
+        // response lives behind child widgets, so buttons, tabs, chips, search, and
+        // the theme swatch keep priority. The foreground edge-resize Areas drawn
+        // later likewise keep the outer border dedicated to resizing.
+        let background_drag = chrome.response.interact(egui::Sense::click_and_drag());
+        handle_chrome_drag(ctx, &background_drag, maximized);
+
         self.caption_overlay(ctx, maximized);
     }
 

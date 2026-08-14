@@ -13,7 +13,7 @@ eframe = { path = "vendor/eframe" }
 
 [package]
 name = "trontsnap"
-version = "0.24.1"
+version = "0.24.2"
 edition = "2021"
 description = "Fast screenshot tool: global-hotkey capture (full + freeze-frame region) straight to clipboard, plus a lazy-loading gallery over your whole screenshot history"
 
