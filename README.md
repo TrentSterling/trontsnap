@@ -40,8 +40,10 @@ Grab `TrontSnap.exe` from the [latest release](https://github.com/TrentSterling/
 The release also includes `TrontSnap-vX.Y.Z-windows.zip`. Extract it and double-click
 `Install TrontSnap.cmd` for the installed mode, which signs and places the hotkey broker
 so bare PrtSc also works while an elevated window has focus. The bundle's
-`verify-install.ps1` checks the whole install with 22 assertions, and
-`Revert to portable.cmd` undoes it. See `SETUP.md` for details.
+`verify-install.ps1` checks the whole install with 22 assertions. Its interactive
+`verify-window-lifecycle.ps1` companion physically exercises minimize, tray restore,
+and the custom title-bar controls. `Revert to portable.cmd` undoes the install. See
+`SETUP.md` for details.
 
 ## Build / run
 

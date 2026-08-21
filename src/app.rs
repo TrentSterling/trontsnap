@@ -26,11 +26,11 @@ use eframe::egui;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
 use tray_icon::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
-use windows::Win32::Foundation::HWND;
+use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetForegroundWindow, GetWindowThreadProcessId, IsWindowVisible, SetForegroundWindow,
-    ShowWindow, SW_HIDE, SW_RESTORE,
+    GetForegroundWindow, GetWindowThreadProcessId, IsIconic, IsWindowVisible, SendMessageW,
+    SetForegroundWindow, ShowWindow, SC_RESTORE, SW_HIDE, SW_SHOW, WM_SYSCOMMAND,
 };
 
 use crate::autostart;
@@ -52,6 +52,26 @@ const PORT: u16 = 48761;
 /// the gallery; Esc dismisses the stray picker. Raise this toward 500ms for
 /// strictness, lower it for snappiness.
 const DBLCLICK_GRACE: Duration = Duration::from_millis(330);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TrayClickDecision {
+    Restore,
+    DeferCapture,
+}
+
+/// Classify a left-button-up. An up immediately after a native `DoubleClick`
+/// completes that restore; two quick ordinary up events provide the fallback
+/// when the shell omits `DoubleClick`. An isolated up keeps deferred capture.
+fn tray_click_decision(now_ms: u64, last_double_ms: u64, previous_up_ms: u64) -> TrayClickDecision {
+    let grace = DBLCLICK_GRACE.as_millis() as u64;
+    if last_double_ms != 0 && now_ms.saturating_sub(last_double_ms) < grace {
+        TrayClickDecision::Restore
+    } else if previous_up_ms != 0 && now_ms.saturating_sub(previous_up_ms) < grace {
+        TrayClickDecision::Restore
+    } else {
+        TrayClickDecision::DeferCapture
+    }
+}
 
 pub fn run(start_hidden: bool) -> anyhow::Result<()> {
     // Single instance: bind a loopback port. If it's taken, another TrontSnap is
@@ -215,7 +235,7 @@ fn handle_chrome_drag(ctx: &egui::Context, resp: &egui::Response, maximized: boo
 
 #[cfg(test)]
 mod chrome_tests {
-    use super::{chrome_gesture, ChromeGesture};
+    use super::{chrome_gesture, tray_click_decision, ChromeGesture, TrayClickDecision};
 
     #[test]
     fn primary_press_starts_drag_without_waiting_for_motion() {
@@ -230,6 +250,38 @@ mod chrome_tests {
     #[test]
     fn idle_chrome_emits_no_window_command() {
         assert_eq!(chrome_gesture(false, false), ChromeGesture::None);
+    }
+
+    #[test]
+    fn first_tray_click_defers_capture() {
+        assert_eq!(
+            tray_click_decision(10_000, 0, 0),
+            TrayClickDecision::DeferCapture
+        );
+    }
+
+    #[test]
+    fn quick_second_tray_click_restores_without_native_double_click_event() {
+        assert_eq!(
+            tray_click_decision(10_120, 0, 10_000),
+            TrayClickDecision::Restore
+        );
+    }
+
+    #[test]
+    fn native_double_click_trailing_up_restores() {
+        assert_eq!(
+            tray_click_decision(10_140, 10_120, 10_000),
+            TrayClickDecision::Restore
+        );
+    }
+
+    #[test]
+    fn later_tray_click_stays_a_single_capture() {
+        assert_eq!(
+            tray_click_decision(11_000, 10_120, 10_000),
+            TrayClickDecision::DeferCapture
+        );
     }
 }
 
@@ -357,12 +409,7 @@ impl App {
             let quit = quit_i.id().clone();
             MenuEvent::set_event_handler(Some(move |ev: MenuEvent| {
                 if ev.id == open {
-                    let h = cell.load(Ordering::Relaxed);
-                    if h != 0 {
-                        restore_and_foreground(h);
-                    }
-                    flag.store(true, Ordering::SeqCst);
-                    ctx.request_repaint();
+                    request_window_show(&ctx, &cell, &flag);
                 } else if ev.id == full {
                     do_full();
                 } else if ev.id == region {
@@ -391,16 +438,18 @@ impl App {
             // double-click. Instead each left-click claims a generation, waits
             // out the system double-click time on its own thread, and only
             // captures if nothing invalidated it meanwhile. A DoubleClick bumps
-            // the generation, which cancels the pending capture and opens the
-            // gallery instead.
+            // the generation, cancels the pending capture, and marks its trailing
+            // button-up to open the gallery instead.
             let click_gen = Arc::new(std::sync::atomic::AtomicU64::new(0));
-            // Windows delivers a double-click as DOWN, UP, DBLCLK, UP -- there is a
-            // TRAILING button-up AFTER the DoubleClick. The generation counter
-            // cancels the FIRST click, but that trailing one claimed a fresh
-            // generation and scheduled its own capture, which is why opening the
-            // gallery still popped the region picker to cancel out of. Clicks that
-            // land just after a double-click are that tail, so ignore them.
+            // Windows delivers a double-click as DOWN, UP, DBLCLK, UP. tray-icon's
+            // DoubleClick arrives on the second down, before the physical gesture
+            // is finished. Remember it here so the trailing button-up can restore
+            // the gallery without changing foreground windows mid-gesture.
             let last_dbl_ms = Arc::new(std::sync::atomic::AtomicU64::new(0));
+            // Some Windows notification-area paths deliver two ordinary Click
+            // events without tray-icon's distinct DoubleClick variant. Remember
+            // the previous button-up so that pair still restores the gallery.
+            let last_click_up_ms = Arc::new(std::sync::atomic::AtomicU64::new(0));
             let now_ms = || {
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -417,11 +466,21 @@ impl App {
                         button_state: MouseButtonState::Up,
                         ..
                     } => {
-                        // Drop the trailing up-click of a double-click.
-                        let since_dbl =
-                            now_ms().saturating_sub(last_dbl_ms.load(Ordering::SeqCst));
-                        if since_dbl < DBLCLICK_GRACE.as_millis() as u64 {
-                            return;
+                        let click_ms = now_ms();
+                        let previous_up = last_click_up_ms.swap(click_ms, Ordering::SeqCst);
+                        match tray_click_decision(
+                            click_ms,
+                            last_dbl_ms.load(Ordering::SeqCst),
+                            previous_up,
+                        ) {
+                            TrayClickDecision::Restore => {
+                                last_click_up_ms.store(0, Ordering::SeqCst);
+                                last_dbl_ms.store(0, Ordering::SeqCst);
+                                click_gen.fetch_add(1, Ordering::SeqCst);
+                                request_window_show(&ctx, &cell, &flag);
+                                return;
+                            }
+                            TrayClickDecision::DeferCapture => {}
                         }
                         let mine = click_gen.fetch_add(1, Ordering::SeqCst) + 1;
                         let gen = click_gen.clone();
@@ -433,23 +492,15 @@ impl App {
                         });
                     }
                     // Double left-click = open the gallery, faster than
-                    // right-click -> Open. Cancels the pending capture.
+                    // right-click -> Open. Cancel the pending capture now, then
+                    // restore on the trailing button-up when the gesture is done.
                     TrayIconEvent::DoubleClick {
                         button: MouseButton::Left,
                         ..
                     } => {
                         click_gen.fetch_add(1, Ordering::SeqCst);
                         last_dbl_ms.store(now_ms(), Ordering::SeqCst);
-                        let h = cell.load(Ordering::Relaxed);
-                        if h != 0 {
-                            restore_and_foreground(h);
-                        }
-                        // update() does not run while hidden, so the Win32
-                        // restore above is what actually shows the window; this
-                        // flag lets update() re-sync eframe's own state once it
-                        // starts running again.
-                        flag.store(true, Ordering::SeqCst);
-                        ctx.request_repaint();
+                        last_click_up_ms.store(0, Ordering::SeqCst);
                     }
                     _ => {}
                 }
@@ -470,6 +521,7 @@ impl App {
         // what a second launch sends, and older builds sent nothing at all.
         {
             let flag = show_flag.clone();
+            let cell = hwnd_cell.clone();
             let ctx = cc.egui_ctx.clone();
             std::thread::spawn(move || {
                 for stream in listener.incoming() {
@@ -484,8 +536,7 @@ impl App {
                         "record" => dispatch_hotkey(HotkeyEvent::Record),
                         "ocr" => dispatch_hotkey(HotkeyEvent::Ocr),
                         _ => {
-                            flag.store(true, Ordering::SeqCst);
-                            ctx.request_repaint();
+                            request_window_show(&ctx, &cell, &flag);
                         }
                     }
                 }
@@ -608,7 +659,7 @@ impl App {
         let maximized = ctx.input(|i| i.viewport().maximized).unwrap_or(false);
         let on_gallery = self.tab == Tab::Gallery;
 
-        let chrome = egui::TopBottomPanel::top("trontsnap_chrome_main")
+        egui::TopBottomPanel::top("trontsnap_chrome_main")
             .exact_height(40.0)
             .frame(
                 egui::Frame::none()
@@ -734,14 +785,6 @@ impl App {
                     });
                 });
             });
-
-        // Make every exposed part of the 40 px chrome draggable, including the
-        // padding above/below its short labels and gaps around controls. The frame
-        // response lives behind child widgets, so buttons, tabs, chips, search, and
-        // the theme swatch keep priority. The foreground edge-resize Areas drawn
-        // later likewise keep the outer border dedicated to resizing.
-        let background_drag = chrome.response.interact(egui::Sense::click_and_drag());
-        handle_chrome_drag(ctx, &background_drag, maximized);
 
         self.caption_overlay(ctx, maximized);
     }
@@ -1927,14 +1970,55 @@ fn do_full() {
     });
 }
 
+/// Surface the root viewport from tray, menu, or single-instance activation.
+///
+/// The flag is stored before the native restore because `SendMessageW` is
+/// synchronous and can re-enter the window procedure. Once eframe paints again,
+/// `App::show` applies matching viewport commands to finish the state sync.
+fn request_window_show(
+    ctx: &egui::Context,
+    hwnd_cell: &AtomicIsize,
+    show_flag: &AtomicBool,
+) {
+    show_flag.store(true, Ordering::SeqCst);
+    let hwnd = hwnd_cell.load(Ordering::Relaxed);
+    if hwnd != 0 {
+        restore_and_foreground(hwnd);
+    }
+    ctx.request_repaint();
+}
+
 /// Reliably restore + foreground the main window via Win32. eframe's Visible(true)
-/// leaves a tray-hidden window behind the focused app and doesn't un-minimize an
-/// iconic one; SW_RESTORE handles both, and the attach-thread-input dance beats
-/// Windows' foreground lock so the gallery actually pops to the front.
+/// leaves a tray-hidden window behind the focused app and cannot wake an iconic
+/// root viewport by itself.
 fn restore_and_foreground(hwnd: isize) {
     unsafe {
         let h = HWND(hwnd);
-        let _ = ShowWindow(h, SW_RESTORE);
+        // Route minimize restoration through WM_SYSCOMMAND. winit updates its
+        // cached MINIMIZED flag in that message path; a raw SW_RESTORE changes
+        // only the HWND and leaves winit believing the window is still iconic.
+        // That split state is what made a restored window stop accepting input.
+        if IsIconic(h).as_bool() {
+            let _ = SendMessageW(
+                h,
+                WM_SYSCOMMAND,
+                WPARAM(SC_RESTORE as usize),
+                LPARAM(0),
+            );
+        }
+        let _ = ShowWindow(h, SW_SHOW);
+        // A hidden HWND can report non-iconic while its saved placement still
+        // carries a minimized state. SW_SHOW exposes that state, so probe again
+        // and route the resulting restore through winit as well. The IsIconic
+        // guard deliberately avoids normalizing a hidden maximized window.
+        if IsIconic(h).as_bool() {
+            let _ = SendMessageW(
+                h,
+                WM_SYSCOMMAND,
+                WPARAM(SC_RESTORE as usize),
+                LPARAM(0),
+            );
+        }
         let fg = GetForegroundWindow();
         let fg_thread = GetWindowThreadProcessId(fg, None);
         let our = GetCurrentThreadId();

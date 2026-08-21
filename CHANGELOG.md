@@ -1,3 +1,23 @@
+## v0.24.3
+
+Window restore and custom-chrome input are reliable again.
+
+- **Double-clicking the tray icon restores a minimized window.** Minimize recovery
+  now goes through `WM_SYSCOMMAND / SC_RESTORE`, the same path winit tracks, before
+  and, when a hidden placement reveals as iconic, immediately after the HWND is
+  shown and foregrounded. Native and framework window state can no longer disagree
+  after a restore. The click arbiter also recognizes two quick click-up events when
+  Windows omits the tray library's distinct double-click event.
+- **Every open path uses the same restore logic.** Tray double-click, the tray
+  menu's Open command, and a second TrontSnap launch now share one immediate
+  native restore plus an eframe state sync.
+- **Title-bar controls receive their input again.** The panel-wide drag target
+  added in v0.24.2 overlapped every navigation control and could start a native
+  move on their mouse-down. It is gone; the dedicated logo, wordmark, version,
+  and open-space drag handles remain.
+- Added a Windows lifecycle regression harness that drives the real notification
+  icon and checks minimize, tray restore, and title-bar navigation end to end.
+
 ## v0.24.2
 
 Custom title-bar dragging is deterministic again.

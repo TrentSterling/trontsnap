@@ -72,6 +72,27 @@ in a secure location such as Program Files. `bootstrap.ps1` enforces the split: 
 a UI with `uiAccess=true`, rejects a broker without it, installs both, signs both, and
 verifies both signatures before changing autostart.
 
+## Verify an installed build
+
+Run this for the install, signatures, hotkey broker, capture, and clipboard checks:
+
+```
+powershell -NoProfile -ExecutionPolicy Bypass -File .\verify-install.ps1
+```
+
+It deliberately takes a fullscreen capture and replaces the current clipboard contents.
+
+Run this from an interactive, non-elevated desktop with the installed gallery open and
+restored and its TrontSnap notification icon visible:
+
+```
+powershell -NoProfile -ExecutionPolicy Bypass -File .\verify-window-lifecycle.ps1
+```
+
+It physically moves and clicks the mouse to verify the custom minimize and close buttons,
+real tray-icon double-click restore, and the Gallery, Settings, and About title-bar
+controls. The script restores the original cursor position when it finishes.
+
 ## Uninstall
 
 Portable: delete the exe.
