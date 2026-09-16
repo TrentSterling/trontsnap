@@ -1,3 +1,18 @@
+## v0.24.4
+
+Tray double-click restore no longer depends on Explorer delivering a final
+button-up notification.
+
+- **The native double-click event restores immediately.** It now invokes the
+  shared Win32 and eframe restore path as soon as `tray-icon` reports
+  `DoubleClick`, instead of merely marking the gesture and waiting for another
+  event that may never arrive.
+- **The trailing button-up is still safe.** When Explorer does deliver the
+  normal `DOWN, UP, DBLCLK, UP` sequence, the last event is consumed so it
+  cannot launch a region capture or perform a duplicate restore.
+- The two-ordinary-click fallback remains intact for notification-area paths
+  that omit the distinct double-click event.
+
 ## v0.24.3
 
 Window restore and custom-chrome input are reliable again.

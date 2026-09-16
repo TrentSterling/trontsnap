@@ -56,16 +56,18 @@ const DBLCLICK_GRACE: Duration = Duration::from_millis(330);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TrayClickDecision {
     Restore,
+    Consume,
     DeferCapture,
 }
 
 /// Classify a left-button-up. An up immediately after a native `DoubleClick`
-/// completes that restore; two quick ordinary up events provide the fallback
-/// when the shell omits `DoubleClick`. An isolated up keeps deferred capture.
+/// is consumed because that event already restored the window. Two quick
+/// ordinary up events provide the fallback when the shell omits `DoubleClick`.
+/// An isolated up keeps deferred capture.
 fn tray_click_decision(now_ms: u64, last_double_ms: u64, previous_up_ms: u64) -> TrayClickDecision {
     let grace = DBLCLICK_GRACE.as_millis() as u64;
     if last_double_ms != 0 && now_ms.saturating_sub(last_double_ms) < grace {
-        TrayClickDecision::Restore
+        TrayClickDecision::Consume
     } else if previous_up_ms != 0 && now_ms.saturating_sub(previous_up_ms) < grace {
         TrayClickDecision::Restore
     } else {
@@ -269,10 +271,10 @@ mod chrome_tests {
     }
 
     #[test]
-    fn native_double_click_trailing_up_restores() {
+    fn native_double_click_trailing_up_is_consumed() {
         assert_eq!(
             tray_click_decision(10_140, 10_120, 10_000),
-            TrayClickDecision::Restore
+            TrayClickDecision::Consume
         );
     }
 
@@ -443,8 +445,8 @@ impl App {
             let click_gen = Arc::new(std::sync::atomic::AtomicU64::new(0));
             // Windows delivers a double-click as DOWN, UP, DBLCLK, UP. tray-icon's
             // DoubleClick arrives on the second down, before the physical gesture
-            // is finished. Remember it here so the trailing button-up can restore
-            // the gallery without changing foreground windows mid-gesture.
+            // is finished. Restore on that authoritative event, then remember it
+            // so the trailing button-up is consumed rather than starting a capture.
             let last_dbl_ms = Arc::new(std::sync::atomic::AtomicU64::new(0));
             // Some Windows notification-area paths deliver two ordinary Click
             // events without tray-icon's distinct DoubleClick variant. Remember
@@ -480,6 +482,12 @@ impl App {
                                 request_window_show(&ctx, &cell, &flag);
                                 return;
                             }
+                            TrayClickDecision::Consume => {
+                                last_click_up_ms.store(0, Ordering::SeqCst);
+                                last_dbl_ms.store(0, Ordering::SeqCst);
+                                click_gen.fetch_add(1, Ordering::SeqCst);
+                                return;
+                            }
                             TrayClickDecision::DeferCapture => {}
                         }
                         let mine = click_gen.fetch_add(1, Ordering::SeqCst) + 1;
@@ -492,8 +500,8 @@ impl App {
                         });
                     }
                     // Double left-click = open the gallery, faster than
-                    // right-click -> Open. Cancel the pending capture now, then
-                    // restore on the trailing button-up when the gesture is done.
+                    // right-click -> Open. Cancel the pending capture and restore
+                    // immediately; the trailing button-up is consumed above.
                     TrayIconEvent::DoubleClick {
                         button: MouseButton::Left,
                         ..
@@ -501,6 +509,7 @@ impl App {
                         click_gen.fetch_add(1, Ordering::SeqCst);
                         last_dbl_ms.store(now_ms(), Ordering::SeqCst);
                         last_click_up_ms.store(0, Ordering::SeqCst);
+                        request_window_show(&ctx, &cell, &flag);
                     }
                     _ => {}
                 }
