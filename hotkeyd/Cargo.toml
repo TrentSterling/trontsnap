@@ -7,6 +7,11 @@ description = "uiAccess hotkey broker for TrontSnap: owns RegisterHotKey so bind
 [[bin]]
 name = "trontsnap-hotkeys"
 path = "src/main.rs"
+# build.rs embeds a uiAccess="true" manifest into every binary this crate
+# produces, including the cargo-test harness. Windows refuses to launch a
+# uiAccess-manifested, unsigned exe without elevation, so `cargo test` can
+# never execute that harness. There are no #[test]s here to lose.
+test = false
 
 [dependencies]
 winreg = "0.52"
