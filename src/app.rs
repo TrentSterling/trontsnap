@@ -39,6 +39,10 @@ use crate::gallery::Gallery;
 use crate::keyhook::{HotkeyEvent, KeyboardHook};
 use crate::region_win32;
 
+#[cfg(test)]
+#[path = "app/chrome_input_tests.rs"]
+mod chrome_input_tests;
+
 const PORT: u16 = 48761;
 
 /// How long a tray left-click waits to see whether it is really the first half
@@ -189,101 +193,9 @@ fn window_button(ui: &mut egui::Ui, kind: WinBtn) -> egui::Response {
     resp
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ChromeGesture {
-    None,
-    StartDrag,
-    ToggleMaximize,
-}
-
-/// Resolve a chrome interaction with double-click taking priority over movement.
-///
-/// `Response::drag_started()` is deliberately not used here. For a response that
-/// senses both clicks and drags, egui waits for the pointer to cross its click/drag
-/// threshold before reporting `drag_started`. On Windows that delay leaves only a
-/// small window for winit's queued `WM_NCLBUTTONDOWN` to arrive while the primary
-/// button is still held. Using the held state starts the native operation on the
-/// press and also retries it on a later frame if egui-winit ignored the first
-/// request while the restored window was still gaining focus.
-fn chrome_gesture(double_clicked: bool, primary_down_on_response: bool) -> ChromeGesture {
-    if double_clicked {
-        ChromeGesture::ToggleMaximize
-    } else if primary_down_on_response {
-        ChromeGesture::StartDrag
-    } else {
-        ChromeGesture::None
-    }
-}
-
-fn handle_chrome_drag(ctx: &egui::Context, resp: &egui::Response, maximized: bool) {
-    let primary_down = ctx.input(|i| i.pointer.primary_down());
-    match chrome_gesture(
-        resp.double_clicked(),
-        primary_down && resp.is_pointer_button_down_on(),
-    ) {
-        ChromeGesture::None => {}
-        ChromeGesture::StartDrag => {
-            // egui-winit drops StartDrag when winit still reports the window as
-            // unfocused. Queue Focus first, and keep requesting StartDrag while
-            // held so a focus transition cannot eat the only attempt.
-            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-            ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
-        }
-        ChromeGesture::ToggleMaximize => {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
-        }
-    }
-}
-
-#[cfg(test)]
-mod chrome_tests {
-    use super::{chrome_gesture, tray_click_decision, ChromeGesture, TrayClickDecision};
-
-    #[test]
-    fn primary_press_starts_drag_without_waiting_for_motion() {
-        assert_eq!(chrome_gesture(false, true), ChromeGesture::StartDrag);
-    }
-
-    #[test]
-    fn double_click_wins_over_drag_state() {
-        assert_eq!(chrome_gesture(true, true), ChromeGesture::ToggleMaximize);
-    }
-
-    #[test]
-    fn idle_chrome_emits_no_window_command() {
-        assert_eq!(chrome_gesture(false, false), ChromeGesture::None);
-    }
-
-    #[test]
-    fn first_tray_click_defers_capture() {
-        assert_eq!(
-            tray_click_decision(10_000, 0, 0),
-            TrayClickDecision::DeferCapture
-        );
-    }
-
-    #[test]
-    fn quick_second_tray_click_restores_without_native_double_click_event() {
-        assert_eq!(
-            tray_click_decision(10_120, 0, 10_000),
-            TrayClickDecision::Restore
-        );
-    }
-
-    #[test]
-    fn native_double_click_trailing_up_is_consumed() {
-        assert_eq!(
-            tray_click_decision(10_140, 10_120, 10_000),
-            TrayClickDecision::Consume
-        );
-    }
-
-    #[test]
-    fn later_tray_click_stays_a_single_capture() {
-        assert_eq!(
-            tray_click_decision(11_000, 10_120, 10_000),
-            TrayClickDecision::DeferCapture
-        );
+fn handle_chrome_double_click(ctx: &egui::Context, resp: &egui::Response, maximized: bool) {
+    if resp.double_clicked() {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
     }
 }
 
@@ -294,7 +206,8 @@ pub struct App {
     // once at startup (egui textures must not be re-uploaded every frame).
     icon_tex: egui::TextureHandle,
     _hotkeys: Option<KeyboardHook>,
-    _tray: TrayIcon,
+    _tray: Option<TrayIcon>,
+    chrome_drag: crate::window_chrome::ChromeDrag,
     auto_id: MenuId,
     auto_item: CheckMenuItem,
     cursor_id: MenuId,
@@ -576,7 +489,8 @@ impl App {
             tab,
             icon_tex,
             _hotkeys: hotkeys,
-            _tray: tray,
+            _tray: Some(tray),
+            chrome_drag: Default::default(),
             auto_id: auto_i.id().clone(),
             auto_item: auto_i,
             cursor_id: cursor_i.id().clone(),
@@ -659,13 +573,14 @@ impl App {
 
     /// Draw the single top chrome: app icon + wordmark, the Capture quick-menu, the
     /// tab strip, (on the Gallery tab) the filter chips/count/legend inline, a
-    /// draggable exposed background, and minimize/maximize/close buttons — all in ONE
+    /// dragging across controls and gaps, and minimize/maximize/close buttons — all in ONE
     /// row / one `TopBottomPanel`. This replaces the OS title bar entirely, so it
     /// also owns window move (StartDrag / double-click-to-maximize) and the
     /// close-hides-to-tray behavior. No separate header strip inside the gallery
     /// body, no bottom bar — everything lives in this single chrome row.
     fn title_bar(&mut self, ctx: &egui::Context) {
         let maximized = ctx.input(|i| i.viewport().maximized).unwrap_or(false);
+        self.chrome_drag.update(ctx, maximized);
         let on_gallery = self.tab == Tab::Gallery;
 
         egui::TopBottomPanel::top("trontsnap_chrome_main")
@@ -688,7 +603,7 @@ impl App {
                             .fit_to_exact_size(egui::vec2(22.0, 22.0))
                             .sense(egui::Sense::click_and_drag()),
                     );
-                    handle_chrome_drag(ctx, &logo, maximized);
+                    handle_chrome_double_click(ctx, &logo, maximized);
                     ui.add_space(6.0);
                     let wm = ui.add(egui::Label::new(
                         egui::RichText::new("TrontSnap")
@@ -697,7 +612,7 @@ impl App {
                             .size(16.0),
                     )
                     .sense(egui::Sense::click_and_drag()));
-                    handle_chrome_drag(ctx, &wm, maximized);
+                    handle_chrome_double_click(ctx, &wm, maximized);
                     // ALWAYS SHOW THE VERSION. A stale install used to be
                     // completely invisible: nothing in the UI said what was
                     // running, so a six-versions-old binary looked exactly like
@@ -710,7 +625,7 @@ impl App {
                             .size(12.0),
                     )
                     .sense(egui::Sense::click_and_drag()));
-                    handle_chrome_drag(ctx, &ver, maximized);
+                    handle_chrome_double_click(ctx, &ver, maximized);
                     ui.add_space(16.0);
 
                     // Uniform nav strip: the Capture action-menu and the three view tabs
@@ -790,7 +705,7 @@ impl App {
                             ui.available_size(),
                             egui::Sense::click_and_drag(),
                         );
-                        handle_chrome_drag(ctx, &drag, maximized);
+                        handle_chrome_double_click(ctx, &drag, maximized);
                     });
                 });
             });
@@ -871,6 +786,7 @@ impl App {
             .collapsible(false)
             .resizable(false)
             .default_width(320.0)
+            .default_height(scroll_h)
             // First open lands under the swatch that toggled it (top-right,
             // clear of the caption overlay); draggable after that. Computed
             // left-edge pos instead of pivot(RIGHT_TOP) so it stays deterministic
@@ -907,8 +823,8 @@ impl App {
         use egui::CursorIcon as Cur;
 
         let screen = ctx.input(|i| i.screen_rect());
-        const EDGE: f32 = 6.0;
-        const CORNER: f32 = 10.0;
+        const EDGE: f32 = crate::window_chrome::RESIZE_EDGE;
+        const CORNER: f32 = crate::window_chrome::RESIZE_CORNER;
 
         let strips: [(egui::Rect, Dir, Cur); 8] = [
             (
@@ -1049,6 +965,12 @@ impl eframe::App for App {
             .unwrap_or(false);
         crate::theme::poll_system_mode(ctx, window_visible);
 
+        self.draw(ctx, hwnd);
+    }
+}
+
+impl App {
+    fn draw(&mut self, ctx: &egui::Context, hwnd: Option<isize>) {
         // Discord-style background wash: one quad painted into the background
         // layer before any panel draws (panel fills go translucent to let it
         // read through — see theme::build_visuals). Default ON; the Settings >
@@ -2150,3 +2072,11 @@ fn rr_contains(x: f32, y: f32, lo: f32, hi: f32, r: f32) -> bool {
     let qy = ((lo + r) - y).max(y - (hi - r)).max(0.0);
     qx * qx + qy * qy <= r * r
 }
+
+#[cfg(test)]
+#[path = "app/preview.rs"]
+mod preview;
+
+#[cfg(test)]
+#[path = "app/tray_tests.rs"]
+mod tray_tests;

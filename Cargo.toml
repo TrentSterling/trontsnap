@@ -13,7 +13,7 @@ eframe = { path = "vendor/eframe" }
 
 [package]
 name = "trontsnap"
-version = "0.24.4"
+version = "0.25.0"
 edition = "2021"
 description = "Fast screenshot tool: global-hotkey capture (full + freeze-frame region) straight to clipboard, plus a lazy-loading gallery over your whole screenshot history"
 
@@ -74,6 +74,10 @@ windows = { version = "0.56", features = [
 # Embeds the distinct rainbow icon + a Win32 manifest (asInvoker; uiAccess only
 # under the `uiaccess` feature, which the installed build turns on).
 winresource = "0.1"
+
+[dev-dependencies]
+egui-wgpu = "=0.29.1"
+pollster = "=0.4.0"
 
 # NOTE: the `uiaccess` feature is deliberately GONE (v0.15.0). Putting uiAccess
 # on this binary raises it to HIGH integrity, and Windows blocks drag-and-drop

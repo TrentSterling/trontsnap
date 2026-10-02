@@ -1058,6 +1058,13 @@ pub fn ramp_sample_frosted(tk: &Tokens, t: f32) -> Color32 {
 }
 
 #[cfg(test)]
+pub(crate) fn preview_theme(ctx: &egui::Context, seed: Rgb, dark: bool) {
+    *DARK.write().unwrap() = dark;
+    *MODE_PREF.write().unwrap() = if dark { ModePref::Dark } else { ModePref::Light };
+    set_theme(ctx, from_accent(seed, dark));
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

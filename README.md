@@ -2,11 +2,9 @@
 
 Fast Windows screenshot tool with a lazy-loading gallery over your entire capture history. Built in Rust, raised on a decade of ShareX habits.
 
-<!-- SHOTS: this README wants pictures of itself. Capture them with TrontSnap,
-     drop the files into docs/media/ with the names in docs/media/SHOTLIST.md,
-     then un-comment these lines. -->
-<!-- ![The gallery, searchable, over the whole timeline](docs/media/hero.png) -->
-<!-- ![Press PrtSc, the toast appears, drag it into Discord](docs/media/demo.gif) -->
+![The current TrontSnap gallery](docs/media/gallery-dark.webp)
+
+Production UI capture with public game screenshots in a fixture gallery.
 
 ## What it is
 
@@ -26,6 +24,7 @@ If you have an existing ShareX screenshot folder, TrontSnap merges it into the s
 - **Multi-format clipboard writer**: one atomic Open/Empty/SetClipboardData/Close session writes CF_DIB, CF_DIBV5 (with alpha), a registered "PNG" format, and CF_HDROP (the saved file itself) so pasting works everywhere, including apps that only accept a dropped/pasted file. Writes are queued on a single owner thread and retried, so a busy clipboard never loses a shot.
 - **Virtualized history gallery**: a lazy-loading thumbnail grid over your whole timeline (new TrontSnap shots on top, legacy ShareX archive scrolling in below). Only visible cells decode, even at 18k+ shots. Search by filename, folder or date; Ctrl+click / Shift+click / Ctrl+A select a batch, Delete sends it to the Recycle Bin.
 - **Theme engine**: 32 premade palettes, a custom accent picker, a randomizer, and a Discord-style gradient wash, all contrast-checked so text stays readable on any color. One-click swatch in the title bar.
+- **Grab the whole title bar**: drag from the tabs, buttons, search, swatch or gaps to move the window. A click still activates the control. Resize edges stay available.
 - **Live file-watch refresh**: new captures splice into the gallery instantly via `notify`, no polling or manual refresh.
 - **Native OLE drag-out**: drag a thumbnail (or the capture toast itself) straight into another app.
 - **Corner toast**: the capture preview IS the toast; hover holds it open, click opens the file, drag sends it, Edit annotates it.
@@ -76,3 +75,22 @@ Release builds matter here: `opt-level = 3`, LTO, single codegen unit, since the
 - `crossbeam-channel` for cross-thread event plumbing
 
 See `CHANGELOG.md` for the version history.
+
+## Current UI captures
+
+![The annotation editor](docs/media/editor.webp)
+![Light-mode gallery](docs/media/gallery-light.webp)
+![Theme controls](docs/media/theme.webp)
+
+The captures use production draw code, public portfolio images and an offscreen GPU
+texture. They never open a desktop window or register hotkeys. To refresh them:
+
+```powershell
+./scripts/capture-public.ps1 -PortfolioRoot C:/path/to/portfolio-checkout
+npm install --prefix scripts/marketing
+node scripts/marketing/render-share.cjs
+node scripts/marketing/verify-page.cjs C:/path/to/portfolio-checkout
+```
+
+The browser check mounts this repo's `docs/` at `/trontsnap/` and verifies the product
+page and games card at desktop and phone sizes. Test output stays in `target/`.

@@ -98,7 +98,7 @@ impl Gallery {
         let mut g = Self {
             shots: Vec::new(),
             filtered: Vec::new(),
-            thumbs: ThumbCache::new(),
+            thumbs: ThumbCache::new(ctx),
             filter: Filter::All,
             query: String::new(),
             selected: HashSet::new(),
@@ -116,23 +116,25 @@ impl Gallery {
             notice_tx,
             notice_rx,
         };
-        g.start_scan();
+        g.start_scan(ctx);
         g
     }
 
     /// Kick off a fresh background index of both capture roots. The currently
     /// displayed shots stay on screen (and their thumbnails stay cached) until the
     /// new generation's data arrives, so a refresh never flashes an empty grid.
-    pub fn start_scan(&mut self) {
+    pub fn start_scan(&mut self, ctx: &egui::Context) {
         let (tx, rx) = crossbeam_channel::unbounded::<(u64, Vec<Shot>)>();
         self.scan_gen += 1;
         let gen = self.scan_gen;
         self.scanning = true;
         self.scan_rx = Some(rx);
+        let ctx = ctx.clone();
         std::thread::spawn(move || {
             if let Ok(dir) = capture::trontsnap_dir() {
                 if dir.exists() {
                     let _ = tx.send((gen, index::scan_root(&dir, Source::TrontSnap)));
+                    ctx.request_repaint();
                 }
             }
             if let Some(dir) = capture::sharex_dir() {
@@ -140,6 +142,8 @@ impl Gallery {
                     let _ = tx.send((gen, index::scan_root(&dir, Source::ShareX)));
                 }
             }
+            drop(tx);
+            ctx.request_repaint();
         });
     }
 
@@ -949,3 +953,7 @@ fn reveal(path: &Path) {
 
 #[cfg(not(windows))]
 fn reveal(_path: &Path) {}
+
+#[cfg(test)]
+#[path = "gallery/preview.rs"]
+mod preview;

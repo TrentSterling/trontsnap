@@ -1,3 +1,27 @@
+## v0.25.0
+
+- The whole title strip supports window dragging, including navigation, filters,
+  search, the theme swatch and caption buttons. A passive pointer observer waits
+  for movement past egui's click tolerance, so ordinary clicks keep working. Native
+  movement retries while held; double-click handles and resize edges stay intact.
+- Gallery scans and thumbnail completion now wake the UI directly. Fresh results
+  no longer wait for pointer movement, and no idle repaint timer is needed.
+- Dropping a thumbnail cache wakes and stops its waiting workers instead of leaving
+  them parked forever. Pending work is discarded when the queue closes.
+- The annotation editor's custom color picker has its own row, and compact slider
+  widths keep their labels inside the toolbar. The Theme window uses the available
+  height so more gradient controls are visible before scrolling.
+- The README and product page show new captures of the production UI in dark and
+  light mode, plus the editor and theme controls. Share previews use a captured
+  1200 x 630 image. Public portfolio fixtures keep personal screenshots out of these
+  assets; the offscreen capture and browser checks are repeatable scripts.
+- Corrected the product page's elevated-window claim: that path uses the installed
+  signed hotkey broker, while the main app stays at normal integrity for drag-out.
+
+Verification: 49 normal tests pass, the explicit offscreen capture test passes,
+and the release build succeeds. The title-bar tests drive production egui widgets
+and inspect viewport commands without injecting input into the working desktop.
+
 ## v0.24.4
 
 Tray double-click restore no longer depends on Explorer delivering a final

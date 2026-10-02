@@ -37,6 +37,10 @@ mod thumbs;
 mod toast;
 mod videothumb;
 mod watcher;
+mod window_chrome;
+
+#[cfg(test)]
+mod visual;
 
 fn main() {
     // Load persisted settings before any capture path can read them (all modes capture).

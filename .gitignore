@@ -9,3 +9,5 @@
 dist/
 
 verify_shots/
+
+scripts/marketing/node_modules/

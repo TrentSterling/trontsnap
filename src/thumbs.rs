@@ -37,26 +37,44 @@ struct Done {
 /// LIFO work stack: workers pop the most recently requested job first, so the
 /// current viewport wins over stale off-screen requests.
 struct JobQueue {
-    stack: Mutex<Vec<Job>>,
+    state: Mutex<QueueState>,
     cv: Condvar,
+}
+
+#[derive(Default)]
+struct QueueState {
+    stack: Vec<Job>,
+    closed: bool,
 }
 
 impl JobQueue {
     fn new() -> Self {
-        Self { stack: Mutex::new(Vec::new()), cv: Condvar::new() }
+        Self { state: Mutex::new(QueueState::default()), cv: Condvar::new() }
     }
     fn push(&self, job: Job) {
-        self.stack.lock().unwrap().push(job);
+        let mut state = self.state.lock().unwrap();
+        if state.closed { return; }
+        state.stack.push(job);
         self.cv.notify_one();
     }
-    fn pop(&self) -> Job {
-        let mut s = self.stack.lock().unwrap();
+    fn pop(&self) -> Option<Job> {
+        let mut s = self.state.lock().unwrap();
         loop {
-            if let Some(job) = s.pop() {
-                return job;
+            if s.closed {
+                return None;
+            }
+            if let Some(job) = s.stack.pop() {
+                return Some(job);
             }
             s = self.cv.wait(s).unwrap();
         }
+    }
+
+    fn close(&self) {
+        let mut state = self.state.lock().unwrap();
+        state.closed = true;
+        state.stack.clear();
+        self.cv.notify_all();
     }
 }
 
@@ -69,10 +87,13 @@ pub struct ThumbCache {
 }
 
 impl ThumbCache {
-    pub fn new() -> Self {
+    pub fn new(ctx: &egui::Context) -> Self {
+        Self::with_cache(ctx, cache_dir())
+    }
+
+    fn with_cache(ctx: &egui::Context, cache_dir: PathBuf) -> Self {
         let queue = Arc::new(JobQueue::new());
         let (done_tx, done_rx) = crossbeam_channel::unbounded::<Done>();
-        let cache_dir = cache_dir();
         let _ = std::fs::create_dir_all(&cache_dir);
 
         let workers = std::thread::available_parallelism()
@@ -83,12 +104,13 @@ impl ThumbCache {
             let queue = queue.clone();
             let done_tx = done_tx.clone();
             let cache_dir = cache_dir.clone();
-            std::thread::spawn(move || loop {
-                let job = queue.pop();
+            let ctx = ctx.clone();
+            std::thread::spawn(move || while let Some(job) = queue.pop() {
                 let done = build_thumb(&job, &cache_dir);
                 if done_tx.send(done).is_err() {
                     break;
                 }
+                ctx.request_repaint();
             });
         }
 
@@ -99,6 +121,33 @@ impl ThumbCache {
             lru: VecDeque::new(),
             pending: HashSet::new(),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn preview(ctx: &egui::Context, paths: &[PathBuf]) -> Self {
+        let (_, done_rx) = crossbeam_channel::unbounded();
+        let mut cache = Self {
+            queue: Arc::new(JobQueue::new()),
+            done_rx,
+            textures: HashMap::new(),
+            lru: VecDeque::new(),
+            pending: HashSet::new(),
+        };
+        for path in paths {
+            let img = image::open(path)
+                .expect("public preview image")
+                .thumbnail(THUMB_PX, THUMB_PX)
+                .to_rgba8();
+            let size = [img.width() as usize, img.height() as usize];
+            let handle = ctx.load_texture(
+                path.display().to_string(),
+                egui::ColorImage::from_rgba_unmultiplied(size, &img),
+                egui::TextureOptions::LINEAR,
+            );
+            cache.textures.insert(path.clone(), (handle, size));
+            cache.lru.push_front(path.clone());
+        }
+        cache
     }
 
     /// Upload any finished thumbnails to textures and evict past the cap.
@@ -160,6 +209,13 @@ impl ThumbCache {
         }
     }
 }
+
+impl Drop for ThumbCache {
+    fn drop(&mut self) {
+        self.queue.close();
+    }
+}
+
 
 fn build_thumb(job: &Job, cache_dir: &Path) -> Done {
     let cache_file = cache_dir.join(format!("{}.jpg", cache_key(&job.path, job.mtime)));
@@ -223,4 +279,47 @@ fn cache_key(path: &Path, mtime: u64) -> String {
 
 fn mtime_secs(t: SystemTime) -> u64 {
     t.duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn closing_queue_wakes_blocked_workers_and_discards_pending_work() {
+        let queue = Arc::new(JobQueue::new());
+        let worker_queue = queue.clone();
+        let worker = std::thread::spawn(move || worker_queue.pop().is_none());
+        queue.close();
+        assert!(worker.join().unwrap());
+        queue.push(Job {
+            path: "unused.png".into(),
+            mtime: 0,
+        });
+        assert!(queue.pop().is_none());
+    }
+
+    #[test]
+    fn thumbnail_completion_wakes_the_ui_without_a_polling_timer() {
+        let dir = PathBuf::from("target/thumbnail-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("public-fixture.png");
+        image::RgbaImage::from_pixel(8, 8, image::Rgba([90, 209, 255, 255]))
+            .save(&path)
+            .unwrap();
+        let ctx = egui::Context::default();
+        for _ in 0..3 {
+            let _ = ctx.run(Default::default(), |_| {});
+        }
+        let (tx, rx) = crossbeam_channel::unbounded();
+        ctx.set_request_repaint_callback(move |_| {
+            let _ = tx.send(());
+        });
+        let mut cache = ThumbCache::with_cache(&ctx, dir.join("cache"));
+        assert!(cache.request(&path, SystemTime::UNIX_EPOCH).is_none());
+        rx.recv_timeout(std::time::Duration::from_secs(5))
+            .expect("worker must wake the UI");
+        cache.poll(&ctx);
+        assert!(cache.request(&path, SystemTime::UNIX_EPOCH).is_some());
+    }
 }

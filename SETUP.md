@@ -7,15 +7,15 @@ one that matches how you want to run it.
 |---|---|---|
 | Get it running | download `trontsnap.exe`, run it | `Install TrontSnap.cmd`, one admin prompt |
 | Admin needed | never | once, to write into Program Files |
-| Fullscreen hotkey | `Alt+PrtSc` | `PrtSc` |
-| Works over elevated windows | yes, on every bind | yes, on every bind |
+| Fullscreen hotkey | `PrtSc` | `PrtSc` |
+| Bare `PrtSc` over elevated windows | requires the installed broker | yes |
 | Uninstall | delete the exe | delete the folder + the Run key |
 
 Everything else is identical: same features, same settings, same gallery. Screenshots
 always live in `Pictures\TrontSnap` and settings in `HKCU\Software\TrontSnap`, so you can
 switch between the builds without losing anything.
 
-## Why two builds, and why the different default key
+## Why the installed hotkey broker
 
 TrontSnap binds its hotkeys with `RegisterHotKey`. Windows will not deliver a
 **modifier-less** hotkey (a bare `PrtSc`) to a normal Medium-integrity process while an
@@ -25,16 +25,16 @@ not a bug in the app.
 
 So:
 
-- The **portable** build cannot be granted an exemption, so it defaults Fullscreen to
-  `Alt+PrtSc`. Every bind then works everywhere, including over Task Manager and elevated
-  terminals, with no install and no admin.
+- The **portable** build defaults Fullscreen to `PrtSc`, just like the installed mode.
+  Bare `PrtSc` cannot reach it while an elevated window has focus. Rebinding Fullscreen
+  to a modifier combination such as `Alt+PrtSc` is an option in Settings.
 - The **installed** mode keeps the gallery UI at Medium integrity and adds a tiny,
   Authenticode-signed hotkey broker in `%ProgramFiles%`. Windows grants **uiAccess** only
   to that broker. It owns `RegisterHotKey` and relays captures to the UI over loopback, so
   bare `PrtSc` works everywhere while drag-out from the UI into Discord and the browser
   keeps working.
 
-Either way you can rebind all three hotkeys in **Settings > Hotkeys**.
+Either way you can rebind all four hotkeys in **Settings > Hotkeys**.
 
 ## Install
 

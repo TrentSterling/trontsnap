@@ -233,6 +233,12 @@ impl Editor {
 
 impl eframe::App for Editor {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.draw(ctx);
+    }
+}
+
+impl Editor {
+    fn draw(&mut self, ctx: &egui::Context) {
         // ---- keyboard --------------------------------------------------
         let text_focused = ctx.wants_keyboard_input();
         let (undo_k, redo_k, save_k, esc) = ctx.input(|i| {
@@ -367,6 +373,9 @@ impl eframe::App for Editor {
                         self.color = c;
                     }
                 }
+            });
+            ui.horizontal(|ui| {
+                ui.label("Custom");
                 let mut c = self.color;
                 ui.scope(|ui| {
                     ui.spacing_mut().interact_size = egui::vec2(30.0, 22.0);
@@ -385,6 +394,7 @@ impl eframe::App for Editor {
                 });
             });
             ui.add_space(6.0);
+            ui.spacing_mut().slider_width = 64.0;
             ui.add(egui::Slider::new(&mut self.stroke_w, 1.0..=12.0).text("Width"));
 
             if self.tool == Tool::Text || self.active_text.is_some() {
@@ -879,6 +889,45 @@ fn encode_png(img: &RgbaImage) -> anyhow::Result<Vec<u8>> {
         image::ColorType::Rgba8,
     )?;
     Ok(out)
+}
+
+#[cfg(test)]
+pub(crate) fn preview_drawer(path: PathBuf) -> impl FnMut(&egui::Context) {
+    let base = image::open(&path)
+        .expect("public editor fixture")
+        .to_rgba8();
+    let w = base.width() as f32;
+    let h = base.height() as f32;
+    let mut editor = Editor::new(path, base);
+    for (kind, a, b) in [
+        (
+            ShapeKind::Arrow,
+            egui::pos2(w * 0.18, h * 0.22),
+            egui::pos2(w * 0.46, h * 0.45),
+        ),
+        (
+            ShapeKind::Box,
+            egui::pos2(w * 0.39, h * 0.33),
+            egui::pos2(w * 0.65, h * 0.65),
+        ),
+        (
+            ShapeKind::Redact,
+            egui::pos2(w * 0.06, h * 0.86),
+            egui::pos2(w * 0.42, h * 0.93),
+        ),
+    ] {
+        editor.push_shape(Shape {
+            kind,
+            a,
+            b,
+            color: egui::Color32::from_rgb(255, 200, 40),
+            width: 5.0,
+            text: String::new(),
+            font_px: 28.0,
+        });
+    }
+    editor.tool = Tool::Redact;
+    move |ctx| editor.draw(ctx)
 }
 
 #[cfg(test)]

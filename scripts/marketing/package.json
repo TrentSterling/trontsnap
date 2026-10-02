@@ -1,0 +1,11 @@
+{
+  "private": true,
+  "description": "Repeatable TrontSnap screenshots and public-page checks",
+  "scripts": {
+    "render": "node render-share.cjs",
+    "verify": "node verify-page.cjs"
+  },
+  "dependencies": {
+    "playwright": "1.63.0"
+  }
+}
