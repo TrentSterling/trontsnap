@@ -1,3 +1,27 @@
+## Unreleased (linux-port)
+
+TrontSnap runs on Linux (GNOME Wayland first; see LINUX.md). The OS layer is a twin under `src/linux/`; the
+changes below are in SHARED code, so they also reach Windows and are not proven there by the Linux harness
+(only `wincheck.sh` compiles the Windows side).
+
+- **Gallery selection.** With something selected a plain click toggles the tile instead of copying it; Ctrl+click
+  toggles; Shift+click REPLACES the selection with the range from the anchor (Ctrl+Shift+click adds it); Ctrl+A
+  selects what is shown; Esc clears it (Esc inside the search box only leaves the box); Ctrl+C copies the
+  selection (one = that shot, several = the files; Windows falls back to paths for N files).
+- **Gallery delete.** Moves to the Recycle Bin / Trash on a worker thread, 200 files per call, with progress. A tile
+  leaves only when its file is really gone (a path that vanished meanwhile is dropped silently, one that cannot be
+  trashed is counted in `N failed`). A second Delete during a running batch is queued behind it, with one summary
+  at the end. The folder watcher forwards deletes and moves-out, so a file removed outside the app leaves the grid.
+- **Status messages** are a pill at the bottom-centre of the window and expire on their own (4 s).
+- **Toast.** A long file name is shortened in the middle instead of running into the hint text.
+- **GIF export** timing grid: 30 fps clips no longer play 1.27x fast; a VFR webm exports at 20 s, not 7 min.
+
+Windows smoke checklist for these (first `windows-latest` CI run, then one manual pass, before linux-port merges):
+click a tile (copies); Ctrl+click two tiles then plain click a third (toggles, no copy); Shift+click a range; Ctrl+A,
+Esc; double-click a selected tile (opens it once); Ctrl+C with 1 and with N tiles selected, paste into Explorer;
+Delete one tile, then Delete two in a row while a 500-file batch runs (queued, one summary); take a capture and read
+its toast with a long name.
+
 ## v0.25.0
 
 - The whole title strip supports window dragging, including navigation, filters,

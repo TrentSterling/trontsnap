@@ -40,6 +40,9 @@ impl Gallery {
             del_tx,
             del_rx,
             deleting: false,
+            delete_queue: Vec::new(),
+            copy_tx: crossbeam_channel::unbounded().0, // fixture: nothing is ever copied
+            delete_tally: (0, 0),
             search_active: false,
             has_sharex: true,
             trace: false,

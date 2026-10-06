@@ -86,6 +86,33 @@ fn delete_progress_drops_only_what_left_the_disk() {
 }
 
 #[test]
+fn a_second_delete_during_a_batch_is_queued_and_summarised_once() {
+    let mut g = gallery(&["/x/a.png", "/x/b.png"]);
+    g.deleting = true; // a batch is already moving
+    g.delete_many(vec!["/x/b.png".into()]);
+    assert_eq!(g.delete_queue, vec![PathBuf::from("/x/b.png")], "queued, not refused and not lost");
+    assert!(g.status.as_ref().unwrap().0.contains("1 more queued"));
+    g.del_tx.send(DeleteMsg::Removed { paths: vec!["/x/a.png".into()], done: 1, total: 1 }).unwrap();
+    g.del_tx.send(DeleteMsg::Done { moved: 1, failed: 0 }).unwrap();
+    g.poll_delete();
+    assert!(g.deleting, "the queued batch started right after the first finished");
+    assert!(g.delete_queue.is_empty());
+    assert_eq!(g.delete_tally, (1, 0), "the first batch's count is carried, not reported alone");
+    // /x/b.png never existed: the queued batch finds it already gone and ends with ONE summary.
+    for _ in 0..100 {
+        g.poll_delete();
+        if !g.deleting {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(!g.deleting);
+    assert!(g.status.as_ref().unwrap().0.starts_with("Moved 1 to the "), "{:?}", g.status);
+    assert!(g.shots.is_empty());
+    assert_eq!(g.delete_tally, (0, 0));
+}
+
+#[test]
 fn video_label_follows_the_extension() {
     assert_eq!(video_label(Path::new("/x/a.mp4")), "MP4");
     assert_eq!(video_label(Path::new("/x/a.webm")), "WEBM");

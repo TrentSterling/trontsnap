@@ -126,6 +126,13 @@ pub struct Gallery {
     del_tx: crossbeam_channel::Sender<DeleteMsg>,
     del_rx: Receiver<DeleteMsg>,
     deleting: bool,
+    // Deletes asked for while a batch is still moving: run when it finishes, in order.
+    delete_queue: Vec<PathBuf>,
+    // Clipboard writes run on ONE worker, in click order. HARD-WON: each copy used to get its own thread,
+    // and the owner that claimed CLIPBOARD last won, which is not the click that came last.
+    copy_tx: crossbeam_channel::Sender<CopyJob>,
+    // moved / failed summed over a chain of queued batches, reported once at the end.
+    delete_tally: (usize, usize),
     // The search box held keyboard focus at the start of this frame (set by
     // filter_bar_ui, which runs BEFORE ui()): the Esc that drops its focus must not
     // also clear the selection.
@@ -139,6 +146,8 @@ pub struct Gallery {
     last_trace: String,
 }
 
+type CopyJob = Box<dyn FnOnce() + Send>;
+
 /// Worker -> UI messages for a bulk trash.
 enum DeleteMsg {
     /// These paths left the folder (trashed, or already gone): drop them from the view.
@@ -151,6 +160,15 @@ impl Gallery {
     pub fn new(ctx: &egui::Context) -> Self {
         let (notice_tx, notice_rx) = crossbeam_channel::unbounded::<String>();
         let (del_tx, del_rx) = crossbeam_channel::unbounded::<DeleteMsg>();
+        let (copy_tx, copy_rx) = crossbeam_channel::unbounded::<CopyJob>();
+        std::thread::Builder::new()
+            .name("clipboard-copy".into())
+            .spawn(move || {
+                for job in copy_rx {
+                    job();
+                }
+            })
+            .ok();
         let mut g = Self {
             shots: Vec::new(),
             filtered: Vec::new(),
@@ -175,6 +193,9 @@ impl Gallery {
             del_tx,
             del_rx,
             deleting: false,
+            delete_queue: Vec::new(),
+            copy_tx,
+            delete_tally: (0, 0),
             search_active: false,
             has_sharex: sharex_present(),
             trace: std::env::var_os("TRONTSNAP_TEST").is_some(),
@@ -401,12 +422,24 @@ impl Gallery {
             return;
         }
         if self.deleting {
-            self.set_status("Still moving the last batch to the Trash");
+            // Queued, not refused: a second Delete press during a big batch used to be dropped silently
+            // apart from a status line.
+            let n = paths.len();
+            self.delete_queue.extend(paths);
+            self.set_status(format!("Still moving the last batch to the {TRASH}; {n} more queued"));
             return;
         }
         self.deleting = true;
         self.set_status(format!("Moving {} to the {TRASH}...", paths.len()));
         let (tx, ctx) = (self.del_tx.clone(), self.ctx.clone());
+        // Harness knob (TRONTSNAP_TEST instances only): a ms count in <cache>/trontsnap/test_trash_ms stretches
+        // every chunk, so a test can land a second Delete while a batch is provably still moving (real
+        // trashing is ~1 ms a file). A file, not an env var: the test turns it on for one step only.
+        let slow = std::env::var_os("TRONTSNAP_TEST")
+            .and_then(|_| dirs::cache_dir())
+            .and_then(|d| std::fs::read_to_string(d.join("trontsnap").join("test_trash_ms")).ok())
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .map(std::time::Duration::from_millis);
         std::thread::spawn(move || {
             let total = paths.len();
             let (mut moved, mut failed, mut done) = (0usize, 0usize, 0usize);
@@ -444,6 +477,9 @@ impl Gallery {
                 done += chunk.len();
                 let _ = tx.send(DeleteMsg::Removed { paths: removed, done, total });
                 ctx.request_repaint();
+                if let Some(d) = slow {
+                    std::thread::sleep(d);
+                }
             }
             let _ = tx.send(DeleteMsg::Done { moved, failed });
             ctx.request_repaint();
@@ -473,6 +509,15 @@ impl Gallery {
                 }
                 DeleteMsg::Done { moved, failed } => {
                     self.deleting = false;
+                    self.delete_tally = (self.delete_tally.0 + moved, self.delete_tally.1 + failed);
+                    if !self.delete_queue.is_empty() {
+                        // Next batch right away (it sets its own progress status); what the queued
+                        // paths overlap with this batch is already gone and drops out as "vanished".
+                        let next = std::mem::take(&mut self.delete_queue);
+                        self.delete_many(next);
+                        continue;
+                    }
+                    let (moved, failed) = std::mem::take(&mut self.delete_tally);
                     if failed > 0 {
                         self.set_status(format!("Moved {moved} to the {TRASH}, {failed} failed (see log)"));
                     } else if moved == 0 {
@@ -804,6 +849,11 @@ impl Gallery {
         }
     }
 
+    /// Queue a clipboard write behind the earlier ones (FIFO, one worker).
+    fn copy_job(&self, job: impl FnOnce() + Send + 'static) {
+        let _ = self.copy_tx.send(Box::new(job));
+    }
+
     /// Text -> system clipboard. HARD-WON: on Linux egui's copy_text ties the
     /// selection to the app WINDOW (X11 owner / Wayland serial), so the text
     /// vanished when the app closed (Close quits there) and could be refused
@@ -816,7 +866,7 @@ impl Gallery {
         {
             let _ = ctx;
             let notify = self.notifier();
-            std::thread::spawn(move || {
+            self.copy_job(move || {
                 if let Err(e) = crate::clipboard::set_text(&text) {
                     eprintln!("trontsnap: copy text failed: {e:#}");
                     notify("Copy failed (see log)".into());
@@ -830,7 +880,7 @@ impl Gallery {
             Action::Copy(path) => {
                 let p = path.clone();
                 let notify = self.notifier();
-                std::thread::spawn(move || {
+                self.copy_job(move || {
                     // Videos can't be pixel formats — copy the FILE (CF_HDROP), which
                     // still pastes into Discord/Explorer/terminals.
                     let r = if index::is_video(&p) {
@@ -973,7 +1023,7 @@ impl Gallery {
                 let vis = self.visible_selected();
                 let n = vis.len();
                 let notify = self.notifier();
-                std::thread::spawn(move || {
+                self.copy_job(move || {
                     if let Err(e) = crate::clipboard::set_files(&vis) {
                         eprintln!("trontsnap: copy files failed: {e:#}");
                         notify("Copy failed (see log)".into());
