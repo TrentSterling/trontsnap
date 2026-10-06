@@ -4,7 +4,10 @@ name: Release
 # release title is hand-written ('TrontSnap 0.25.0: <headline>') before it goes public.
 #
 # Dry run (workflow_dispatch, default): same builds, artifacts stay on the workflow
-# run, no release. Safe to fire from a branch before the tag exists.
+# run, no release. Fires from a branch before the tag exists, BUT GitHub only lists
+# "Run workflow" for a workflow file that is on the DEFAULT branch: merge this file to
+# main first, then dry-run from main (which also seeds the cache tag runs restore).
+# A tag push needs none of that; the tagged commit carries the file.
 #
 # Cutting a release:
 #   1. bump version in Cargo.toml + hotkeyd/Cargo.toml, refresh Cargo.lock, add
@@ -122,7 +125,8 @@ jobs:
       VERSION: ${{ needs.verify.outputs.version }}
     steps:
       # HARD-WON: windows-latest git defaults to core.autocrlf=true, which would CRLF
-      # every .cmd/.ps1/.md in the bundle. The shipped v0.25.0 bundle is LF.
+      # the .md files in the bundle (the shipped v0.25.0 ones are LF). .gitattributes
+      # still forces CRLF on .cmd/.ps1, and assemble_windows.py checks the .cmd ones.
       - name: Keep LF line endings in the checkout
         run: git config --global core.autocrlf false
 
@@ -216,23 +220,17 @@ jobs:
             echo "::error::packaging/linux/build-all.sh is missing; the Linux release cannot be packaged"
             exit 1
           fi
-          bash packaging/linux/build-all.sh --version "$VERSION" --out dist/
+          bash packaging/linux/build-all.sh --version "$VERSION" --out dist/ --require-zsync
 
+      # The deb is a glob: build-all.sh owns its Debian revision (-1 today).
       - name: Check package set
         run: |
-          missing=0
-          for f in \
+          ls -l dist
+          bash .github/scripts/check-assets.sh dist \
             "TrontSnap-v${VERSION}-x86_64.AppImage" \
             "TrontSnap-v${VERSION}-x86_64.AppImage.zsync" \
-            "trontsnap_${VERSION}_amd64.deb" \
-            "trontsnap-${VERSION}-linux-x86_64.tar.gz"; do
-            if [ ! -s "dist/$f" ]; then
-              echo "::error::build-all.sh did not produce dist/$f"
-              missing=1
-            fi
-          done
-          ls -l dist
-          [ "$missing" = 0 ]
+            "trontsnap_${VERSION}-*_amd64.deb" \
+            "trontsnap-${VERSION}-linux-x86_64.tar.gz"
 
       - name: Checksums
         run: |
@@ -278,47 +276,57 @@ jobs:
 
       - name: Check asset set
         run: |
-          missing=0
-          for f in \
+          bash .github/scripts/check-assets.sh dist \
             "TrontSnap.exe" \
             "TrontSnap-v${VERSION}-windows.zip" \
             "Rajdhani-OFL.txt" \
             "TrontSnap-v${VERSION}-x86_64.AppImage" \
             "TrontSnap-v${VERSION}-x86_64.AppImage.zsync" \
-            "trontsnap_${VERSION}_amd64.deb" \
-            "trontsnap-${VERSION}-linux-x86_64.tar.gz"; do
-            if [ ! -s "dist/$f" ]; then
-              echo "::error::release asset missing: $f"
-              missing=1
-            fi
-          done
-          [ "$missing" = 0 ]
+            "trontsnap_${VERSION}-*_amd64.deb" \
+            "trontsnap-${VERSION}-linux-x86_64.tar.gz"
 
+      # HARD-WON: linux-dist carries build-all.sh's own linux-only SHA256SUMS. Globbing it
+      # into the merged file hashes the stale one, and the result then FAILS
+      # `sha256sum -c` (the check INSTALL.md tells users to run). Drop it first, and
+      # run that same check here so a bad file never reaches the release.
       - name: SHA256SUMS
         run: |
+          set -euo pipefail
           cd dist
-          sha256sum -- * > ../SHA256SUMS
+          rm -f SHA256SUMS
+          LC_ALL=C sha256sum -- * > ../SHA256SUMS
           mv ../SHA256SUMS SHA256SUMS
+          sha256sum -c SHA256SUMS
           cat SHA256SUMS
 
       - name: Create draft release (or add to the existing one)
         run: |
           set -euo pipefail
-          # Existence check also scans the release list: a DRAFT is invisible to the
-          # lookup-by-tag endpoint on some gh versions. Captured first, not piped into
-          # grep -q, because pipefail + an early-closing grep reads as failure.
-          exists=false
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            exists=true
+          # state = missing | draft | published. The list scan is the fallback because a
+          # DRAFT is invisible to the lookup-by-tag endpoint on some gh versions. Each
+          # call is captured first, not piped into grep -q, because pipefail + an
+          # early-closing reader reads as failure.
+          state=missing
+          if d=$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null); then
+            if [ "$d" = true ]; then state=draft; else state=published; fi
           else
-            tags=$(gh release list --limit 100 --json tagName --jq '.[].tagName' || true)
-            if grep -qxF "$TAG" <<<"$tags"; then exists=true; fi
+            rows=$(gh release list --limit 100 --json tagName,isDraft --jq '.[] | "\(.tagName) \(.isDraft)"' || true)
+            hit=$(awk -v t="$TAG" '$1 == t { print $2; exit }' <<<"$rows")
+            case "$hit" in
+              true) state=draft ;;
+              false) state=published ;;
+            esac
           fi
 
-          if [ "$exists" = true ]; then
+          if [ "$state" = published ]; then
+            # --clobber on a public release silently swaps the AppImage/.zsync that
+            # people are updating from. Never from CI; fix it by hand if it must happen.
+            echo "::error::release $TAG is already PUBLISHED; refusing to replace its assets. Cut the next patch version, or edit the release by hand."
+            exit 1
+          elif [ "$state" = draft ]; then
             # Title and notes are probably hand-edited by now; only touch the assets.
             gh release upload "$TAG" dist/* --clobber
-            echo "Release $TAG already existed: assets uploaded (--clobber), title and notes untouched." | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "Draft $TAG already existed: assets uploaded (--clobber), title and notes untouched." | tee -a "$GITHUB_STEP_SUMMARY"
           else
             # --verify-tag: refuse to invent a tag; the tag push is what got us here.
             url=$(gh release create "$TAG" dist/* \

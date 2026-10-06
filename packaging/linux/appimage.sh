@@ -130,7 +130,11 @@ rm -f "$OUT/$NAME" "$OUT/$NAME.zsync"
 [[ -f $OUT/$NAME ]] || die "appimagetool produced no $NAME"
 
 # Prove the update string made it in; it is what self-update hangs on.
-GOT="$("$OUT/$NAME" --appimage-updateinformation 2>/dev/null || true)"
+# HARD-WON: unset APPIMAGE_EXTRACT_AND_RUN for this one call. CI sets it job-wide so
+# appimagetool runs without FUSE, but with it set the runtime extracts and RUNS the
+# app instead of answering --appimage-updateinformation (the app then complains about
+# an unknown option and GOT comes back empty). The flag itself needs no FUSE.
+GOT="$(env -u APPIMAGE_EXTRACT_AND_RUN "$OUT/$NAME" --appimage-updateinformation 2>/dev/null || true)"
 [[ $GOT == "$UPDATE_INFO" ]] || die "update information not embedded (got: '${GOT:-nothing}')"
 
 if [[ ! -f $OUT/$NAME.zsync ]] && command -v zsyncmake >/dev/null 2>&1; then
