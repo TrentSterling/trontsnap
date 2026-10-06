@@ -16,6 +16,9 @@ bad() { echo "  FAIL  $1${2:+  [$2]}"; fails=$((fails + 1)); }
 changed() { "$HERE/imgdiff.py" "$1" "$2" | sed -n 's/changed_pixels=\([0-9]*\).*/\1/p'; }
 park() { "${X[@]}" move 1270 700; sleep 0.8; }   # off the tiles, off the toast area
 
+# HARD-WON: the debug app on this 4-core box drops/lags input once other agents load the machine
+# (load avg 7+: "ctrl+a  0 px" and "1 selected" instead of 2). Paced input makes the selftest load-proof.
+export XINPUT_SLOW=${XINPUT_SLOW:-1}
 trap '"$HERE/gui_env.sh" stop "$N" >/dev/null 2>&1' EXIT
 "$HERE/gui_env.sh" start "$N" "$PORT" || { echo "  FAIL  rig start"; exit 1; }
 ok "rig started" ":$N port $PORT"
