@@ -282,7 +282,7 @@ def kms_record(secs, sampler):
 def gnome_record(secs, outdir, sampler):
     from gi.repository import Gio, GLib
     bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
-    tpl = os.path.join(outdir, "gnome_%d" % int(time.time()))
+    tpl = os.path.abspath(os.path.join(outdir, "gnome_%d" % int(time.time())))  # absolute: a relative template lands in ~/Videos
     args = GLib.Variant("(sa{sv})", (tpl, {"framerate": GLib.Variant("i", 30), "draw-cursor": GLib.Variant("b", True)}))
     t_call = time.time()
     ok, f = bus.call_sync("org.gnome.Shell.Screencast", "/org/gnome/Shell/Screencast", "org.gnome.Shell.Screencast",
@@ -355,7 +355,7 @@ def main():
             res["ffplay_frames_dropped_by_player"] = ffplay_drops(plog)
         if f and os.path.exists(f):
             if os.path.dirname(os.path.abspath(f)) != os.path.abspath(a.out):  # kms: move OUR clip out of the user's folder
-                dst = os.path.join(a.out, "%s_%d.mp4" % (tag, int(time.time())))
+                dst = os.path.join(a.out, "%s_%d%s" % (tag, int(time.time()), os.path.splitext(f)[1] or ".mp4"))
                 shutil.move(f, dst)
                 f = dst
             res["clip"] = probe(f)

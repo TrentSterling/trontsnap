@@ -274,5 +274,5 @@ MACHINE SAFETY (learned the hard way, this box hard-reset once):
   anything else records. After GPU work: `journalctl -k -b --since "-5 min" | grep -i -E "uvd|vce|radeon.*error|hung"`.
 - The gnome backend is CPU-only VP8 here (no gst-plugins-bad, so no VA encoder), so
   `--backend gnome` never touches the VCE.
-- A relative template path makes GNOME Shell write under `~/Videos/`; pass absolute paths
-  (`rec_perf.py` and `gnome_area_probe.py` get away with it by moving the result).
+- A relative template path makes GNOME Shell write under `~/Videos/`; both scripts pass an
+  absolute one.

@@ -20,7 +20,7 @@ def main():
     os.makedirs(a.out, exist_ok=True)
     from gi.repository import Gio, GLib
     bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
-    tpl = os.path.join(a.out, "area_%d" % int(time.time()))
+    tpl = os.path.abspath(os.path.join(a.out, "area_%d" % int(time.time())))  # relative would land in ~/Videos
     opts = {"framerate": GLib.Variant("i", 30), "draw-cursor": GLib.Variant("b", bool(a.cursor))}
     t0 = time.time()
     ok, f = bus.call_sync("org.gnome.Shell.Screencast", "/org/gnome/Shell/Screencast", "org.gnome.Shell.Screencast",
