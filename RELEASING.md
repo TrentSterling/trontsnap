@@ -45,7 +45,9 @@ scripts/release.sh 0.26.0 --dry-run
 scripts/release.sh 0.26.0
 ```
 
-PowerShell 5.1 on the Windows box (no pwsh needed):
+PowerShell 5.1 on the Windows box (no pwsh needed). `release.ps1` has not been executed yet
+(there is no PowerShell on the Linux box): do the `-DryRun` first and use that spelling, not
+`--dry-run`. `release.sh` (Git Bash works) does the same job and is the tested one.
 
 ```
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\release.ps1 0.26.0 -DryRun
@@ -81,10 +83,16 @@ the script. There is no pre-release channel yet.
 
 ### 3. (Recommended) Rehearse the builds before the tag exists
 
+**Prerequisite: `release.yml` must already be on `main`.** GitHub lists "Run workflow" only
+for a workflow file that exists on the default branch (it is not offered for a file that
+lives only on a feature branch, so `linux-port` cannot rehearse itself). Merge the branch
+first (WINDOWS-HANDOFF.md has the order), then:
+
 Push **the branch only**: `git push origin main`. Then Actions > **Release** > Run
 workflow, with:
 
-- Use workflow from: your branch
+- Use workflow from: `main`, or any branch that carries the commit (hotfix branches work
+  once `main` has the file)
 - tag: `vX.Y.Z` (the version the commit already carries)
 - dry_run: ticked (the default)
 
@@ -92,6 +100,24 @@ It runs the full verify + Windows + Linux jobs and keeps the outputs as workflow
 (`windows-dist`, `linux-dist`, `release-notes`, 14 days). No release, no tag needed. Download
 them from the run page; `upload-artifact` drops file modes, so `chmod +x` the AppImage
 before trying it.
+
+Rehearsing from `main` also fills the build cache for the tag run: tag runs cannot save one
+(`save-if` is branch-only) and can only restore caches made on the default branch, so
+without a dry run the first tag build is a cold fat-LTO compile on both platforms. Budgets
+are 60 min (Windows) and 45 min (Linux); nobody has measured a real run yet.
+
+**What the first dry run has to prove** (none of it can run off GitHub; treat the first
+run as the test, and fix what it finds before any tag leaves your machine):
+
+- the Windows job end to end: `winresource` finds `rc.exe`, `assemble_windows.py` passes its
+  manifest/version/CRLF gates, `sha256sum` and `$GITHUB_STEP_SUMMARY` work under Git Bash;
+- `cargo test --workspace` on a clean runner is green (`ci.yml`; some egui and thumbnail tests
+  touch the filesystem, so this is unproven, not assumed);
+- `desktop-file-validate` and `appstreamcli` on ubuntu-22.04 are older than the ones used
+  locally and `build-all.sh` treats their failures as hard errors;
+- the pinned action majors (checkout, upload/download-artifact v4, setup-python v5,
+  rust-cache v2) and the `ubuntu-22.04` label still run without deprecation errors; revisit
+  them when GitHub announces retirements.
 
 If the rehearsal turns up a problem, fix it on the branch. The local tag still points at the
 old release commit and was never pushed, so moving it is safe:
@@ -116,8 +142,11 @@ branch push runs CI; the tag push runs the release workflow.
 | `publish` | the only job with `contents: write`; makes `SHA256SUMS` and a **draft** release | draft titled `TrontSnap X.Y.Z`, notes = the changelog section |
 
 `publish` runs only for a real release (tag push, or a manual run from the tag with dry_run
-off). If a release for the tag already exists it only uploads assets (`--clobber`) and leaves
-the title and notes you edited alone.
+off). If a **draft** for the tag already exists it only uploads assets (`--clobber`) and
+leaves the title and notes you edited alone. If the release is already **published** it
+refuses and fails: replacing the AppImage and `.zsync` under people who are updating from them
+is never something CI should do quietly. `SHA256SUMS` is regenerated over exactly the merged
+asset set and verified with `sha256sum -c` before upload.
 
 Assets on a finished release:
 
@@ -148,7 +177,7 @@ confirm an older install upgrades (see "Upgrades" below).
 
 ## Dry-running CI without releasing
 
-Actions > Release > Run workflow:
+Actions > Release > Run workflow (only offered once `release.yml` is on `main`, see step 3):
 
 | Field | Value |
 |---|---|
@@ -220,7 +249,8 @@ identity and a secret in the repo.
 
   `release.sh` compares against the version on the branch you are on, so this works even
   though `v0.27.0` may already exist. CI (`ci.yml`) only watches `main`, `linux-port` and
-  PRs, so rehearse with the Release workflow's dry run from the hotfix branch, or open a PR.
+  PRs, so rehearse with the Release workflow's dry run from the hotfix branch (works because
+  `release.yml` is on `main`), or open a PR.
   Afterwards forward-port the fix and its changelog entry to `main`.
 
   If a newer release is already out, **untick "Set as the latest release"** on the hotfix
@@ -244,9 +274,11 @@ gate locally with `bash .github/scripts/verify-release.sh vX.Y.Z notes.md`.
 | verify | `CHANGELOG.md has no '## vX.Y.Z' section` | section missing from the **tagged commit** |
 | windows | build error | read it; CI (`ci.yml`) builds the workspace on Windows on every push to `main`, so this should have shown up there first |
 | windows | `lacks uiAccess=true` / `carries uiAccess=true` / `does not embed version` | manifest or stale-build problem caught by `assemble_windows.py`; see "Windows" above |
-| linux | `build-all.sh did not produce dist/<name>` | the workflow's expected file name and what `packaging/linux/*.sh` actually write drifted (the deb is `trontsnap_X.Y.Z-1_amd64.deb`, with the Debian revision). Fix whichever side is wrong |
+| linux | `N non-empty files match dist/<name> (want exactly 1)` | the workflow's expected file name and what `packaging/linux/*.sh` actually write drifted (`.github/scripts/check-assets.sh` does the check; the deb is matched as `trontsnap_X.Y.Z-*_amd64.deb`). Fix whichever side is wrong |
+| linux | `update information not embedded` | `appimage.sh` could not read the update string back from the AppImage it just built; a stray `APPIMAGE_EXTRACT_AND_RUN` in the environment was the first cause (it is now unset for that one call) |
 | linux | appimagetool download or sha256 mismatch | network blip (re-run), or the pinned tool changed (`packaging/linux/appimage.sh` refuses to run a tool whose hash differs) |
-| publish | `release asset missing: ...` | an earlier job's artifact upload is short a file; check the artifact list on the run page |
+| publish | `N non-empty files match dist/<name> (want exactly 1)` | an earlier job's artifact upload is short a file; check the artifact list on the run page |
+| publish | `release vX.Y.Z is already PUBLISHED` | the draft was published before this run reached `publish` (a re-run, or a dispatch from the tag). Nothing was uploaded. Cut the next patch, or fix the assets by hand |
 | any job | a runner or network flake | Actions > the run > **Re-run failed jobs**; it rebuilds the same tag commit |
 
 If you must change code, there are two cases:
@@ -273,6 +305,14 @@ INSTALL.md for where).
 | Linux `.deb` | `sudo apt install ./trontsnap_X.Y.Z-1_amd64.deb` over the old one | same package name and a higher version = in-place upgrade; the running app is asked to exit first |
 | Linux tarball | unpack the new tarball, run `./install.sh` again | atomic replace, safe while running |
 | Flatpak | rebuild and reinstall from `packaging/linux/xyz.tront.TrontSnap.yml` | experimental, not in CI, not a supported path (see its header) |
+
+**Not yet proven (as of the first Linux release):** AppImageUpdate delta upgrades and the
+"GitHub `latest` drives it" behaviour, and `sudo apt install ./new.deb` over an old one on a
+clean machine, are designed and partly tested locally (the deb maintainer scripts, the update
+string, the `.zsync` name match) but need two real releases to see end to end. After the second
+Linux release, upgrade an older AppImage and an older deb on a clean box and delete this
+paragraph, or fix what broke. Until then INSTALL.md also tells users the manual path
+(download the new file, replace the old).
 
 **Windows installed in detail.** Re-running the installer is the upgrade. `bootstrap.ps1`
 kills the running UI and broker, copies the new exes over (and verifies the copy by hash),
@@ -316,6 +356,8 @@ how upgrades reach the hotkeys. A running TrontSnap keeps the old version until 
 | `.github/workflows/ci.yml` | build + test on every push to `main`/`linux-port` and PRs |
 | `.github/workflows/release.yml` | tag-driven (or manual) release builds and the draft |
 | `.github/scripts/verify-release.sh` | the version/changelog gate (also runs inside `release.sh`) |
+| `.github/scripts/check-assets.sh` | "exactly one non-empty file per name/glob" check, used by the linux and publish jobs |
+| `.gitattributes` | pins CRLF on `*.cmd` / `*.ps1` checkouts (the zip's `.cmd` wrappers; see HARD-WON there) |
 | `.github/scripts/assemble_windows.py` | Windows exe + bundle zip + manifest/version gates |
 | `packaging/linux/build-all.sh` | AppImage, deb, tarball, checksums (see `packaging/linux/README.md`) |
 | `bootstrap.ps1`, `packaging/*.cmd`, `packaging/*.ps1` | the Windows installer, its wrappers and verifiers |

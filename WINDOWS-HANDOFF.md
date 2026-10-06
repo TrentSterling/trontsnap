@@ -9,9 +9,9 @@ below is pre-approved: pushing, merging and releasing happen when Trent says so.
 
 `linux-port` adds an Ubuntu/Linux build of TrontSnap and a cross-platform release pipeline.
 `main` has not moved since the branch point (`86944f8`, v0.25.0), so it fast-forwards.
-Size as of 2026-10-05 (re-run `git diff main...linux-port --stat | tail -1`): ~68 files,
-~6000 insertions, ~200 deletions, of which most is new Linux-only code, packaging, CI, docs
-and a test harness. Linux itself is documented in `LINUX.md`; install paths in `INSTALL.md`;
+Size as of 2026-10-05 (re-run `git diff main...linux-port --stat | tail -1`; it keeps growing):
+about 76 files, 7,600 insertions, 200 deletions, of which most is new Linux-only code,
+packaging, CI, docs and a test harness. Linux itself is documented in `LINUX.md`; install paths in `INSTALL.md`;
 the release flow in `RELEASING.md`.
 
 The branch has been built and run on Ubuntu only. **No line of the Windows build has been
@@ -140,12 +140,20 @@ hand-built v0.25.0 zip, and the Linux assets ride along.
    powershell -NoProfile -ExecutionPolicy Bypass -File scripts\release.ps1 0.26.0
    ```
 
+   `release.ps1` has never been executed (it was written and reviewed on the Linux box, which has
+   no PowerShell), so the `-DryRun` is a real test of the script, not a formality: if it errors or
+   prints nonsense, use `scripts/release.sh` from Git Bash or the Linux box instead and tell Trent.
+   Use `-DryRun`, not `--dry-run` (the double-dash spelling is untested on 5.1).
    It refuses on a dirty tree, a non-greater version or a missing changelog section; it bumps
    `Cargo.toml`, `hotkeyd\Cargo.toml` and `Cargo.lock` by text, commits `Release TrontSnap 0.26.0`
    and creates the annotated tag, and prints the push command. It never pushes.
-3. Strongly recommended first release: push the branch only, then Actions > Release > Run workflow
-   from `main` with tag `v0.26.0` and dry_run ticked, download `windows-dist` and
-   `linux-dist`, and check them. Fix anything before the tag leaves your machine.
+3. Strongly recommended first release: with the merge above done (GitHub offers "Run workflow"
+   only for a workflow file that is on `main`), push `main`, then Actions > Release > Run
+   workflow from `main` with tag `v0.26.0` and dry_run ticked, download `windows-dist` and
+   `linux-dist`, and check them. Fix anything before the tag leaves your machine. This run is
+   also the first proof of the Windows release job, `cargo test --workspace` on a clean runner,
+   and the packaging validators on ubuntu-22.04; none of those could be run off GitHub. It
+   also warms the build cache the tag run restores.
 4. `git push --atomic origin main v0.26.0`. CI builds both platforms and leaves a **draft**.
 5. In the draft: title `TrontSnap 0.26.0: <headline>`, check all assets are there (`.zsync`
    included), leave "latest" ticked, publish.

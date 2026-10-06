@@ -47,6 +47,12 @@ byte-for-byte reproducible for the same binary and commit.
 - **dlopen'd libs are listed by hand** in the deb's `Depends` (winit/glutin load
   Wayland, xkbcommon, X11 cursor and GL libs at runtime, so `dpkg-shlibdeps` can't
   see them).
+- **`APPIMAGE_EXTRACT_AND_RUN` must not leak into the update-string check.** CI sets it
+  job-wide so appimagetool runs without FUSE, but with it set an AppImage extracts and
+  runs the app instead of answering `--appimage-updateinformation`. `appimage.sh` unsets
+  it for that one call; keep it that way if you touch the check. Never run a built
+  AppImage with your real `$HOME` while testing with a stand-in binary: `AppRun` copies
+  the binary to `~/.local/share/trontsnap/bin/trontsnap`.
 - **Desktop file is installed as `xyz.tront.TrontSnap.desktop`** everywhere (deb,
   AppImage, tarball, Flatpak) to match the AppStream id. `StartupWMClass=trontsnap`
   ties windows to it (winit's X11 class is the exe name).

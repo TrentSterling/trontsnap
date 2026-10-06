@@ -12,6 +12,10 @@ or `Get-FileHash` (Windows) checks what you downloaded.
 | Debian / Ubuntu | `trontsnap_X.Y.Z-1_amd64.deb` | installs to `/usr/bin`, upgraded by installing the next one |
 | Linux, no root | `trontsnap-X.Y.Z-linux-x86_64.tar.gz` | `install.sh` puts it in `~/.local` |
 
+The Linux packages are new. AppImage self-update (AppImageUpdate) and in-place `.deb` upgrades are
+designed and partly tested, but not yet proven across two real releases; if one misbehaves, the
+manual route always works: download the new file and replace the old one.
+
 Why two Windows modes, and what the broker is: [SETUP.md](SETUP.md). Linux specifics and the
 list of what is not done yet: [LINUX.md](LINUX.md).
 
@@ -131,7 +135,7 @@ running TrontSnap to pick it up.
 sudo apt install ./trontsnap_X.Y.Z-1_amd64.deb      # the leading ./ matters
 ```
 
-**Upgrade:** `sudo apt install ./trontsnap_<newer>_amd64.deb`; the running app is asked to exit
+**Upgrade:** `sudo apt install ./trontsnap_<newer>-1_amd64.deb`; the running app is asked to exit
 first, restart it afterwards. **Remove:** `sudo apt remove trontsnap`. That leaves your per-user
 autostart entry and GNOME keybindings (dpkg cannot reach your home); clean them as under
 "Uninstall" below.
