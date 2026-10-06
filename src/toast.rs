@@ -431,8 +431,15 @@ impl eframe::App for Toast {
             }
         });
 
-        // Poll fairly often so the Win32 click detection above catches quick clicks.
-        ctx.request_repaint_after(Duration::from_millis(30));
+        // Windows polls the cursor itself (the toast gets no egui input events there), so it needs ~30 ms
+        // to catch quick clicks. Elsewhere egui delivers input events, which repaint on their own; the
+        // timer only has to drive the dwell countdown, so 10 Hz is plenty.
+        // HARD-WON: at 30 ms a hover-held toast burned ~130% CPU for minutes under software GL.
+        #[cfg(windows)]
+        const POLL_MS: u64 = 30;
+        #[cfg(not(windows))]
+        const POLL_MS: u64 = 100;
+        ctx.request_repaint_after(Duration::from_millis(POLL_MS));
     }
 }
 

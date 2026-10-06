@@ -142,6 +142,11 @@ mod videothumb;
 mod visual;
 
 fn main() {
+    // `trontsnap --version`: first thing, before any setup (bug reports, packaging checks, scripts).
+    if matches!(std::env::args().nth(1).as_deref(), Some("--version" | "-V")) {
+        println!("trontsnap {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
     // The clipboard owner daemon needs none of the setup below (settings, a
     // gsettings fork) and its startup time is on the paste-latency path.
     #[cfg(not(windows))]
