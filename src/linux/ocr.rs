@@ -6,6 +6,18 @@
 use anyhow::Context as _;
 use image::RgbaImage;
 
+/// Is tesseract on PATH? Checked before the picker so a missing engine is a
+/// message, not a drag that silently produces nothing.
+pub fn available() -> bool {
+    std::process::Command::new("tesseract")
+        .arg("--version")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok()
+}
+
 /// Recognize the text in `img`. Blocks (tesseract runs to completion); run on a
 /// worker thread, never the UI thread. Returns Ok("") when the region simply
 /// contains no words.

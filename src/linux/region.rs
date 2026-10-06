@@ -59,11 +59,22 @@ pub fn capture_region_ocr() {
         respawn_as("ocr");
         return;
     }
+    // HARD-WON: this runs from a hotkey, where stderr goes nowhere. With tesseract
+    // missing (not preinstalled on Ubuntu) the user used to get a picker, a drag,
+    // and then silence plus the OLD clipboard. Say so BEFORE the picker.
+    if !crate::ocr::available() {
+        let msg = "OCR needs tesseract: sudo apt install tesseract-ocr";
+        crate::clipboard::log_line(&format!("ocr: {msg}"));
+        eprintln!("trontsnap: {msg}");
+        notify("OCR unavailable", msg);
+        return;
+    }
     let Some(cropped) = picked_crop() else { return };
     let (rw, rh) = (cropped.width(), cropped.height());
     match crate::ocr::recognize(&cropped) {
         Ok(text) if text.trim().is_empty() => {
             crate::clipboard::log_line(&format!("ocr: no text found in {rw}x{rh} region"));
+            notify("No text found", &format!("OCR saw nothing in the {rw}x{rh} region"));
         }
         Ok(text) => {
             let lines = text.lines().count();
@@ -74,8 +85,20 @@ pub fn capture_region_ocr() {
         Err(e) => {
             eprintln!("trontsnap: ocr failed: {e:#}");
             crate::clipboard::log_line(&format!("ocr failed: {e:#}"));
+            notify("OCR failed", &format!("{e:#}"));
         }
     }
+}
+
+/// Desktop notification for the one-shot picker modes (nothing else is visible
+/// when they fail). Transient so it doesn't pile up in the tray.
+fn notify(summary: &str, body: &str) {
+    let mut cmd = std::process::Command::new("notify-send");
+    cmd.args(["-a", "TrontSnap", "-t", "5000", "-h", "int:transient:1", summary, body])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let _ = crate::shellexec::spawn_detached(cmd);
 }
 
 /// Run the picker and return the cropped selection, clamped to the frame.
