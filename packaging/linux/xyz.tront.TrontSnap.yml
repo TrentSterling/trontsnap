@@ -1,0 +1,48 @@
+# Flatpak manifest for TrontSnap (local builds).
+#
+#   flatpak-builder --user --install --force-clean --share=network \
+#       target/flatpak-build packaging/linux/xyz.tront.TrontSnap.yml
+#
+# --share=network lets cargo fetch crates during the build; a Flathub submission
+# would need the offline cargo-sources.json dance instead (flatpak-cargo-generator),
+# which is deliberately out of scope until there's a reason to be on Flathub.
+#
+# Permission notes: TrontSnap is a screenshot tool, so it is NOT a sandbox
+# poster child — it needs the host's display, your Pictures dir, and it shells
+# out to host tools (wl-copy, ffmpeg, gnome-screenshot, tesseract) via
+# --talk-name=org.freedesktop.Flatpak + flatpak-spawn --host. The AppImage is
+# the primary Linux artifact; this manifest exists so a flatpak-preferring
+# machine can still install it.
+app-id: xyz.tront.TrontSnap
+runtime: org.freedesktop.Platform
+runtime-version: '23.08'
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: trontsnap
+finish-args:
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --share=ipc
+  - --device=dri
+  - --socket=pulseaudio
+  - --filesystem=xdg-pictures
+  - --filesystem=xdg-documents:ro   # legacy ShareX archive, read-only
+  - --filesystem=xdg-config/autostart:create
+  - --talk-name=org.freedesktop.Flatpak
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+  env:
+    CARGO_HOME: /run/build/trontsnap/cargo
+modules:
+  - name: trontsnap
+    buildsystem: simple
+    build-commands:
+      - cargo build --release
+      - install -Dm755 target/release/trontsnap /app/bin/trontsnap
+      - install -Dm644 packaging/linux/trontsnap.desktop /app/share/applications/xyz.tront.TrontSnap.desktop
+      - sed -i 's/^Icon=.*/Icon=xyz.tront.TrontSnap/' /app/share/applications/xyz.tront.TrontSnap.desktop
+      - install -Dm644 assets/trontsnap.png /app/share/icons/hicolor/256x256/apps/xyz.tront.TrontSnap.png
+    sources:
+      - type: dir
+        path: ../..

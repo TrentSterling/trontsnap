@@ -15,19 +15,27 @@
 
 use std::io::Write as _;
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
+#[cfg(windows)]
 use std::num::NonZeroIsize;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+#[cfg(windows)]
 use crossbeam_channel::Receiver;
 use eframe::egui;
+#[cfg(windows)]
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+#[cfg(windows)]
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
+#[cfg(windows)]
 use tray_icon::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
+#[cfg(windows)]
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+#[cfg(windows)]
 use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+#[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
     GetForegroundWindow, GetWindowThreadProcessId, IsIconic, IsWindowVisible, SendMessageW,
     SetForegroundWindow, ShowWindow, SC_RESTORE, SW_HIDE, SW_SHOW, WM_SYSCOMMAND,
@@ -55,8 +63,10 @@ const PORT: u16 = 48761;
 /// double-click (>330ms between clicks) fires the picker first and then opens
 /// the gallery; Esc dismisses the stray picker. Raise this toward 500ms for
 /// strictness, lower it for snappiness.
+#[cfg(windows)]
 const DBLCLICK_GRACE: Duration = Duration::from_millis(330);
 
+#[cfg(windows)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TrayClickDecision {
     Restore,
@@ -68,6 +78,7 @@ enum TrayClickDecision {
 /// is consumed because that event already restored the window. Two quick
 /// ordinary up events provide the fallback when the shell omits `DoubleClick`.
 /// An isolated up keeps deferred capture.
+#[cfg(windows)]
 fn tray_click_decision(now_ms: u64, last_double_ms: u64, previous_up_ms: u64) -> TrayClickDecision {
     let grace = DBLCLICK_GRACE.as_millis() as u64;
     if last_double_ms != 0 && now_ms.saturating_sub(last_double_ms) < grace {
@@ -206,13 +217,20 @@ pub struct App {
     // once at startup (egui textures must not be re-uploaded every frame).
     icon_tex: egui::TextureHandle,
     _hotkeys: Option<KeyboardHook>,
+    #[cfg(windows)]
     _tray: Option<TrayIcon>,
     chrome_drag: crate::window_chrome::ChromeDrag,
+    #[cfg(windows)]
     auto_id: MenuId,
+    #[cfg(windows)]
     auto_item: CheckMenuItem,
+    #[cfg(windows)]
     cursor_id: MenuId,
+    #[cfg(windows)]
     cursor_item: CheckMenuItem,
+    #[cfg(windows)]
     audio_id: MenuId,
+    #[cfg(windows)]
     audio_item: CheckMenuItem,
     show_flag: Arc<AtomicBool>,
     // Self-heal for the intermittent restore-to-tiny desync (see update()): the last
@@ -224,6 +242,7 @@ pub struct App {
     // Every other tray/menu action is done DIRECTLY in the event handlers, because
     // eframe does not run update() at all while the window is hidden to the tray, so
     // anything routed through it would just queue until the window happened to reappear.
+    #[cfg(windows)]
     menu_rx: Receiver<MenuId>,
     // Last known-good main-window HWND, cached by update() so the tray menu handler can
     // restore the window directly via Win32 while it's hidden.
@@ -252,6 +271,7 @@ impl App {
         //
         // Otherwise (the portable build) we register them ourselves, exactly as
         // before. See hotkeyd/src/main.rs and keyhook.rs.
+        #[cfg(windows)]
         let hotkeys = if start_broker() {
             eprintln!("trontsnap: hotkeys owned by trontsnap-hotkeys.exe (uiAccess broker)");
             spawn_broker_watchdog();
@@ -265,8 +285,27 @@ impl App {
                 }
             }
         };
+        // Linux: no broker — "hotkeys" are desktop keybindings running the
+        // one-shot CLI modes (installed by keyhook) plus the loopback channel.
+        #[cfg(not(windows))]
+        let hotkeys = match setup_hotkeys() {
+            Ok(m) => Some(m),
+            Err(e) => {
+                eprintln!("trontsnap: hotkeys unavailable: {e:#}");
+                None
+            }
+        };
 
-        // Tray icon + menu.
+        // Declared out here because the tray handlers (Windows-only) AND the
+        // single-instance acceptor below need them.
+        let hwnd_cell = Arc::new(AtomicIsize::new(0));
+        let show_flag = Arc::new(AtomicBool::new(false));
+
+        // Tray icon + menu. Windows-only for now: on Linux tray-icon requires a
+        // gtk main loop this winit app doesn't run, so the window just stays
+        // visible and Close quits (captures work app-less via the one-shots).
+        #[cfg(windows)]
+        let (tray, auto_i, cursor_i, audio_i, menu_rx) = {
         let menu = Menu::new();
         let open_i = MenuItem::new("Open TrontSnap", true, None);
         let full_i = MenuItem::new("Capture Fullscreen   (PrtSc)", true, None);
@@ -307,10 +346,6 @@ impl App {
         // update() does NOT work: eframe never runs update() while the window is hidden
         // to the tray, so those actions would silently queue until the window reappeared.
         // Only the autostart toggle (needs &self) is forwarded to update().
-        let hwnd_cell = Arc::new(AtomicIsize::new(0));
-        // Declared up here because BOTH the tray click handler (double-click =
-        // open) and the single-instance acceptor below need to raise it.
-        let show_flag = Arc::new(AtomicBool::new(false));
         let (menu_tx, menu_rx) = crossbeam_channel::unbounded::<MenuId>();
         {
             let ctx = cc.egui_ctx.clone();
@@ -428,6 +463,8 @@ impl App {
                 }
             }));
         }
+        (tray, auto_i, cursor_i, audio_i, menu_rx)
+        }; // end #[cfg(windows)] tray block
 
         // Loopback command channel. Originally just single-instance handling (a
         // second launch pokes us to surface), now also how trontsnap-hotkeys.exe
@@ -489,15 +526,23 @@ impl App {
             tab,
             icon_tex,
             _hotkeys: hotkeys,
+            #[cfg(windows)]
             _tray: Some(tray),
             chrome_drag: Default::default(),
+            #[cfg(windows)]
             auto_id: auto_i.id().clone(),
+            #[cfg(windows)]
             auto_item: auto_i,
+            #[cfg(windows)]
             cursor_id: cursor_i.id().clone(),
+            #[cfg(windows)]
             cursor_item: cursor_i,
+            #[cfg(windows)]
             audio_id: audio_i.id().clone(),
+            #[cfg(windows)]
             audio_item: audio_i,
             show_flag,
+            #[cfg(windows)]
             menu_rx,
             hwnd_cell,
             good_size: egui::vec2(1180.0, 760.0),
@@ -527,10 +572,13 @@ impl App {
         // it — the same asymmetry that made Show a no-op until v0.5.3 switched
         // it to ShowWindow. Send the viewport command too so eframe's cached
         // visibility state stays in sync with the OS window.
-        let h = self.hwnd_cell.load(Ordering::Relaxed);
-        if h != 0 {
-            unsafe {
-                let _ = ShowWindow(HWND(h), SW_HIDE);
+        #[cfg(windows)]
+        {
+            let h = self.hwnd_cell.load(Ordering::Relaxed);
+            if h != 0 {
+                unsafe {
+                    let _ = ShowWindow(HWND(h), SW_HIDE);
+                }
             }
         }
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
@@ -933,6 +981,7 @@ impl eframe::App for App {
         // Only the checkbox toggles come through here (they need &self to read their
         // check state); everything else is handled directly in the tray/menu handlers,
         // since update() doesn't run while the window is hidden to the tray.
+        #[cfg(windows)]
         while let Ok(id) = self.menu_rx.try_recv() {
             if id == self.auto_id {
                 autostart::set(self.auto_item.is_checked());
@@ -947,22 +996,37 @@ impl eframe::App for App {
             self.show(ctx);
         }
 
-        // Closing the window hides to tray instead of quitting (Quit is in the menu).
+        // Closing the window hides to tray instead of quitting (Quit is in the
+        // menu). Linux has no tray yet, so Close means quit — the hotkey
+        // keybindings run one-shot processes and keep working without the app.
         if ctx.input(|i| i.viewport().close_requested()) {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            self.hide(ctx);
-            // Do not leave a repaint deadline armed after the native window is
-            // hidden. eframe does not produce another frame to clear it, and an
-            // expired WaitUntil makes winit's Windows event loop spin.
-            return;
+            #[cfg(not(windows))]
+            {
+                // A live ffmpeg session must be stopped (and finalized) before
+                // exit, or it keeps recording orphaned until the disk fills.
+                crate::recorder::shutdown();
+                std::process::exit(0);
+            }
+            #[cfg(windows)]
+            {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                self.hide(ctx);
+                // Do not leave a repaint deadline armed after the native window is
+                // hidden. eframe does not produce another frame to clear it, and an
+                // expired WaitUntil makes winit's Windows event loop spin.
+                return;
+            }
         }
 
-        // In Auto mode, keep following Windows rather than sampling it once at
-        // startup. Self-throttling to a registry read every couple of seconds,
-        // and a no-op entirely unless the preference is Auto.
+        // In Auto mode, keep following the OS rather than sampling it once at
+        // startup. Self-throttling to a read every couple of seconds, and a
+        // no-op entirely unless the preference is Auto.
+        #[cfg(windows)]
         let window_visible = hwnd
             .map(|h| unsafe { IsWindowVisible(HWND(h)).as_bool() })
             .unwrap_or(false);
+        #[cfg(not(windows))]
+        let window_visible = true; // update() only runs while visible anyway
         crate::theme::poll_system_mode(ctx, window_visible);
 
         self.draw(ctx, hwnd);
@@ -1790,6 +1854,7 @@ fn dispatch_hotkey(ev: HotkeyEvent) {
 }
 
 /// Path to the uiAccess hotkey broker, if it was installed beside us.
+#[cfg(windows)]
 fn broker_path() -> Option<std::path::PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let p = exe.with_file_name("trontsnap-hotkeys.exe");
@@ -1798,6 +1863,7 @@ fn broker_path() -> Option<std::path::PathBuf> {
 
 /// The broker's liveness beacon. It binds this port for its whole life, so a
 /// successful connection proves it is actually up and holding the hotkeys.
+#[cfg(windows)]
 const BROKER_PORT: u16 = 48771;
 
 /// Start the broker if it shipped with this install, and report whether it is
@@ -1817,6 +1883,7 @@ const BROKER_PORT: u16 = 48771;
 /// Launched via ShellExecuteW, not CreateProcess: a uiAccess exe refuses a bare
 /// CreateProcess with ERROR_ELEVATION_REQUIRED (740). The broker
 /// self-single-instances, so calling this when it is already up is harmless.
+#[cfg(windows)]
 fn start_broker() -> bool {
     let Some(p) = broker_path() else { return false };
     if broker_alive() {
@@ -1844,6 +1911,7 @@ fn start_broker() -> bool {
 
 /// What a real broker writes on connect. Anything else holding the port is not
 /// the broker.
+#[cfg(windows)]
 const BEACON_HELLO: &[u8] = b"trontsnap-hotkeyd";
 
 /// True when the BROKER is listening on the beacon port. Requires it to identify
@@ -1851,6 +1919,7 @@ const BEACON_HELLO: &[u8] = b"trontsnap-hotkeyd";
 /// process holding this port would otherwise convince us to hand over our
 /// hotkeys and never register any, leaving PrtSc dead with no explanation. The
 /// TrontEQ port collision earlier tonight was the benign version of exactly that.
+#[cfg(windows)]
 fn broker_alive() -> bool {
     let Ok(mut s) = std::net::TcpStream::connect_timeout(
         &std::net::SocketAddr::from((Ipv4Addr::LOCALHOST, BROKER_PORT)),
@@ -1877,6 +1946,7 @@ fn broker_alive() -> bool {
 /// `KeyboardHook::install` stores into a `OnceLock` and hard-errors on a second
 /// call, so local registration is genuinely once-per-process. Relaunching the
 /// broker is both simpler and preserves the behaviour that made it worth having.
+#[cfg(windows)]
 fn spawn_broker_watchdog() {
     std::thread::spawn(|| loop {
         std::thread::sleep(Duration::from_secs(5));
@@ -1921,7 +1991,12 @@ fn request_window_show(
 
 /// Reliably restore + foreground the main window via Win32. eframe's Visible(true)
 /// leaves a tray-hidden window behind the focused app and cannot wake an iconic
-/// root viewport by itself.
+/// root viewport by itself. (Linux: no cached native handle — hwnd_cell stays 0,
+/// so this is never reached; the viewport commands in show() do the work.)
+#[cfg(not(windows))]
+fn restore_and_foreground(_hwnd: isize) {}
+
+#[cfg(windows)]
 fn restore_and_foreground(hwnd: isize) {
     unsafe {
         let h = HWND(hwnd);
@@ -1966,6 +2041,7 @@ fn restore_and_foreground(hwnd: isize) {
 /// Extract the raw Win32 HWND from eframe's window handle. eframe::Frame
 /// implements raw_window_handle::HasWindowHandle directly (eframe 0.29), so no
 /// FindWindowW/GetActiveWindow workaround is needed.
+#[cfg(windows)]
 fn hwnd_from_frame(frame: &eframe::Frame) -> Option<isize> {
     match frame.window_handle().ok()?.as_raw() {
         RawWindowHandle::Win32(h) => Some(h.hwnd.get()),
@@ -1973,9 +2049,22 @@ fn hwnd_from_frame(frame: &eframe::Frame) -> Option<isize> {
     }
 }
 
+#[cfg(not(windows))]
+fn hwnd_from_frame(_frame: &eframe::Frame) -> Option<isize> {
+    None
+}
+
 /// Native OS file drag-out via the `drag` crate (DoDragDrop under the hood).
 /// Blocking/modal on the calling thread by Win32 design; gallery.rs calls this
 /// synchronously from update() (the UI thread), which is required.
+#[cfg(not(windows))]
+pub fn start_file_drag(_hwnd: Option<isize>, _path: &Path) -> bool {
+    // No OLE/XDND drag-out wired up on Linux yet; the gallery's Copy and the
+    // clipboard file reference cover the workflow meanwhile.
+    false
+}
+
+#[cfg(windows)]
 pub fn start_file_drag(hwnd: Option<isize>, path: &Path) -> bool {
     let Some(hwnd) = hwnd.and_then(NonZeroIsize::new) else {
         return false;
@@ -1996,8 +2085,10 @@ pub fn start_file_drag(hwnd: Option<isize>, path: &Path) -> bool {
 
 /// Thin HasWindowHandle wrapper so `drag::start_drag` can be handed a bare HWND
 /// (as an isize) without keeping the whole eframe::Frame alive.
+#[cfg(windows)]
 struct RawHwnd(NonZeroIsize);
 
+#[cfg(windows)]
 impl HasWindowHandle for RawHwnd {
     fn window_handle(
         &self,
@@ -2029,6 +2120,7 @@ fn app_icon() -> egui::IconData {
     egui::IconData { rgba, width: size, height: size }
 }
 
+#[cfg(windows)]
 fn tray_icon_image() -> tray_icon::Icon {
     let size = 32;
     let rgba = face_rgba(size).unwrap_or_else(|| make_icon_rgba(size));
@@ -2077,6 +2169,6 @@ fn rr_contains(x: f32, y: f32, lo: f32, hi: f32, r: f32) -> bool {
 #[path = "app/preview.rs"]
 mod preview;
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 #[path = "app/tray_tests.rs"]
 mod tray_tests;

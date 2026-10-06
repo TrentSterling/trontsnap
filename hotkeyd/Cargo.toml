@@ -13,7 +13,7 @@ path = "src/main.rs"
 # never execute that harness. There are no #[test]s here to lose.
 test = false
 
-[dependencies]
+[target.'cfg(windows)'.dependencies]
 winreg = "0.52"
 windows = { version = "0.56", features = [
     "Win32_Foundation",

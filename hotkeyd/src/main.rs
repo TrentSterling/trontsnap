@@ -27,6 +27,14 @@
 
 #![windows_subsystem = "windows"]
 
+// Windows-only by nature (RegisterHotKey + uiAccess). The Linux build has no
+// broker: desktop keybindings run the one-shot CLI modes instead.
+#[cfg(not(windows))]
+fn main() {}
+
+#[cfg(windows)]
+mod broker {
+
 use std::io::Write as _;
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::time::Duration;
@@ -203,7 +211,7 @@ fn spawn_ui_watchdog() {
     });
 }
 
-fn main() {
+pub fn main_impl() {
     // Single instance, and the liveness beacon the UI probes. Held for the whole
     // process lifetime; dropping out here means another broker already owns the
     // hotkeys, which is a success case, not an error.
@@ -271,3 +279,8 @@ fn main() {
         }
     }
 }
+
+}
+
+#[cfg(windows)]
+fn main() { broker::main_impl() }

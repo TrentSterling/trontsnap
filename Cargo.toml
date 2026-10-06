@@ -28,15 +28,23 @@ image = "0.24.9"
 anyhow = "1"
 chrono = "0.4"
 dirs = "5"
-tray-icon = "0.19"
-winreg = "0.52"
 trash = "5"
-opener = "0.7"
+# "reveal" = select-in-file-manager, used by the gallery's Reveal on Linux
+# (Windows goes through ShellExecuteW instead; the feature is harmless there).
+opener = { version = "0.7", features = ["reveal"] }
 crossbeam-channel = "0.5"
 walkdir = "2"
 notify = "6"
-drag = "2.1.1"
 raw-window-handle = "0.6"
+
+# === Windows-only OS integration ===
+# The whole Win32 layer (clipboard formats, RegisterHotKey, GDI picker, Media
+# Foundation, registry settings) plus tray + OLE drag-out. The Linux build swaps
+# in src/linux/* modules instead (see main.rs), so none of these resolve there.
+[target.'cfg(windows)'.dependencies]
+tray-icon = "0.19"
+winreg = "0.52"
+drag = "2.1.1"
 # Global hotkeys (RegisterHotKey), shutter sound, and the multi-format clipboard
 # writer all use Win32 directly. windows 0.56 is already in the lockfile (via
 # trash/opener), so this only adds features to the resolved version, no

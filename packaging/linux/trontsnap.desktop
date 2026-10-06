@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=TrontSnap
+GenericName=Screenshot Tool
+Comment=Fast screenshots, full history, no cloud
+Exec=trontsnap
+Icon=trontsnap
+Terminal=false
+Categories=Graphics;Utility;
+Keywords=screenshot;capture;screen;recording;ocr;

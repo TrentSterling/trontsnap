@@ -10,6 +10,19 @@ use xcap::Monitor;
 /// Grab the primary monitor as an RGBA image (physical pixels).
 /// Primary-monitor only for now; multi-monitor virtual-desktop capture is next.
 pub fn grab_primary() -> anyhow::Result<RgbaImage> {
+    match grab_xcap() {
+        Ok(img) => Ok(img),
+        #[cfg(windows)]
+        Err(e) => Err(e),
+        // Wayland compositors won't all talk to xcap (GNOME's Mutter in
+        // particular locks its shell screenshot API down); fall through to the
+        // desktop's own CLI grabbers before giving up.
+        #[cfg(not(windows))]
+        Err(e) => grab_linux_fallback(&e),
+    }
+}
+
+fn grab_xcap() -> anyhow::Result<RgbaImage> {
     let monitors = Monitor::all()?;
     let monitor = monitors
         .iter()
@@ -17,6 +30,50 @@ pub fn grab_primary() -> anyhow::Result<RgbaImage> {
         .or_else(|| monitors.first())
         .ok_or_else(|| anyhow::anyhow!("no monitors found"))?;
     Ok(monitor.capture_image()?)
+}
+
+/// CLI grabber chain for desktops xcap can't capture: each writes a PNG to a
+/// temp path we then load. gnome-screenshot covers GNOME Wayland (portal path,
+/// no prompt), spectacle covers KDE, grim covers wlroots.
+#[cfg(not(windows))]
+fn grab_linux_fallback(xcap_err: &anyhow::Error) -> anyhow::Result<RgbaImage> {
+    let dir = dirs::runtime_dir().unwrap_or_else(std::env::temp_dir);
+    let tmp = dir.join(format!("trontsnap-grab-{}.png", std::process::id()));
+    let tmp_s = tmp.display().to_string();
+    let attempts: [(&str, Vec<&str>); 3] = [
+        ("gnome-screenshot", vec!["-f", &tmp_s]),
+        ("spectacle", vec!["-b", "-n", "-o", &tmp_s]),
+        ("grim", vec![&tmp_s]),
+    ];
+    for (cmd, args) in attempts {
+        let ok = std::process::Command::new(cmd)
+            .args(&args)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if ok && tmp.exists() {
+            let mut img = image::open(&tmp)?.to_rgba8();
+            let _ = std::fs::remove_file(&tmp);
+            // These tools shoot ALL monitors; everything downstream (picker
+            // geometry, cursor math, smart rects) assumes the primary. Crop to
+            // the primary's bounds when the monitor list is available.
+            if let Ok(monitors) = Monitor::all() {
+                if let Some(m) = monitors.iter().find(|m| m.is_primary()).or(monitors.first()) {
+                    let (x, y) = (m.x().max(0) as u32, m.y().max(0) as u32);
+                    let (w, h) = (m.width(), m.height());
+                    if x + w <= img.width() && y + h <= img.height() && (w, h) != img.dimensions() {
+                        img = image::imageops::crop_imm(&img, x, y, w, h).to_image();
+                    }
+                }
+            }
+            return Ok(img);
+        }
+    }
+    anyhow::bail!(
+        "no screen grabber worked (xcap: {xcap_err:#}; also tried gnome-screenshot/spectacle/grim)"
+    )
 }
 
 /// Grab the primary monitor for a screenshot, compositing in the mouse cursor when the

@@ -1,17 +1,15 @@
-// Persisted user settings. Backed by the same HKCU\Software\TrontSnap registry key
-// autostart already uses (winreg is a dependency), so there's no config file to manage.
-// Values are mirrored into process-global atomics so the capture threads read them
-// without touching the registry on the hot path.
+// Persisted user settings. Backed by kvstore.rs — HKCU\Software\TrontSnap on
+// Windows (same values as always, existing installs keep their settings) and
+// ~/.config/trontsnap/settings.conf on Linux. Values are mirrored into
+// process-global atomics so the capture threads read them without touching the
+// backing store on the hot path.
 
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 use std::sync::{LazyLock, RwLock};
 
-use winreg::enums::{HKEY_CURRENT_USER, KEY_READ};
-use winreg::RegKey;
-
 use crate::color::{self, Rgb};
+use crate::kvstore;
 
-const APP_KEY: &str = r"Software\TrontSnap";
 const CAPTURE_CURSOR_VALUE: &str = "CaptureCursor";
 const RECORD_AUDIO_VALUE: &str = "RecordAudio";
 const SHOW_ABOUT_VALUE: &str = "ShowAboutOnLaunch";
@@ -143,86 +141,86 @@ static GRADIENT_CUSTOM: LazyLock<RwLock<[Rgb; 4]>> = LazyLock::new(|| {
 /// Load persisted settings into the atomics. Call once at process start — every mode
 /// captures (the one-shot `full` / `region` launches too), so all of them need it.
 pub fn load() {
-    if let Ok(key) = RegKey::predef(HKEY_CURRENT_USER).open_subkey_with_flags(APP_KEY, KEY_READ) {
+    {
         // A missing value keeps the default (true); only an explicit stored value flips it.
-        if let Ok(v) = key.get_value::<u32, _>(CAPTURE_CURSOR_VALUE) {
+        if let Some(v) = crate::kvstore::get_u32(CAPTURE_CURSOR_VALUE) {
             CAPTURE_CURSOR.store(v != 0, Ordering::Relaxed);
         }
-        if let Ok(v) = key.get_value::<u32, _>(RECORD_AUDIO_VALUE) {
+        if let Some(v) = crate::kvstore::get_u32(RECORD_AUDIO_VALUE) {
             RECORD_AUDIO.store(v != 0, Ordering::Relaxed);
         }
-        if let Ok(v) = key.get_value::<u32, _>(SHOW_ABOUT_VALUE) {
+        if let Some(v) = crate::kvstore::get_u32(SHOW_ABOUT_VALUE) {
             SHOW_ABOUT.store(v != 0, Ordering::Relaxed);
         }
-        if let Ok(v) = key.get_value::<u32, _>(HAS_RUN_VALUE) {
+        if let Some(v) = crate::kvstore::get_u32(HAS_RUN_VALUE) {
             HAS_RUN.store(v != 0, Ordering::Relaxed);
         }
-        if let Ok(v) = key.get_value::<u32, _>(LOUPE_SIZE_VALUE) {
+        if let Some(v) = crate::kvstore::get_u32(LOUPE_SIZE_VALUE) {
             LOUPE_SIZE.store((v as i32).clamp(32, 2000), Ordering::Relaxed);
         }
         // Hotkey binds: a missing value keeps the compiled-in default for that field.
-        if let Ok(v) = key.get_value::<u32, _>(HOTKEY_FULL_MODS_VALUE) {
+        if let Some(v) = crate::kvstore::get_u32(HOTKEY_FULL_MODS_VALUE) {
             HOTKEY_FULL_MODS.store(v, Ordering::Relaxed);
         }
-        if let Ok(v) = key.get_value::<u32, _>(HOTKEY_FULL_VK_VALUE) {
+        if let Some(v) = crate::kvstore::get_u32(HOTKEY_FULL_VK_VALUE) {
             HOTKEY_FULL_VK.store(v, Ordering::Relaxed);
         }
-        if let Ok(v) = key.get_value::<u32, _>(HOTKEY_REGION_MODS_VALUE) {
+        if let Some(v) = crate::kvstore::get_u32(HOTKEY_REGION_MODS_VALUE) {
             HOTKEY_REGION_MODS.store(v, Ordering::Relaxed);
         }
-        if let Ok(v) = key.get_value::<u32, _>(HOTKEY_REGION_VK_VALUE) {
+        if let Some(v) = crate::kvstore::get_u32(HOTKEY_REGION_VK_VALUE) {
             HOTKEY_REGION_VK.store(v, Ordering::Relaxed);
         }
-        if let Ok(v) = key.get_value::<u32, _>(HOTKEY_RECORD_MODS_VALUE) {
+        if let Some(v) = crate::kvstore::get_u32(HOTKEY_RECORD_MODS_VALUE) {
             HOTKEY_RECORD_MODS.store(v, Ordering::Relaxed);
         }
-        if let Ok(v) = key.get_value::<u32, _>(HOTKEY_RECORD_VK_VALUE) {
+        if let Some(v) = crate::kvstore::get_u32(HOTKEY_RECORD_VK_VALUE) {
             HOTKEY_RECORD_VK.store(v, Ordering::Relaxed);
         }
-        if let Ok(v) = key.get_value::<u32, _>(HOTKEY_OCR_MODS_VALUE) {
+        if let Some(v) = crate::kvstore::get_u32(HOTKEY_OCR_MODS_VALUE) {
             HOTKEY_OCR_MODS.store(v, Ordering::Relaxed);
         }
-        if let Ok(v) = key.get_value::<u32, _>(HOTKEY_OCR_VK_VALUE) {
+        if let Some(v) = crate::kvstore::get_u32(HOTKEY_OCR_VK_VALUE) {
             HOTKEY_OCR_VK.store(v, Ordering::Relaxed);
         }
-        if let Ok(v) = key.get_value::<String, _>(THEME_NAME_VALUE) {
+        if let Some(v) = crate::kvstore::get_string(THEME_NAME_VALUE) {
             *THEME_NAME.write().unwrap() = v;
         }
-        if let Ok(v) = key.get_value::<String, _>(THEME_SOURCE_VALUE) {
+        if let Some(v) = crate::kvstore::get_string(THEME_SOURCE_VALUE) {
             let list: Vec<String> =
                 if v.is_empty() { Vec::new() } else { v.split(',').map(|s| s.trim().to_string()).collect() };
             *THEME_SOURCE.write().unwrap() = list;
         }
-        if let Ok(v) = key.get_value::<u32, _>(GRADIENT_VALUE) {
+        if let Some(v) = crate::kvstore::get_u32(GRADIENT_VALUE) {
             GRADIENT.store(v != 0, Ordering::Relaxed);
         }
-        if let Ok(v) = key.get_value::<u32, _>(GRADIENT_ANGLE_VALUE) {
+        if let Some(v) = crate::kvstore::get_u32(GRADIENT_ANGLE_VALUE) {
             GRADIENT_ANGLE.store(v % 360, Ordering::Relaxed);
         }
-        if let Ok(v) = key.get_value::<u32, _>(GRADIENT_INTENSITY_VALUE) {
+        if let Some(v) = crate::kvstore::get_u32(GRADIENT_INTENSITY_VALUE) {
             GRADIENT_INTENSITY_PCT.store(v.min(100), Ordering::Relaxed);
         }
-        if let Ok(v) = key.get_value::<u32, _>(GRADIENT_FROST_VALUE) {
+        if let Some(v) = crate::kvstore::get_u32(GRADIENT_FROST_VALUE) {
             GRADIENT_FROST_PCT.store(v.min(100), Ordering::Relaxed);
         }
-        if let Ok(v) = key.get_value::<u32, _>(GRADIENT_FROST_LIGHT_VALUE) {
+        if let Some(v) = crate::kvstore::get_u32(GRADIENT_FROST_LIGHT_VALUE) {
             GRADIENT_FROST_LIGHT_PCT.store(v.min(100), Ordering::Relaxed);
         }
-        if let Ok(v) = key.get_value::<String, _>(THEME_MODE_VALUE) {
+        if let Some(v) = crate::kvstore::get_string(THEME_MODE_VALUE) {
             *THEME_MODE.write().unwrap() = v;
         }
-        if let Ok(v) = key.get_value::<u32, _>(GRADIENT_PEGS_VALUE) {
+        if let Some(v) = crate::kvstore::get_u32(GRADIENT_PEGS_VALUE) {
             GRADIENT_PEGS.store(v.clamp(1, 4), Ordering::Relaxed);
         }
-        if let Ok(v) = key.get_value::<u32, _>(GRADIENT_HARMONY_VALUE) {
+        if let Some(v) = crate::kvstore::get_u32(GRADIENT_HARMONY_VALUE) {
             GRADIENT_HARMONY.store(v, Ordering::Relaxed);
         }
-        if let Ok(v) = key.get_value::<String, _>(GRADIENT_PRESET_VALUE) {
+        if let Some(v) = crate::kvstore::get_string(GRADIENT_PRESET_VALUE) {
             if let Ok(p) = v.trim().parse::<i16>() {
                 *GRADIENT_PRESET.write().unwrap() = p;
             }
         }
-        if let Ok(v) = key.get_value::<String, _>(GRADIENT_CUSTOM_VALUE) {
+        if let Some(v) = crate::kvstore::get_string(GRADIENT_CUSTOM_VALUE) {
             let mut pegs = *GRADIENT_CUSTOM.read().unwrap();
             for (i, hex) in v.split(',').take(4).enumerate() {
                 if let Some(rgb) = color::hex_to_rgb(hex.trim()) {
@@ -231,7 +229,7 @@ pub fn load() {
             }
             *GRADIENT_CUSTOM.write().unwrap() = pegs;
         }
-        if let Ok(v) = key.get_value::<u32, _>(GRADIENT_PRESET_SYNC_VALUE) {
+        if let Some(v) = crate::kvstore::get_u32(GRADIENT_PRESET_SYNC_VALUE) {
             GRADIENT_PRESET_SYNC.store(v != 0, Ordering::Relaxed);
         }
     }
@@ -271,9 +269,7 @@ pub fn loupe_size() -> i32 {
 pub fn set_loupe_size(px: i32) {
     let clamped = px.clamp(32, 2000);
     LOUPE_SIZE.store(clamped, Ordering::Relaxed);
-    if let Ok((key, _)) = RegKey::predef(HKEY_CURRENT_USER).create_subkey(APP_KEY) {
-        let _ = key.set_value(LOUPE_SIZE_VALUE, &(clamped as u32));
-    }
+    kvstore::set_u32(LOUPE_SIZE_VALUE, clamped as u32);
 }
 
 /// Current (modifiers, virtual-key) bind for one hotkey action.
@@ -336,15 +332,11 @@ pub fn reset_hotkeys() {
 }
 
 fn persist_u32(value: &str, v: u32) {
-    if let Ok((key, _)) = RegKey::predef(HKEY_CURRENT_USER).create_subkey(APP_KEY) {
-        let _ = key.set_value(value, &v);
-    }
+    kvstore::set_u32(value, v);
 }
 
 fn persist_str(value: &str, s: &str) {
-    if let Ok((key, _)) = RegKey::predef(HKEY_CURRENT_USER).create_subkey(APP_KEY) {
-        let _ = key.set_value(value, &s.to_string());
-    }
+    kvstore::set_string(value, s);
 }
 
 /// Current persisted theme name ("Cyan" by default).
@@ -486,7 +478,5 @@ pub fn set_has_run() {
 }
 
 fn persist(value: &str, on: bool) {
-    if let Ok((key, _)) = RegKey::predef(HKEY_CURRENT_USER).create_subkey(APP_KEY) {
-        let _ = key.set_value(value, &u32::from(on));
-    }
+    kvstore::set_u32(value, u32::from(on));
 }

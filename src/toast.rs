@@ -20,6 +20,7 @@ use image::RgbaImage;
 ///
 /// Best-effort: the capture is already saved and on the clipboard by now, so a
 /// failed toast never loses anything.
+#[cfg(windows)]
 pub fn launch(path: &Path, clipboard_ok: bool) {
     let Ok(exe) = std::env::current_exe() else { return };
     let mut params = format!("toast \"{}\"", path.display());
@@ -31,11 +32,27 @@ pub fn launch(path: &Path, clipboard_ok: bool) {
     }
 }
 
+/// Linux: a plain Command (args passed structurally, so paths with spaces
+/// survive without the quoting dance ShellExecuteW needs).
+#[cfg(not(windows))]
+pub fn launch(path: &Path, clipboard_ok: bool) {
+    let Ok(exe) = std::env::current_exe() else { return };
+    let mut cmd = std::process::Command::new(exe);
+    cmd.arg("toast").arg(path);
+    if !clipboard_ok {
+        cmd.arg("--clipboard-failed");
+    }
+    if !crate::shellexec::spawn_detached(cmd) {
+        eprintln!("trontsnap: toast launch failed");
+    }
+}
+
 const W: f32 = 340.0;
 const H: f32 = 188.0;
 /// How long the toast stays up once the cursor is NOT on it.
 const DWELL: Duration = Duration::from_millis(2600);
 /// Pointer travel (physical px) that turns a press into a drag rather than a click.
+#[cfg(windows)]
 const DRAG_SLOP: i32 = 6;
 
 pub fn show(path: PathBuf, clipboard_ok: bool) -> anyhow::Result<()> {
@@ -116,25 +133,53 @@ impl Toast {
 }
 
 impl eframe::App for Toast {
+    // `frame` feeds the Win32 polling helpers; unused in the Linux input path.
+    #[cfg_attr(not(windows), allow(unused_variables))]
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         // Dock bottom-right of the work area once, in physical pixels via Win32
         // (deterministic — avoids eframe OuterPosition point/pixel ambiguity).
+        // Linux: best-effort via the monitor size the viewport reports (works on
+        // X11; Wayland compositors place windows themselves and ignore it).
         if !self.positioned {
-            position_bottom_right(frame);
-            self.positioned = true;
+            #[cfg(windows)]
+            {
+                position_bottom_right(frame);
+                self.positioned = true;
+            }
+            #[cfg(not(windows))]
+            {
+                if let Some(monitor) = ctx.input(|i| i.viewport().monitor_size) {
+                    let ppp = ctx.pixels_per_point();
+                    let pos = egui::pos2(monitor.x - W - 24.0 / ppp, monitor.y - H - 48.0 / ppp);
+                    ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(pos));
+                    self.positioned = true;
+                }
+            }
         }
 
-        // All pointer handling is Win32 polling, not egui: the toast is a
-        // non-activating always-on-top tool window, so egui never receives the
-        // input events it would normally use for clicks and drags.
-        let over = cursor_over_window(frame);
-        let btn = left_button_down();
+        // All pointer handling on Windows is Win32 polling, not egui: the toast
+        // is a non-activating always-on-top tool window there, so egui never
+        // receives input events. On Linux it's an ordinary window and egui's own
+        // pointer state is the source of truth.
+        #[cfg(windows)]
+        let (over, btn) = (cursor_over_window(frame), left_button_down());
+        #[cfg(not(windows))]
+        let (over, btn) =
+            ctx.input(|i| (i.pointer.hover_pos().is_some(), i.pointer.primary_down()));
         // Edit chip hover, from the rect the previous frame drew (30ms stale at
         // worst, invisible in practice). Videos have no editor.
+        #[cfg(windows)]
         let over_edit = !crate::index::is_video(&self.path)
             && self
                 .edit_rect
                 .map(|r| cursor_over_logical(frame, ctx, r))
+                .unwrap_or(false);
+        #[cfg(not(windows))]
+        let over_edit = !crate::index::is_video(&self.path)
+            && self
+                .edit_rect
+                .zip(ctx.input(|i| i.pointer.hover_pos()))
+                .map(|(r, p)| r.contains(p))
                 .unwrap_or(false);
 
         // HOVER HOLDS THE TOAST OPEN. Pushing `born` forward every hovered frame
@@ -151,7 +196,16 @@ impl eframe::App for Toast {
 
         // Press starts a gesture that is not yet known to be a click or a drag.
         if btn && !self.was_pressed && over {
-            self.press_at = cursor_pos();
+            #[cfg(windows)]
+            {
+                self.press_at = cursor_pos();
+            }
+            #[cfg(not(windows))]
+            {
+                // No global cursor on Linux (and no drag-out yet) — any press is
+                // a click gesture; the sentinel keeps the shared release logic.
+                self.press_at = Some((0, 0));
+            }
             self.dragging = false;
         }
 
@@ -159,6 +213,8 @@ impl eframe::App for Toast {
         // capture can be dropped straight into Discord, a terminal or an editor
         // without going near the gallery. start_file_drag is modal and blocks
         // until the drop resolves, which is why the toast closes right after.
+        // (Windows-only: Linux has no drag-out backend yet.)
+        #[cfg(windows)]
         if btn && !self.dragging {
             if let (Some((sx, sy)), Some((cx, cy))) = (self.press_at, cursor_pos()) {
                 if (cx - sx).abs() > DRAG_SLOP || (cy - sy).abs() > DRAG_SLOP {
@@ -335,6 +391,7 @@ impl eframe::App for Toast {
 }
 
 /// Cursor position in physical screen pixels, or None if Win32 refuses.
+#[cfg(windows)]
 fn cursor_pos() -> Option<(i32, i32)> {
     use windows::Win32::Foundation::POINT;
     use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
@@ -346,6 +403,7 @@ fn cursor_pos() -> Option<(i32, i32)> {
 }
 
 /// The toast's own HWND as an isize, for handing to the OLE drag helper.
+#[cfg(windows)]
 fn window_hwnd(frame: &eframe::Frame) -> Option<isize> {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     match frame.window_handle().ok().map(|h| h.as_raw()) {
@@ -355,12 +413,14 @@ fn window_hwnd(frame: &eframe::Frame) -> Option<isize> {
 }
 
 /// Is the physical left mouse button currently down? (Global, focus-independent.)
+#[cfg(windows)]
 fn left_button_down() -> bool {
     use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
     unsafe { (GetAsyncKeyState(VK_LBUTTON.0 as i32) as u16 & 0x8000) != 0 }
 }
 
 /// Is the mouse cursor currently over the toast window? Win32 rect test in physical px.
+#[cfg(windows)]
 fn cursor_over_window(frame: &eframe::Frame) -> bool {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     use windows::Win32::Foundation::{HWND, POINT, RECT};
@@ -386,6 +446,7 @@ fn cursor_over_window(frame: &eframe::Frame) -> bool {
 /// Is the cursor inside `rect` (egui logical coords) of this window? Same
 /// physical-px polling as cursor_over_window, mapped through the scale factor.
 /// Valid because the toast is undecorated: client rect == window rect.
+#[cfg(windows)]
 fn cursor_over_logical(frame: &eframe::Frame, ctx: &egui::Context, rect: egui::Rect) -> bool {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     use windows::Win32::Foundation::{HWND, POINT, RECT};
@@ -413,6 +474,7 @@ fn cursor_over_logical(frame: &eframe::Frame, ctx: &egui::Context, rect: egui::R
 
 /// Move the toast to the bottom-right of the primary work area (excludes the
 /// taskbar), in physical pixels.
+#[cfg(windows)]
 fn position_bottom_right(frame: &eframe::Frame) {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     use windows::Win32::Foundation::{HWND, RECT};

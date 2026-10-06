@@ -131,6 +131,7 @@ pub fn mode_pref() -> ModePref {
 /// Does Windows want dark app chrome? `AppsUseLightTheme` is a DWORD where 0
 /// means dark; a missing value (older builds, or a policy-managed machine) is
 /// treated as light, which is what Windows itself defaults to.
+#[cfg(windows)]
 pub fn windows_prefers_dark() -> bool {
     use winreg::enums::HKEY_CURRENT_USER;
     use winreg::RegKey;
@@ -138,6 +139,19 @@ pub fn windows_prefers_dark() -> bool {
         .open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize")
         .and_then(|k| k.get_value::<u32, _>("AppsUseLightTheme"))
         .map(|v| v == 0)
+        .unwrap_or(false)
+}
+
+/// Same question on Linux (name kept so call sites stay identical): the
+/// freedesktop color-scheme preference via gsettings. Only polled on Auto mode
+/// behind poll_system_mode's own multi-second throttle, so the subprocess spawn
+/// never lands on a hot path.
+#[cfg(not(windows))]
+pub fn windows_prefers_dark() -> bool {
+    std::process::Command::new("gsettings")
+        .args(["get", "org.gnome.desktop.interface", "color-scheme"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).contains("dark"))
         .unwrap_or(false)
 }
 

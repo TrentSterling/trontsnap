@@ -1,6 +1,6 @@
 # TrontSnap
 
-Fast Windows screenshot tool with a lazy-loading gallery over your entire capture history. Built in Rust, raised on a decade of ShareX habits.
+Fast screenshot tool with a lazy-loading gallery over your entire capture history. Built in Rust, raised on a decade of ShareX habits. Windows-native, with a Linux port (see [LINUX.md](LINUX.md)) that ships as an AppImage.
 
 ![The current TrontSnap gallery](docs/media/gallery-dark.webp)
 

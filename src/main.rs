@@ -12,32 +12,103 @@
 // Every capture goes to the clipboard (lossless) AND saves a PNG to Pictures\TrontSnap.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+// Platform split: the OS-integration modules exist twice — the original Win32
+// implementation and a Linux twin under src/linux/ with the SAME module name and
+// public API, selected here with #[path]. The 8k+ lines of UI code (app, gallery,
+// editor, theme, settings UI) call `crate::clipboard::set_all(..)` etc. and never
+// know which one they got. Keep the APIs in lockstep when touching either side.
 mod app;
-mod audio;
-mod autostart;
 mod capture;
-mod clipboard;
 mod color;
-mod cursor;
 mod editor;
 mod gallery;
 mod gifexport;
 mod index;
-mod keyhook;
-mod ocr;
-mod overlay;
-mod printscreen;
-mod recorder;
-mod region_win32;
+mod kvstore;
 mod settings;
-mod shellexec;
-mod sound;
+mod shutter_wav;
 mod theme;
 mod thumbs;
 mod toast;
-mod videothumb;
 mod watcher;
 mod window_chrome;
+
+#[cfg(windows)]
+mod audio; // WASAPI loopback; the Linux recorder lets ffmpeg own audio instead
+
+#[cfg(windows)]
+mod autostart;
+#[cfg(not(windows))]
+#[path = "linux/autostart.rs"]
+mod autostart;
+
+#[cfg(windows)]
+mod clipboard;
+#[cfg(not(windows))]
+#[path = "linux/clipboard.rs"]
+mod clipboard;
+
+#[cfg(windows)]
+mod cursor;
+#[cfg(not(windows))]
+#[path = "linux/cursor.rs"]
+mod cursor;
+
+#[cfg(windows)]
+mod keyhook;
+#[cfg(not(windows))]
+#[path = "linux/keyhook.rs"]
+mod keyhook;
+
+#[cfg(windows)]
+mod ocr;
+#[cfg(not(windows))]
+#[path = "linux/ocr.rs"]
+mod ocr;
+
+#[cfg(windows)]
+mod overlay;
+#[cfg(not(windows))]
+#[path = "linux/overlay.rs"]
+mod overlay;
+
+#[cfg(windows)]
+mod printscreen;
+#[cfg(not(windows))]
+#[path = "linux/printscreen.rs"]
+mod printscreen;
+
+#[cfg(windows)]
+mod recorder;
+#[cfg(not(windows))]
+#[path = "linux/recorder.rs"]
+mod recorder;
+
+// The module keeps its Windows name on both platforms so app.rs/main.rs call
+// sites stay identical; the Linux file is an egui freeze-frame picker.
+#[cfg(windows)]
+mod region_win32;
+#[cfg(not(windows))]
+#[path = "linux/region.rs"]
+mod region_win32;
+
+#[cfg(windows)]
+mod shellexec;
+#[cfg(not(windows))]
+#[path = "linux/shellexec.rs"]
+mod shellexec;
+
+#[cfg(windows)]
+mod sound;
+#[cfg(not(windows))]
+#[path = "linux/sound.rs"]
+mod sound;
+
+#[cfg(windows)]
+mod videothumb;
+#[cfg(not(windows))]
+#[path = "linux/videothumb.rs"]
+mod videothumb;
 
 #[cfg(test)]
 mod visual;

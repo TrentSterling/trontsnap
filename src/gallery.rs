@@ -951,8 +951,14 @@ fn reveal(path: &Path) {
     crate::shellexec::run("explorer.exe", &format!("/select,\"{}\"", path.display()));
 }
 
+/// Linux: opener::reveal goes through the file manager's D-Bus ShowItems where
+/// available (Nautilus etc.), falling back to opening the containing folder.
 #[cfg(not(windows))]
-fn reveal(_path: &Path) {}
+fn reveal(path: &Path) {
+    if let Err(e) = opener::reveal(path) {
+        eprintln!("trontsnap: reveal failed: {e:#}");
+    }
+}
 
 #[cfg(test)]
 #[path = "gallery/preview.rs"]
