@@ -6,5 +6,23 @@ Comment=Fast screenshots, full history, no cloud
 Exec=trontsnap
 Icon=trontsnap
 Terminal=false
-Categories=Graphics;Utility;
-Keywords=screenshot;capture;screen;recording;ocr;
+# One main category only: "Graphics;Utility" trips desktop-file-validate (menu
+# shows the app twice). Packaged under the app-id name (xyz.tront.TrontSnap.desktop).
+Categories=Graphics;2DGraphics;RasterGraphics;Viewer;
+Keywords=screenshot;screen capture;snip;snipping;capture;screencast;recording;ocr;annotate;redact;gallery;sharex;
+# winit on X11 sets WM_CLASS to the exe name; this is what lets the shell match
+# the window to this entry (the file itself is named after the app-id).
+StartupWMClass=trontsnap
+Actions=region;full;ocr;
+
+[Desktop Action region]
+Name=Capture Region
+Exec=trontsnap region
+
+[Desktop Action full]
+Name=Capture Full Screen
+Exec=trontsnap full
+
+[Desktop Action ocr]
+Name=Copy Text From Region (OCR)
+Exec=trontsnap ocr

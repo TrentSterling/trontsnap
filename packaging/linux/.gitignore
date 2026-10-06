@@ -1,0 +1,9 @@
+# Release output + downloaded tools. Kept in a nested ignore so the repo root
+# .gitignore stays untouched; nothing here may ever be committed.
+dist/
+tools/
+*.AppImage
+*.zsync
+*.deb
+*.tar.gz
+SHA256SUMS

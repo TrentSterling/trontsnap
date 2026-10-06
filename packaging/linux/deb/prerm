@@ -1,0 +1,45 @@
+#!/bin/sh
+# Ask a running TrontSnap to exit before its binary is replaced or removed.
+# SIGTERM only, and we wait a few seconds rather than escalate: a recording
+# in flight gets its normal shutdown path, and a stuck instance is left alone
+# (it keeps running from the old, unlinked inode) instead of being SIGKILLed
+# out from under the user.
+#
+# Matches by /proc/PID/exe so an AppImage or ~/.local copy of the app, which
+# has the same process name, is not touched.
+set -e
+
+stop_running() {
+    pids=""
+    for exe in /proc/[0-9]*/exe; do
+        target="$(readlink "$exe" 2>/dev/null)" || continue
+        case "$target" in
+            "/usr/bin/trontsnap"|"/usr/bin/trontsnap (deleted)")
+                pid="${exe#/proc/}"
+                pids="$pids ${pid%/exe}"
+                ;;
+        esac
+    done
+    [ -n "$pids" ] || return 0
+
+    # shellcheck disable=SC2086  # word-splitting the pid list is the point
+    kill -TERM $pids 2>/dev/null || true
+    for _ in 1 2 3 4 5; do
+        alive=""
+        for pid in $pids; do
+            [ -d "/proc/$pid" ] && alive="$alive $pid"
+        done
+        [ -n "$alive" ] || return 0
+        pids="$alive"
+        sleep 1
+    done
+    echo "trontsnap: still running (pid$pids); restart it after the upgrade." >&2
+}
+
+case "$1" in
+    remove|upgrade|deconfigure)
+        stop_running || true
+        ;;
+esac
+
+exit 0

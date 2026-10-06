@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  AppStream metadata. Shared by the .deb, the AppImage and the Flatpak, so keep
+  the id identical to the Flatpak app-id. build-*.sh stamp a <release> for the
+  version being built if the list below lacks it (see lib.sh), so adding one by
+  hand is optional.
+  Screenshots are fetched from the main branch of the GitHub repo; they only
+  resolve while docs/media/* stays on main.
+-->
+<component type="desktop-application">
+  <id>xyz.tront.TrontSnap</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <!-- HARD-WON: the repo ships no LICENSE file, so "not open source" is the only
+       claim the tree backs up. Replace with an SPDX id once Trent picks one. -->
+  <project_license>LicenseRef-proprietary</project_license>
+  <name>TrontSnap</name>
+  <summary>Fast screenshots, recording and OCR with a searchable history</summary>
+  <developer_name>Trent Sterling</developer_name>
+  <description>
+    <p>
+      TrontSnap grabs the whole screen or a region you drag out, copies it to
+      the clipboard right away and saves a PNG to Pictures/TrontSnap. A
+      gallery over your whole capture history (an existing ShareX archive is
+      merged in) updates live as new shots land.
+    </p>
+    <ul>
+      <li>Full-screen and freeze-frame region capture, one-shot from the command line or a keybinding</li>
+      <li>Annotation editor with arrows, boxes, text, crop and redaction that really redacts</li>
+      <li>Copy the text out of any region with offline OCR (needs tesseract)</li>
+      <li>Screen recording to video, with audio when enabled</li>
+      <li>Searchable, lazy-loading history gallery with themes</li>
+    </ul>
+    <p>
+      On GNOME it installs Print, Ctrl+Print, Ctrl+Shift+Print and Ctrl+Alt+Print
+      keybindings on first launch. On other desktops, bind the same commands
+      (trontsnap full, region, ocr) in your keyboard settings.
+    </p>
+  </description>
+  <launchable type="desktop-id">xyz.tront.TrontSnap.desktop</launchable>
+  <provides>
+    <binary>trontsnap</binary>
+  </provides>
+  <url type="homepage">https://tront.xyz/trontsnap/</url>
+  <url type="bugtracker">https://github.com/TrentSterling/trontsnap/issues</url>
+  <url type="vcs-browser">https://github.com/TrentSterling/trontsnap</url>
+  <categories>
+    <category>Graphics</category>
+    <category>Utility</category>
+  </categories>
+  <keywords>
+    <keyword>screenshot</keyword>
+    <keyword>screen capture</keyword>
+    <keyword>screen recording</keyword>
+    <keyword>ocr</keyword>
+    <keyword>annotate</keyword>
+  </keywords>
+  <content_rating type="oars-1.1"/>
+  <screenshots>
+    <screenshot type="default">
+      <caption>The history gallery, dark theme</caption>
+      <image type="source" width="1400" height="820">https://raw.githubusercontent.com/TrentSterling/trontsnap/main/docs/media/gallery-dark.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Light theme with a custom accent</caption>
+      <image type="source" width="1400" height="820">https://raw.githubusercontent.com/TrentSterling/trontsnap/main/docs/media/gallery-light.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Annotation editor with arrow, box and redaction</caption>
+      <image type="source" width="1200" height="760">https://raw.githubusercontent.com/TrentSterling/trontsnap/main/docs/media/editor.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Theme engine: palettes, accent picker and gradient wash</caption>
+      <image type="source" width="1400" height="820">https://raw.githubusercontent.com/TrentSterling/trontsnap/main/docs/media/theme.png</image>
+    </screenshot>
+  </screenshots>
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </supports>
+  <releases>
+    <release version="0.25.0" date="2026-10-02">
+      <url type="details">https://github.com/TrentSterling/trontsnap/releases/tag/v0.25.0</url>
+    </release>
+    <release version="0.24.3" date="2026-08-21">
+      <url type="details">https://github.com/TrentSterling/trontsnap/releases/tag/v0.24.3</url>
+    </release>
+    <release version="0.24.2" date="2026-08-14">
+      <url type="details">https://github.com/TrentSterling/trontsnap/releases/tag/v0.24.2</url>
+    </release>
+    <release version="0.24.1" date="2026-08-14">
+      <url type="details">https://github.com/TrentSterling/trontsnap/releases/tag/v0.24.1</url>
+    </release>
+    <release version="0.24.0" date="2026-08-01">
+      <url type="details">https://github.com/TrentSterling/trontsnap/releases/tag/v0.24.0</url>
+    </release>
+  </releases>
+</component>

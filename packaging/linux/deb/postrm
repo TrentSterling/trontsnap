@@ -1,0 +1,18 @@
+#!/bin/sh
+# Same cache refresh after the files are gone. Never touches $HOME: the user's
+# settings, captures, autostart entry and GNOME keybindings are theirs (the
+# autostart/keybinding entries become harmless dead links; see README.md).
+set -e
+
+case "$1" in
+    remove|purge)
+        if command -v update-desktop-database >/dev/null 2>&1; then
+            update-desktop-database -q /usr/share/applications || true
+        fi
+        if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+            gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor || true
+        fi
+        ;;
+esac
+
+exit 0

@@ -1,21 +1,34 @@
-# Flatpak manifest for TrontSnap (local builds).
+# Flatpak manifest for TrontSnap (local builds only).
 #
-#   flatpak-builder --user --install --force-clean --share=network \
+#   flatpak install flathub org.freedesktop.Platform//24.08 org.freedesktop.Sdk//24.08 \
+#       org.freedesktop.Sdk.Extension.rust-stable//24.08
+#   flatpak-builder --user --install --force-clean \
 #       target/flatpak-build packaging/linux/xyz.tront.TrontSnap.yml
 #
-# --share=network lets cargo fetch crates during the build; a Flathub submission
-# would need the offline cargo-sources.json dance instead (flatpak-cargo-generator),
-# which is deliberately out of scope until there's a reason to be on Flathub.
+# STATUS: EXPERIMENTAL, NOT BUILT IN CI, and not the way to run TrontSnap. Use the
+# .deb, the AppImage or the tarball. This manifest was refreshed (runtime 23.08 ->
+# 24.08) without a flatpak-builder run: the build has not been verified on this
+# runtime, and the rust-stable extension must be new enough for Cargo.lock.
+# 25.08 is the newer runtime; bump when this gets its first real test.
 #
-# Permission notes: TrontSnap is a screenshot tool, so it is NOT a sandbox
-# poster child — it needs the host's display, your Pictures dir, and it shells
-# out to host tools (wl-copy, ffmpeg, gnome-screenshot, tesseract) via
-# --talk-name=org.freedesktop.Flatpak + flatpak-spawn --host. The AppImage is
-# the primary Linux artifact; this manifest exists so a flatpak-preferring
-# machine can still install it.
+# What does NOT work inside the sandbox today (the app shells out to HOST tools and
+# never calls flatpak-spawn):
+#   - clipboard: wl-copy / xclip are not in the runtime, so copy-on-capture fails
+#   - recording, GIF export, video thumbnails: no ffmpeg binary in the runtime
+#   - OCR: no tesseract
+#   - GNOME keybindings + autostart: the app writes its own current_exe() into
+#     them, which here is /app/bin/trontsnap -- a path the host cannot execute
+# Fixing those takes app changes (write `flatpak run xyz.tront.TrontSnap ...`
+# commands) and/or bundled modules, not just permissions. Capture itself should
+# go through the desktop portal.
+#
+# Deliberately NOT granted, because they would buy nothing today:
+#   --talk-name=org.freedesktop.Flatpak   (flatpak-spawn --host: nothing calls it,
+#                                          and it is a full sandbox escape)
+#   --filesystem=xdg-config/autostart:create   (see the autostart note above)
 app-id: xyz.tront.TrontSnap
 runtime: org.freedesktop.Platform
-runtime-version: '23.08'
+runtime-version: '24.08'
 sdk: org.freedesktop.Sdk
 sdk-extensions:
   - org.freedesktop.Sdk.Extension.rust-stable
@@ -28,10 +41,13 @@ finish-args:
   - --socket=pulseaudio
   - --filesystem=xdg-pictures
   - --filesystem=xdg-documents:ro   # legacy ShareX archive, read-only
-  - --filesystem=xdg-config/autostart:create
-  - --talk-name=org.freedesktop.Flatpak
 build-options:
   append-path: /usr/lib/sdk/rust-stable/bin
+  # The build is online: cargo fetches crates. (This is a manifest setting, not a
+  # flatpak-builder flag.) A Flathub submission would need offline cargo sources
+  # (flatpak-cargo-generator) instead; out of scope until there is a reason.
+  build-args:
+    - --share=network
   env:
     CARGO_HOME: /run/build/trontsnap/cargo
 modules:
@@ -42,7 +58,19 @@ modules:
       - install -Dm755 target/release/trontsnap /app/bin/trontsnap
       - install -Dm644 packaging/linux/trontsnap.desktop /app/share/applications/xyz.tront.TrontSnap.desktop
       - sed -i 's/^Icon=.*/Icon=xyz.tront.TrontSnap/' /app/share/applications/xyz.tront.TrontSnap.desktop
-      - install -Dm644 assets/trontsnap.png /app/share/icons/hicolor/256x256/apps/xyz.tront.TrontSnap.png
+      - install -Dm644 packaging/linux/xyz.tront.TrontSnap.metainfo.xml /app/share/metainfo/xyz.tront.TrontSnap.metainfo.xml
+      # Icon sizes come out of assets/icon.ico (python3 is in the SDK).
+      - python3 -I packaging/linux/ico-extract.py assets/icon.ico icons-out
+      - for f in icons-out/*.png; do n=$(basename "$f" .png); install -Dm644 "$f" "/app/share/icons/hicolor/${n}x${n}/apps/xyz.tront.TrontSnap.png"; done
+      - install -Dm644 packaging/linux/copyright /app/share/licenses/xyz.tront.TrontSnap/copyright
+      - install -Dm644 assets/fonts/OFL.txt /app/share/licenses/xyz.tront.TrontSnap/Rajdhani-OFL.txt
     sources:
       - type: dir
         path: ../..
+        # HARD-WON: a dir source copies everything, including target/ (gigabytes)
+        # and the harness output, into the build sandbox.
+        skip:
+          - target
+          - harness_out
+          - dist
+          - .git
