@@ -5,6 +5,7 @@ impl Gallery {
     /// the user's capture roots, cache, watcher or background workers.
     pub(crate) fn preview(ctx: &egui::Context, paths: &[PathBuf]) -> Self {
         let (notice_tx, notice_rx) = crossbeam_channel::unbounded();
+        let (del_tx, del_rx) = crossbeam_channel::unbounded();
         Self {
             shots: paths
                 .iter()
@@ -35,6 +36,14 @@ impl Gallery {
             watcher: None,
             notice_tx,
             notice_rx,
+            ctx: ctx.clone(),
+            del_tx,
+            del_rx,
+            deleting: false,
+            search_active: false,
+            has_sharex: true,
+            trace: false,
+            last_trace: String::new(),
         }
     }
 }
