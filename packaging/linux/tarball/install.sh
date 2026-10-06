@@ -23,6 +23,14 @@ fi
 BIN="$PREFIX/bin/trontsnap"
 APP_ID=xyz.tront.TrontSnap
 
+# HARD-WON: BIN is written into a quoted Exec= line below, and the desktop-entry spec
+# keeps % $ ` \ and " special even inside quotes (escaping them needs rules that differ
+# between launchers). Refuse such a PREFIX instead of shipping a mangled menu entry.
+if [[ $BIN == *[\"\`\\\$%]* ]]; then
+    echo "PREFIX must not contain any of: \" \` \\ \$ %   (got: $PREFIX)" >&2
+    exit 1
+fi
+
 # Temp name + rename: replacing a binary that is currently running must not hit
 # "Text file busy", and a failed copy must not leave half a binary behind.
 install -d "$PREFIX/bin"
