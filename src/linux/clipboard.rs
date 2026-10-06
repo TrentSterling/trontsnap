@@ -17,7 +17,8 @@
 use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 use image::RgbaImage;
 
@@ -85,9 +86,24 @@ fn tool() -> Option<Tool> {
     })
 }
 
+/// One clipboard write at a time per process. HARD-WON: two quick gallery copies each ran on their
+/// own thread, so whichever owner claimed CLIPBOARD LAST won, not the last click. Held across the
+/// whole handoff (the READY wait / the tool's exit), so writes land in click order.
+static WRITE_LOCK: Mutex<()> = Mutex::new(());
+
+fn write_lock() -> std::sync::MutexGuard<'static, ()> {
+    WRITE_LOCK.lock().unwrap_or_else(|p| p.into_inner())
+}
+static ERR_SEQ: AtomicU32 = AtomicU32::new(0);
+
 /// Pipe `bytes` into the session's clipboard tool under MIME `mime`.
 /// The tool forks and keeps owning the selection after this returns.
 fn pipe_to_clipboard(mime: &str, bytes: &[u8]) -> anyhow::Result<()> {
+    let _one_at_a_time = write_lock();
+    pipe_unlocked(mime, bytes)
+}
+
+fn pipe_unlocked(mime: &str, bytes: &[u8]) -> anyhow::Result<()> {
     let mut cmd = match tool() {
         Some(Tool::WlCopy) => {
             let mut c = Command::new("wl-copy");
@@ -110,7 +126,7 @@ fn pipe_to_clipboard(mime: &str, bytes: &[u8]) -> anyhow::Result<()> {
     // block forever and closing it could SIGPIPE the daemon on a late message.
     let err_path = dirs::runtime_dir()
         .unwrap_or_else(std::env::temp_dir)
-        .join(format!("trontsnap-clip-{}.err", std::process::id()));
+        .join(format!("trontsnap-clip-{}-{}.err", std::process::id(), ERR_SEQ.fetch_add(1, Ordering::Relaxed)));
     let err_file = std::fs::File::create(&err_path)?;
     let mut child = cmd.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(err_file).spawn()?;
     let wrote = child
@@ -163,11 +179,12 @@ fn serve_or_fallback(
     fallback_mime: &str,
     fallback_bytes: &[u8],
 ) -> anyhow::Result<()> {
+    let _one_at_a_time = write_lock(); // across the fallback too
     match crate::clipserve::serve(offer) {
         Ok(()) => Ok(()),
         Err(e) => {
             log_line(&format!("clip-serve failed ({e:#}); single-target fallback"));
-            pipe_to_clipboard(fallback_mime, fallback_bytes)
+            pipe_unlocked(fallback_mime, fallback_bytes)
         }
     }
 }

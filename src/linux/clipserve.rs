@@ -70,14 +70,19 @@ pub fn serve(offer: Offer<'_>) -> anyhow::Result<()> {
 
     let mut cmd = Command::new(exe);
     cmd.arg("clip-serve");
+    // HARD-WON: the file list rides stdin (NUL-separated), not argv: ~17k paths is near ARG_MAX and
+    // an E2BIG spawn failure silently fell back to the single-target xclip (uri-list only).
+    let files_blob: Vec<u8>;
     let payload: &[u8] = match &offer {
         Offer::Image { png, path } => {
             cmd.arg("image").arg(path);
             png
         }
         Offer::Files(paths) => {
-            cmd.arg("files").args(paths.iter());
-            &[]
+            use std::os::unix::ffi::OsStrExt as _;
+            cmd.arg("files");
+            files_blob = paths.iter().flat_map(|p| p.as_os_str().as_bytes().iter().copied().chain([0u8])).collect();
+            &files_blob
         }
     };
     // Own process group: the owner must survive the hotkey's process-group cleanup.
@@ -144,11 +149,22 @@ fn uri_blobs(paths: &[PathBuf]) -> (Vec<u8>, Vec<u8>) {
     (list.into_bytes(), gnome.into_bytes())
 }
 
-/// Child entry point: argv = clip-serve (image <path> | files <path>...).
+/// Child entry point: argv = clip-serve (image <path> | files [<path>...]); `files` without paths
+/// reads them from stdin, NUL-separated (what the parent sends).
 pub fn run() -> anyhow::Result<()> {
     let mut args = std::env::args_os().skip(2);
     let kind = args.next().ok_or_else(|| anyhow!("missing kind"))?;
-    let paths: Vec<PathBuf> = args.map(PathBuf::from).collect();
+    let mut paths: Vec<PathBuf> = args.map(PathBuf::from).collect();
+    if kind == OsString::from("files") && paths.is_empty() {
+        use std::os::unix::ffi::OsStringExt as _;
+        let mut blob = Vec::new();
+        std::io::stdin().read_to_end(&mut blob)?;
+        paths = blob
+            .split(|&b| b == 0)
+            .filter(|p| !p.is_empty())
+            .map(|p| PathBuf::from(OsString::from_vec(p.to_vec())))
+            .collect();
+    }
 
     // (target name, reply type name, bytes); resolved to atoms below.
     let mut set: Vec<(&str, &str, Vec<u8>)> = Vec::new();
