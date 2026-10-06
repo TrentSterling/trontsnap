@@ -62,6 +62,23 @@ const DWELL: Duration = Duration::from_millis(2600);
 #[cfg(windows)]
 const DRAG_SLOP: i32 = 6;
 
+/// Open the capture in the default app. Linux: a reaped xdg-open (opener drops its Child,
+/// leaving a zombie); Windows keeps opener.
+fn open_capture(path: &Path) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        opener::open(path).map_err(|e| format!("{e:#}"))
+    }
+    #[cfg(not(windows))]
+    {
+        if crate::shellexec::open(path) {
+            Ok(())
+        } else {
+            opener::open(path).map_err(|e| format!("{e:#}"))
+        }
+    }
+}
+
 pub fn show(path: PathBuf, clipboard_ok: bool) -> anyhow::Result<()> {
     // Small thumbnail of the capture (aspect-preserving fit in 76px). Videos decode
     // their first frame via Media Foundation (file is finalized by the time the toast
@@ -251,8 +268,8 @@ impl eframe::App for Toast {
             if was_press && !self.dragging && over {
                 if over_edit {
                     crate::editor::launch(&self.path);
-                } else if let Err(e) = opener::open(&self.path) {
-                    eprintln!("trontsnap: toast open failed: {e:#}");
+                } else if let Err(e) = open_capture(&self.path) {
+                    eprintln!("trontsnap: toast open failed: {e}");
                 }
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }

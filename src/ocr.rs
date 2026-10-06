@@ -13,6 +13,12 @@ use windows::Media::Ocr::OcrEngine;
 use windows::Storage::Streams::DataWriter;
 use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
 
+/// The engine ships with Windows (language packs permitting: that failure is reported by
+/// `recognize`), so the gallery never greys the menu entry out. Twin of linux/ocr.rs.
+pub fn available() -> bool {
+    true
+}
+
 /// Recognize the text in `img`, joined per OCR line with CRLF. Blocks (the
 /// WinRT async is waited synchronously); run on a worker thread, never the UI
 /// thread. Returns Ok("") when the region simply contains no words.

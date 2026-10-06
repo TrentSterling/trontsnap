@@ -7,15 +7,21 @@ use anyhow::Context as _;
 use image::RgbaImage;
 
 /// Is tesseract on PATH? Checked before the picker so a missing engine is a
-/// message, not a drag that silently produces nothing.
+/// message, not a drag that silently produces nothing. Cached: the gallery asks
+/// every frame its context menu is open, and a probe is a fork+exec. (The one-shot
+/// `trontsnap ocr` process is fresh each hotkey press, so it always probes anew;
+/// the long-lived app needs a restart after `apt install tesseract-ocr`.)
 pub fn available() -> bool {
-    std::process::Command::new("tesseract")
-        .arg("--version")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok()
+    static OK: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *OK.get_or_init(|| {
+        std::process::Command::new("tesseract")
+            .arg("--version")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok()
+    })
 }
 
 /// Recognize the text in `img`. Blocks (tesseract runs to completion); run on a
