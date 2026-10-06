@@ -48,6 +48,11 @@ mod clipboard;
 #[path = "linux/clipboard.rs"]
 mod clipboard;
 
+// Linux-only multi-target clipboard owner, run as `trontsnap clip-serve ...`.
+#[cfg(not(windows))]
+#[path = "linux/clipserve.rs"]
+mod clipserve;
+
 #[cfg(windows)]
 mod cursor;
 #[cfg(not(windows))]
@@ -114,6 +119,17 @@ mod videothumb;
 mod visual;
 
 fn main() {
+    // The clipboard owner daemon needs none of the setup below (settings, a
+    // gsettings fork) and its startup time is on the paste-latency path.
+    #[cfg(not(windows))]
+    if std::env::args().nth(1).as_deref() == Some("clip-serve") {
+        if let Err(e) = clipserve::run() {
+            eprintln!("trontsnap clip-serve: {e:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
     // Load persisted settings before any capture path can read them (all modes capture).
     settings::load();
 

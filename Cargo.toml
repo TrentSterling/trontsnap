@@ -84,6 +84,9 @@ windows = { version = "0.56", features = [
 # one-shot `gdbus call` records exactly one frame). Already in the tree via xcap.
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus = "4"
+# Multi-target clipboard owner (`trontsnap clip-serve`). Already in the tree via
+# winit/arboard with every feature we need, so this adds no new compile.
+x11rb = "0.13"
 
 [build-dependencies]
 # Embeds the distinct rainbow icon + a Win32 manifest (asInvoker; uiAccess only
