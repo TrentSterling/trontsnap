@@ -44,13 +44,16 @@ def first_event(sink, key):
     return None, None
 
 
-def frames_wall(clip, press_t):
-    """[(clip_pts, wall_epoch, flash)] for every frame, decoded from the beacon strip."""
+def frames_wall(clip, press_t, yoff=None):
+    """[(clip_pts, wall_epoch, flash)] for every frame, decoded from the beacon strip.
+    `yoff` = where the strip sits INSIDE the clip (default: its place on the full screen; a
+    region recording shifts it by the region's top)."""
+    yoff = rec_clock.YOFF if yoff is None else yoff
     tmp = os.path.join(os.path.dirname(clip), "_frames_" + os.path.basename(clip))
     shutil.rmtree(tmp, ignore_errors=True)
     os.makedirs(tmp)
     r = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "info", "-i", clip, "-an", "-vf",
-                        "crop=1344:32:0:%d,showinfo" % rec_clock.YOFF, "-vsync", "passthrough", os.path.join(tmp, "f%05d.png")],
+                        "crop=1344:32:0:%d,showinfo" % yoff, "-vsync", "passthrough", os.path.join(tmp, "f%05d.png")],
                        capture_output=True, text=True)
     pts = []
     for ln in r.stderr.splitlines():

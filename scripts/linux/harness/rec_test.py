@@ -6,12 +6,17 @@ keybinding sends), then asserts on the files and processes that result.
 Run via rec_test.sh. Prints PASS/FAIL/SKIP per check; exit 1 on any FAIL.
 
 Cases: basic (A), capkit-first collision (B), trontsnap-first collision +
-fresh restart (C), crash salvage (D, kills and relaunches the live app).
+fresh restart (C), crash salvage (D, kills and relaunches the live app), and on
+request region (R). A and C1 (and R) also measure A/V CONTENT sync with a flash +
+1 kHz beep beacon (rec_clock.py): the old duration-only checks passed while every
+sound landed 1.4 s late.
 Touches the real screen/audio and pops a toast per delivered clip: that is the
 point. Leaves the live app running a working build.
 """
-import argparse, json, os, re, signal, socket, subprocess, sys, time
+import argparse, json, os, re, signal, socket, subprocess, sys, threading, time
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 HOME = Path.home()
 REPO = Path(__file__).resolve().parents[3]
@@ -294,19 +299,129 @@ def check_clip(label, path, info, backend, secs, want_audio):
 
 
 # === Cases ===
-def case_basic(backend, secs):
+class Beacon:
+    """rec_clock.py on the real screen: a wall-clock strip in the picture and, on `flash()`, a
+    flash block + a 1 kHz beep at the same instant. Content sync is then readable from the clip
+    (rec_lat.frames_wall / audio_onset), which the duration-only checks never saw: the end-aligned
+    mux made `|video_dur - audio_dur|` pass while every sound landed 1.4 s late."""
+    def __init__(self):
+        import rec_lat
+        self.lat = rec_lat
+        self.p = subprocess.Popen([sys.executable, str(Path(__file__).resolve().parent / "rec_clock.py")],
+                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1)
+        self.events = []
+        threading.Thread(target=rec_lat.reader, args=(self.p, self.events), daemon=True).start()
+        self.ready = bool(wait_until(lambda: rec_lat.first_event(self.events, "ready")[0], 10))
+        time.sleep(2.0)  # fullscreen settles
+
+    def flash(self):
+        self.p.stdin.write("flash\n")
+        self.p.stdin.flush()
+
+    def flash_wall(self):
+        return self.lat.first_event(self.events, "flash_wall")[1]
+
+    def close(self):
+        try:
+            self.p.stdin.write("quit\n")
+            self.p.stdin.flush()
+        except OSError:
+            pass
+
+
+def check_sync(label, clip, beacon, t_press, t_stop, backend, yoff=None, external_stop=False):
+    """Flash frame vs beep onset in the delivered clip. A perfect mux reads the player's own
+    spawn-to-sound latency (0.12-0.16 s measured), so anything outside 0.14 +- 0.12 s is real skew."""
+    lat = beacon.lat
+    fr = lat.frames_wall(str(clip), t_press, yoff)
+    fd = beacon.flash_wall()
+    fl = [f for f in fr if f[2]]
+    if not check(f"{label}: the flash is in the clip", bool(fr and fd and fl), f"{len(fr)} frames, flash events {bool(fd)}"):
+        return
+    vflash = fl[0][0]
+    ao = lat.audio_onset(str(clip))
+    if not check(f"{label}: the beep is in the clip's audio", ao is not None):
+        return
+    lag = ao - vflash
+    check(f"{label}: audio-minus-video {lag:+.3f}s within 0.14 +- 0.12 s (old bug: +1.5 s)", abs(lag - 0.14) <= 0.12,
+          f"flash at {vflash:.3f}s, beep at {ao:.3f}s")
+    if backend == "kms" and not external_stop:
+        tail = fr[-1][1] - t_stop
+        check(f"{label}: the clip ends at the stop press (last frame {tail:+.2f}s from it, <= 0.6 s)", -0.2 <= tail <= 0.6)
+
+
+def case_basic(backend, secs, sync=True):
     header(f"A. basic {secs}s recording ({backend})")
     want_audio = audio_on()
     before = media(PIC)
+    beacon = Beacon() if (sync and want_audio) else None
+    if beacon and not beacon.ready:
+        say("    (beacon never came up; running A without the sync check)")
+        beacon.close()
+        beacon = None
+    t_press = time.time()
     mark, up = start_recording(backend)
     if not check("A: recorder started", up):
+        if beacon:
+            beacon.close()
         return
     via = re.findall(r"recording via (\w+)", log_since(mark))
     say(f"    backend per log: {via}")
-    time.sleep(secs)
+    if beacon:
+        # flash once the clip is certainly rolling (kms's first frame is ~2-3 s after the press)
+        time.sleep(max(secs - 1.5, 3.5))
+        beacon.flash()
+        time.sleep(1.5)
+    else:
+        time.sleep(secs)
+    t_stop = time.time()
     path, info = stop_and_collect(before)
     check_clip("A", path, info, backend, secs, want_audio)
+    if beacon:
+        beacon.close()
+        if path:
+            check_sync("A", path, beacon, t_press, t_stop, backend)
     quiet_system("A")
+
+
+def case_region(backend):
+    """A picked rectangle through the live app: `record x,y,w,h` is exactly what `trontsnap record
+    region` sends. The rectangle is the screen's bottom strip so the beacon (flash + beep) is in it."""
+    header(f"R. region recording ({backend}) with A/V sync")
+    want_audio = audio_on()
+    X, Y, W, H = 0, 600, 1366, 168
+    before = media(PIC)
+    beacon = Beacon() if want_audio else None
+    t_press = time.time()
+    mark = log_size()
+    send(f"record {X},{Y},{W},{H}")
+    up = wait_until(kms_pids, 25) if backend == "kms" else wait_until(lambda: "recording via" in log_since(mark), 25)
+    if not check("R: recorder started", bool(up)):
+        if beacon:
+            beacon.close()
+        return
+    if beacon:
+        time.sleep(5.0)
+        beacon.flash()
+        time.sleep(1.5)
+    else:
+        time.sleep(5.0)
+    t_stop = time.time()
+    path, info = stop_and_collect(before)
+    if not check("R: delivered", bool(path and info), str(path)):
+        if beacon:
+            beacon.close()
+        return
+    v = info["v"]
+    check(f"R: the clip is exactly {W}x{H}", (v["w"], v["h"]) == (W, H), f"{v['w']}x{v['h']} {v['codec']}")
+    check("R: h264", v["codec"] == "h264")
+    check("R: duration sane (3-10 s)", 3 <= v["dur"] <= 10, f"{v['dur']:.2f}s")
+    if want_audio:
+        check("R: audio stream present", info["a"] is not None)
+    if beacon:
+        beacon.close()
+        check_sync("R", path, beacon, t_press, t_stop, backend, yoff=724 - Y)
+    quiet_system("R")
 
 
 def run_kms_toggle():
@@ -357,13 +472,28 @@ def case_trontsnap_first(backend, want_audio):
         skip("C: capkit stops TrontSnap's recording", f"backend is {backend}")
         return
     cap_before, pic_before = cap_files(), media(PIC)
+    beacon = Beacon() if want_audio else None
+    t_press = time.time()
     mark, up = start_recording(backend)
     if not check("C: TrontSnap recording started", up):
+        if beacon:
+            beacon.close()
         return
-    time.sleep(4.0)
+    if beacon:
+        time.sleep(5.0)
+        beacon.flash()
+        time.sleep(1.5)
+    else:
+        time.sleep(4.0)
+    t_stop = time.time()
     run_kms_toggle()  # sees kmsgrab -> capkit-stop
     path, info = collect(pic_before, 70)
-    check_clip("C1 (stopped by capkit)", path, info, backend, 4, want_audio)
+    check_clip("C1 (stopped by capkit)", path, info, backend, 6 if beacon else 4, want_audio)
+    if beacon:
+        beacon.close()
+        if path:
+            # the EXTERNAL stop has no known press instant: only the audio/video alignment is checkable
+            check_sync("C1", path, beacon, t_press, t_stop, backend, external_stop=True)
     check("C1: capkit's rec_*.mp4 for our session moved out of ~/Videos/captures",
           not (cap_files() - cap_before), str(sorted(cap_files() - cap_before)))
     quiet_system("C1")
@@ -449,8 +579,10 @@ def main():
     ap.add_argument("--secs", type=int, default=6, help="length of the basic recording (default 6)")
     ap.add_argument("--only", default="", help="comma list of cases to run: A,B,C,D (default all)")
     ap.add_argument("--no-crash", action="store_true", help="skip case D (it kills + relaunches the live app)")
+    ap.add_argument("--no-sync", action="store_true", help="skip the flash+beep A/V sync check inside case A "
+                    "(it shows a fullscreen beacon window and plays a 0.3 s beep)")
     a = ap.parse_args()
-    only = {c.strip().upper() for c in a.only.split(",") if c.strip()} or set("ABCD")
+    only = {c.strip().upper() for c in a.only.split(",") if c.strip()} or set("ABCD")  # R (region) only on request
     if a.no_crash:
         only.discard("D")
 
@@ -473,7 +605,9 @@ def main():
 
     try:
         if "A" in only:
-            case_basic(backend, a.secs)
+            case_basic(backend, max(a.secs, 8) if not a.no_sync else a.secs, sync=not a.no_sync)
+        if "R" in only:
+            case_region(backend)
         if "B" in only:
             case_capkit_first(backend)
         if "C" in only:

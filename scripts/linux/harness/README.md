@@ -168,6 +168,7 @@ Reveal does not freeze the window while a slow file manager answers (`fm1_mock.p
 scripts/linux/harness/rec_test.sh                 # everything (~3 min): A B C D
 scripts/linux/harness/rec_test.sh --only A --secs 8
 scripts/linux/harness/rec_test.sh --no-crash      # skip D (D kill -9s + relaunches the live app)
+scripts/linux/harness/rec_test.sh --only A --secs 8 [--no-sync]   # --no-sync: no fullscreen beacon window / beep
 ```
 
 Drives the live app over port 48761 exactly like the keybinding
@@ -181,6 +182,8 @@ check; exit 1 on any FAIL.
 | A basic | new clip in `~/Pictures/TrontSnap`; h264 (vp8 for gnome); kms fps >= 27 (packets/duration); duration sane; audio stream iff `RecordAudio` on; `abs(video_dur - audio_dur) < 0.15s`; stage dir `~/.cache/trontsnap/rec` empty; no leftover kmsgrab / `@DEFAULT_MONITOR@` ffmpeg |
 | B capkit first | `~/capkit/kms-toggle` running -> TrontSnap refuses (log line), still exactly one kmsgrab, no audio sidecar, nothing delivered, capkit's clip still completes |
 | C trontsnap first | `kms-toggle` stops TrontSnap's recording -> TrontSnap still delivers a valid clip with audio + capkit's rec_*.mp4 moved out of `~/Videos/captures`; next press starts fresh and delivers normally |
+| A/V sync (inside A, C1, and R) | a `rec_clock.py` beacon flashes a block and plays a 1 kHz beep at the same instant; the delivered clip's flash frame vs beep onset must read `0.14 +- 0.12 s` (the beep player's own latency is 0.12-0.16 s). Duration-only checks passed while every sound landed 1.4 s late. A also asserts a kms clip ends at the stop press (tail trimmed) |
+| R region (`--only R`) | `record 0,600,1366,168` through the live app: clip exactly that size, h264, audio kept, sync as above |
 | D crash salvage | marker written; `kill -9` the app (exact pid); relaunch like the lab does; clip salvaged into Pictures/TrontSnap, no orphans, stage empty, app back on the port |
 
 Only kms-specific cases (B, C) SKIP on other backends. Cleanup: clips THIS run
@@ -190,6 +193,39 @@ If aborted mid-recording a stray kmsgrab is stopped via `capkit-stop`.
 
 Don't run builds or other heavy work while it runs: the fps check measures real
 frame delivery on a 4-core 1.8 GHz box.
+
+## 4b. Recorder logic WITHOUT the GPU (`rec_fake_test.py`, ~4 min, run it freely)
+
+```
+scripts/linux/harness/rec_fake_test.py [--only S1,S3] [--no-audio] [--keep]     # own rig :93 / 48793
+```
+
+The kms code path against a FAKE root helper, in an isolated rig: `fake_kms/capkit-kms` + `capkit-stop` (same contract:
+`-stats` on stderr, a `kmsgrab`-argv ffmpeg process, 1 s trim, `SAVED:`; knobs in `$FAKE_KMS_DIR/cfg`: `INIT`,
+`STOP_DELAY`, `MODE=empty`), a wall-clock frame source (`fake_kms/gen_frames.py`, same strip encoding as `rec_clock.py`),
+and `notify_mock.py` owning `org.freedesktop.Notifications` on the rig's PRIVATE bus (logs every Notify/Close with an
+epoch time, honours `replaces_id`). The app runs the fakes directly only when `TRONTSNAP_TEST` is set
+(`TRONTSNAP_KMS_HELPER` / `TRONTSNAP_KMS_STOP`), so a rig can never reach pkexec or the real helper.
+
+| Case | Asserts |
+|---|---|
+| S1 | "Starting recording" at the press, closed when frames flow, "Saving recording" at the stop, nothing stacked; the clip's first frame vs the cue; the clip ENDS at the stop press (tail trimmed); audio stream = video length; audio sidecar cut AFTER the stop helper SIGINTed kmsgrab |
+| S2 | record twice 0.2 s apart: no clip, "Recording cancelled", no orphan, next recording works |
+| S3 | stop, record again 0.6 s later: no "Another recording is running" refusal, both clips delivered, stage drains |
+| S4 | helper leaves a 0-byte file: "Recording too short", nothing delivered, stub removed |
+| S5 | `record x,y,w,h`: clip exactly that size, audio kept; malformed region ignored |
+| S6 | `trontsnap record` with NO app running starts it and the recording; a second call stops it |
+| S7 | `trontsnap record region` picker, `drag` -> a 320x180 clip |
+| S8 | no recorder helper thread above 0.02 core while recording (the 20 Hz /proc poll was 0.16 core) |
+
+S1 screenshots (`harness_out/<date>/fake/shots/`): `1_recording.png` (title-bar `REC 00:00`), `2_saving.png`. READ them.
+
+## 4c. GIF export (`gif_test.py`, ~1.5 min)
+
+`gif_test.py` exports a 30 fps mp4 and a real VFR GNOME screencast (`GIF_TEST_WEBM=<path>`; r_frame_rate=1000/1)
+through the real context menu in a rig and asserts the GIF's duration equals the source's (+-0.4 s), ~12 frames per
+source second, 800 px wide, finished in under 60 s. Before the fix: 108 frames x 83 ms for a 10.98 s clip (1.27x fast),
+and 7 min 21 s for a 10 s VFR webm in the debug build.
 
 ## 5. Toast placement probe (`toast_probe.sh`)
 

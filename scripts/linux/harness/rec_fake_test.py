@@ -19,6 +19,7 @@ What it proves (each check prints PASS/FAIL; exit 1 on any FAIL):
   S7  `trontsnap record region` picker (drag) -> region recording
   S8  CPU: no app thread burns CPU while a recording runs (kms_watch used to poll /proc at 20 Hz)
   S9  UI: title-bar "Starting.../REC mm:ss/Saving..." (screenshots in $OUT/fake/shots, LOOK at them)
+  X1  x11 backend (ffmpeg x11grab of the rig's Xvfb): full screen + a region, audio kept and as long as the video
 
   rec_fake_test.py [--only S1,S3] [--no-audio] [--keep]
 """
@@ -501,6 +502,45 @@ def s7():
         check("S7: clip is 320x180 (the dragged 100,100 -> 420,280)", (info["v"]["w"], info["v"]["h"]) == (320, 180), str(info["v"]))
 
 
+def x1(audio):
+    header("X1 x11 backend: full screen and region")
+    before = media()
+    send("record")
+    time.sleep(3.0)
+    send("record")
+    clip = deliver_wait(before)
+    check("X1: full-screen clip delivered", clip is not None)
+    if clip:
+        info = probe(clip)
+        check("X1: 1366x768 h264", (info["v"]["w"], info["v"]["h"]) == (1366, 768) and info["v"]["codec"] == "h264", str(info["v"]))
+        if audio:
+            check("X1: audio present and |video - audio| < 0.2 s", info["a"] is not None and abs(info["dur"] - info["a"]["dur"]) < 0.2,
+                  f"video {info['dur']:.2f}s audio {(info['a'] or {}).get('dur', 0):.2f}s")
+    pause_between_scenarios()
+    before = media()
+    shot_path = SHOTS / "x1_screen.png"
+    SHOTS.mkdir(parents=True, exist_ok=True)
+    send("record 100,100,320,180")
+    time.sleep(2.0)
+    subprocess.run([str(HERE / "shot.sh"), str(N), str(shot_path)], capture_output=True)
+    time.sleep(1.0)
+    send("record")
+    clip = deliver_wait(before)
+    check("X1: region clip delivered", clip is not None)
+    if clip:
+        info = probe(clip)
+        check("X1: region clip is 320x180", (info["v"]["w"], info["v"]["h"]) == (320, 180), str(info["v"]))
+        # the clip's picture must BE that rectangle of the screen (a static gallery: close match)
+        from PIL import Image, ImageChops, ImageStat
+        fpng = OUT / "fake" / "_x1_first.png"
+        subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-ss", "1", "-i", str(clip), "-frames:v", "1", str(fpng)], check=True)
+        ref = Image.open(shot_path).convert("RGB").crop((100, 100, 420, 280))
+        got = Image.open(fpng).convert("RGB")
+        diff = sum(ImageStat.Stat(ImageChops.difference(ref, got)).mean) / 3
+        check("X1: the clip shows that rectangle of the screen (mean abs diff < 12/255)", diff < 12, f"{diff:.1f}")
+        got.save(SHOTS / "x1_clip_frame.png")
+
+
 def s9_note():
     header("S9 title-bar indicator")
     say(f"    screenshots: {SHOTS}/1_recording.png (REC pill), 2_saving.png (Saving...). READ THEM.")
@@ -515,7 +555,7 @@ def main():
     only = {x.strip().upper() for x in a.only.split(",") if x.strip()}
     want = lambda k: not only or k in only
     audio = not a.no_audio
-    rig_start(audio)
+    rig_start(audio) if (not only or only - {"X1"}) else None
     try:
         for key, fn in (("S1", lambda: s1(audio)), ("S2", s2), ("S3", s3), ("S4", s4), ("S5", lambda: s5(audio)),
                         ("S8", s8), ("S6", lambda: s6(audio)), ("S7", s7)):
@@ -523,6 +563,10 @@ def main():
                 pause_between_scenarios()
                 fn()
         s9_note()
+        if want("X1"):
+            rig_start(audio, recorder="x11")
+            pause_between_scenarios()
+            x1(audio)
     finally:
         if not a.keep:
             rig_stop()

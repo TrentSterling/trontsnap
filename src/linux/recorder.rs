@@ -304,6 +304,7 @@ pub fn toggle_region(region: Option<Region>) {
                 changed();
             }
             Err(e) if e.is::<Refused>() => {
+                eprintln!("trontsnap: refused: another kmsgrab recording is already running (capkit's?)");
                 banner(
                     "Another recording is running",
                     "Press Super+Alt+R to stop it, then try again.",
@@ -877,12 +878,14 @@ fn start_gnome(stage: &Path, stamp: &str, id: u64, ctl: &Arc<Ctl>, audio: Audio)
         };
         // Sender dropped (app quit without shutdown) also counts as stop.
         let _ = stop_rx.recv();
+        // HARD-WON: audio FIRST, the opposite of kms. The shell's video ends when the call
+        // ARRIVES (measured: last frame = the press) but StopScreencast only returns ~0.4 s
+        // later, so cutting the audio after the call left it 0.4 s long and every sound
+        // 0.4 s early (rec_gnome_test.py, lag -0.24 s instead of ~+0.14 s).
+        ctl.cut_audio();
         if let Ok(proxy) = gnome_proxy(&conn) {
             let _: zbus::Result<bool> = proxy.call("StopScreencast", &());
         }
-        // AFTER the shell stopped capturing, so both streams end together (cutting the
-        // audio first left it ending early by however long the D-Bus call took).
-        ctl.cut_audio();
         drop(conn);
         let raw = PathBuf::from(file);
         wait_settled(&raw);
@@ -1021,9 +1024,11 @@ fn finish(id: u64, raw: Option<PathBuf>, audio: Audio, ctl: Arc<Ctl>) {
         region: if ctl.backend == Backend::Kms { ctl.region } else { None },
         webm: out.extension().and_then(|e| e.to_str()) == Some("webm"),
     };
+    // HARD-WON: judge the sidecar by whether it PROBES, not by its size: live AAC of silence is
+    // ~1 KB/s, so a 4 KB floor dropped the audio of every short recording nothing was playing in.
     let audio_file = sidecar
         .as_deref()
-        .filter(|w| std::fs::metadata(w).map(|m| m.len() > MIN_CLIP_BYTES).unwrap_or(false));
+        .filter(|a| probe_duration(a).map(|d| d >= MIN_CLIP_SECS).unwrap_or(false));
     let needs_pass = audio_file.is_some() || post.tail > 0.0 || post.region.is_some();
     if needs_pass && post_process(&raw, audio_file, &out, &post) {
         let _ = std::fs::remove_file(&raw);
