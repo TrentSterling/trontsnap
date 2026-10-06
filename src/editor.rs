@@ -24,11 +24,25 @@ const TOOLS_W: f32 = 190.0;
 /// route as the toast (see toast::launch for the uiAccess history), and the
 /// same best-effort contract: the file already exists, nothing is lost if the
 /// editor fails to appear.
+#[cfg(windows)]
 pub fn launch(path: &Path) {
     let Ok(exe) = std::env::current_exe() else { return };
     let params = format!("edit \"{}\"", path.display());
     if !crate::shellexec::run(&exe.to_string_lossy(), &params) {
         eprintln!("trontsnap: editor launch refused by the shell");
+    }
+}
+
+/// Linux: a real argv. HARD-WON: the Windows quoting above arrives here as LITERAL quote
+/// characters (shellexec::run splits on whitespace), so the editor tried to open a file
+/// named `"/home/...png"` and every Edit chip / menu entry failed; spaces broke it too.
+#[cfg(not(windows))]
+pub fn launch(path: &Path) {
+    let Ok(exe) = std::env::current_exe() else { return };
+    let mut cmd = std::process::Command::new(exe);
+    cmd.arg("edit").arg(path);
+    if !crate::shellexec::spawn_detached(cmd) {
+        eprintln!("trontsnap: editor launch failed");
     }
 }
 
