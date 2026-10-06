@@ -46,11 +46,14 @@ TAG="v$NEW"
 # header is line 1, so it never matches until the BOM is stripped. The version then
 # reads back empty, which looks like "no version", not "BOM". LC_ALL=C keeps GNU sed
 # treating \xEF as a byte instead of an invalid UTF-8 sequence.
+# HARD-WON: the awk readers never `exit` early (flag + keep draining). Under pipefail an
+# early exit lets sed/tr die of SIGPIPE on input past ~64 KB, and a section that IS there
+# then reads as missing (CHANGELOG.md past ~300 KB did exactly that).
 toml_version() {
     LC_ALL=C sed '1s/^\xEF\xBB\xBF//' "$1" | tr -d '\r' | awk '
         /^\[/ { inpkg = ($0 ~ /^\[package\][ \t]*(#.*)?$/); next }
-        inpkg && /^version[ \t]*=/ {
-            v = $0; sub(/^version[ \t]*=[ \t]*"/, "", v); sub(/".*$/, "", v); print v; exit
+        inpkg && !got && /^version[ \t]*=/ {
+            v = $0; sub(/^version[ \t]*=[ \t]*"/, "", v); sub(/".*$/, "", v); print v; got = 1
         }'
 }
 
@@ -59,8 +62,8 @@ lock_version() {
     tr -d '\r' < "$1" | awk -v want="$2" '
         /^\[\[package\]\]/ { name = ""; next }
         /^name = / { n = $0; sub(/^name = "/, "", n); sub(/".*$/, "", n); name = n; next }
-        /^version = / && name == want {
-            v = $0; sub(/^version = "/, "", v); sub(/".*$/, "", v); print v; exit
+        /^version = / && name == want && !got {
+            v = $0; sub(/^version = "/, "", v); sub(/".*$/, "", v); print v; got = 1
         }'
 }
 
@@ -70,11 +73,11 @@ changelog_section() {
     tr -d '\r' < "$1" | awk -v tag="$2" '
         BEGIN { h = "## " tag }
         /^## / {
-            if (found) exit
-            if ($0 == h || index($0, h " ") == 1) found = 1
+            if (found) done = 1
+            if (!done && ($0 == h || index($0, h " ") == 1)) found = 1
             next
         }
-        found { lines[++n] = $0 }
+        found && !done { lines[++n] = $0 }
         END {
             if (!found) exit 3
             s = 1; while (s <= n && lines[s] ~ /^[ \t]*$/) s++
@@ -117,6 +120,7 @@ CUR="$(toml_version Cargo.toml)"
 V_HK="$(toml_version hotkeyd/Cargo.toml)"
 V_LT="$(lock_version Cargo.lock trontsnap)"
 V_LH="$(lock_version Cargo.lock trontsnap-hotkeys)"
+# shellcheck disable=SC2055  # three different right-hand variables, not constants
 if [[ $CUR != "$V_HK" || $CUR != "$V_LT" || $CUR != "$V_LH" ]]; then
     problem "versions disagree today (a half-finished bump?): Cargo.toml='${CUR:-?}' hotkeyd/Cargo.toml='${V_HK:-?}' Cargo.lock trontsnap='${V_LT:-?}' trontsnap-hotkeys='${V_LH:-?}'"
 fi
@@ -227,5 +231,6 @@ echo "  2. windows  build --locked; TrontSnap.exe, TrontSnap-v$NEW-windows.zip (
 echo "  3. linux    ubuntu-22.04 build; AppImage + .zsync, .deb, tarball"
 echo "  4. publish  SHA256SUMS + a DRAFT release titled 'TrontSnap $NEW'"
 echo "You then set the title ('TrontSnap $NEW: <headline>') in the GitHub UI and publish."
-echo "To rehearse the builds first: push the branch only, then Actions > Release > Run workflow"
-echo "(branch, tag input $TAG, dry_run ticked). See RELEASING.md."
+echo "To rehearse the builds first: Actions > Release > Run workflow (tag input $TAG, dry_run"
+echo "ticked). GitHub lists that button only once release.yml is on main, so merge it there"
+echo "first. See RELEASING.md."

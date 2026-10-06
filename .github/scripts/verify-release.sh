@@ -22,11 +22,15 @@ err() {
 # HARD-WON: both Cargo.toml files start with a UTF-8 BOM. hotkeyd's '[package]'
 # header is line 1, so without the strip it never matches and the version reads
 # back empty (which then reads as "no version", not "BOM").
+# HARD-WON: the awk readers below never `exit` early (they set a flag and keep
+# draining). With `set -o pipefail`, an early awk exit leaves sed/tr writing into a
+# closed pipe once the input passes ~64 KB; they die of SIGPIPE (141) and the whole
+# pipeline reads as failed, so a section that IS there looks missing.
 toml_version() {
     sed '1s/^\xEF\xBB\xBF//' "$1" | tr -d '\r' | awk '
         /^\[/ { inpkg = ($0 ~ /^\[package\][ \t]*(#.*)?$/); next }
-        inpkg && /^version[ \t]*=/ {
-            v = $0; sub(/^version[ \t]*=[ \t]*"/, "", v); sub(/".*$/, "", v); print v; exit
+        inpkg && !got && /^version[ \t]*=/ {
+            v = $0; sub(/^version[ \t]*=[ \t]*"/, "", v); sub(/".*$/, "", v); print v; got = 1
         }'
 }
 
@@ -35,8 +39,8 @@ lock_version() {
     tr -d '\r' < Cargo.lock | awk -v want="$1" '
         /^\[\[package\]\]/ { name = ""; next }
         /^name = / { n = $0; sub(/^name = "/, "", n); sub(/".*$/, "", n); name = n; next }
-        /^version = / && name == want {
-            v = $0; sub(/^version = "/, "", v); sub(/".*$/, "", v); print v; exit
+        /^version = / && name == want && !got {
+            v = $0; sub(/^version = "/, "", v); sub(/".*$/, "", v); print v; got = 1
         }'
 }
 
@@ -71,11 +75,11 @@ mkdir -p "$(dirname "$NOTES_OUT")"
 if tr -d '\r' < CHANGELOG.md | awk -v tag="$TAG" '
         BEGIN { h = "## " tag }
         /^## / {
-            if (found) exit
-            if ($0 == h || index($0, h " ") == 1) found = 1
+            if (found) done = 1
+            if (!done && ($0 == h || index($0, h " ") == 1)) found = 1
             next
         }
-        found { lines[++n] = $0 }
+        found && !done { lines[++n] = $0 }
         END {
             if (!found) exit 3
             s = 1; while (s <= n && lines[s] ~ /^[ \t]*$/) s++

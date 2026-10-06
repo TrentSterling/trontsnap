@@ -315,6 +315,7 @@ Write-Host "  2. windows  build --locked; TrontSnap.exe, TrontSnap-v$New-windows
 Write-Host '  3. linux    ubuntu-22.04 build; AppImage + .zsync, .deb, tarball'
 Write-Host "  4. publish  SHA256SUMS + a DRAFT release titled 'TrontSnap $New'"
 Write-Host "You then set the title ('TrontSnap $New`: <headline>') in the GitHub UI and publish."
-Write-Host 'To rehearse the builds first: push the branch only, then Actions > Release > Run workflow'
-Write-Host "(branch, tag input $Tag, dry_run ticked). See RELEASING.md."
+Write-Host "To rehearse the builds first: Actions > Release > Run workflow (tag input $Tag, dry_run"
+Write-Host 'ticked). GitHub lists that button only once release.yml is on main, so merge it there'
+Write-Host 'first. See RELEASING.md.'
 exit 0
