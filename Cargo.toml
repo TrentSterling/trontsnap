@@ -78,6 +78,13 @@ windows = { version = "0.56", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 
+# === Linux-only ===
+# zbus: holds the session-bus connection that keeps a GNOME Shell screencast
+# alive (the shell stops a recording the instant its caller disconnects, so a
+# one-shot `gdbus call` records exactly one frame). Already in the tree via xcap.
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = "4"
+
 [build-dependencies]
 # Embeds the distinct rainbow icon + a Win32 manifest (asInvoker; uiAccess only
 # under the `uiaccess` feature, which the installed build turns on).

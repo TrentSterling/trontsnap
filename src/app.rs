@@ -1820,6 +1820,10 @@ impl App {
 /// runs do_full(); Ctrl+PrintScreen spawns the dedicated Win32 region overlay on its own
 /// thread (it blocks in a modal message loop until you pick or cancel).
 fn setup_hotkeys() -> anyhow::Result<KeyboardHook> {
+    // Linux: a crash mid-recording leaves its ffmpegs running (the kmsgrab one as
+    // root, out of our reach). Stop and salvage them once per app start, off-thread.
+    #[cfg(not(windows))]
+    std::thread::spawn(crate::recorder::recover_orphans);
     let (hook, rx) = KeyboardHook::install()?;
     std::thread::spawn(move || {
         while let Ok(ev) = rx.recv() {

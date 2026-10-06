@@ -39,6 +39,13 @@ pub fn launch(path: &Path, clipboard_ok: bool) {
     let Ok(exe) = std::env::current_exe() else { return };
     let mut cmd = std::process::Command::new(exe);
     cmd.arg("toast").arg(path);
+    // HARD-WON: Wayland compositors ignore client window positions, so on GNOME
+    // the toast landed wherever mutter felt like (centre-ish). Under XWayland the
+    // OuterPosition request is honoured, so the toast process alone drops the
+    // Wayland socket and docks bottom-right like Windows. The main app stays native.
+    if std::env::var_os("WAYLAND_DISPLAY").is_some() && std::env::var_os("DISPLAY").is_some() {
+        cmd.env_remove("WAYLAND_DISPLAY");
+    }
     if !clipboard_ok {
         cmd.arg("--clipboard-failed");
     }
@@ -71,15 +78,20 @@ pub fn show(path: PathBuf, clipboard_ok: bool) -> anyhow::Result<()> {
         image::open(&path).ok().map(|i| i.thumbnail(THUMB, THUMB).to_rgba8())
     };
 
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([W, H])
-            .with_decorations(false)
-            .with_always_on_top()
-            .with_taskbar(false)
-            .with_resizable(false),
-        ..Default::default()
-    };
+    let viewport = egui::ViewportBuilder::default()
+        .with_inner_size([W, H])
+        .with_decorations(false)
+        .with_always_on_top()
+        .with_taskbar(false)
+        .with_resizable(false);
+    // Linux runs the toast on XWayland (see launch). As a plain X11 window mutter
+    // hands it keyboard focus, stealing it from whatever you were typing in.
+    // Notification type + inactive = shows on top, never takes focus.
+    #[cfg(not(windows))]
+    let viewport = viewport
+        .with_active(false)
+        .with_window_type(egui::X11WindowType::Notification);
+    let options = eframe::NativeOptions { viewport, ..Default::default() };
 
     eframe::run_native(
         "TrontSnap Toast",
@@ -163,9 +175,15 @@ impl eframe::App for Toast {
         // pointer state is the source of truth.
         #[cfg(windows)]
         let (over, btn) = (cursor_over_window(frame), left_button_down());
+        // HARD-WON: under XWayland egui keeps reporting a hover_pos even when the
+        // pointer is hundreds of px OUTSIDE the window (seen: [361, -521]), so
+        // "is_some" meant "hovered forever" and the toast never dismissed. Hovered
+        // = the pointer is actually inside our rect.
         #[cfg(not(windows))]
-        let (over, btn) =
-            ctx.input(|i| (i.pointer.hover_pos().is_some(), i.pointer.primary_down()));
+        let (over, btn) = ctx.input(|i| {
+            let inside = i.pointer.hover_pos().map(|p| i.screen_rect().contains(p)).unwrap_or(false);
+            (inside, i.pointer.primary_down())
+        });
         // Edit chip hover, from the rect the previous frame drew (30ms stale at
         // worst, invisible in practice). Videos have no editor.
         #[cfg(windows)]
@@ -343,7 +361,8 @@ impl eframe::App for Toast {
             painter.text(
                 egui::pos2(rect.right() - 10.0, band.top() + 26.0),
                 egui::Align2::RIGHT_TOP,
-                "click to open  .  drag to send",
+                // No drag-out backend on Linux yet: don't advertise one.
+                if cfg!(windows) { "click to open  .  drag to send" } else { "click to open  .  Ctrl+V to paste" },
                 egui::FontId::proportional(11.0),
                 egui::Color32::from_white_alpha(140),
             );
