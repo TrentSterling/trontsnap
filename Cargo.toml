@@ -131,3 +131,11 @@ opt-level = 3
 opt-level = 3
 [profile.dev.package.simd-adler32]
 opt-level = 3
+# GIF export (gallery): NeuQuant palette + LZW run per frame; at opt-level 0 a 10 s clip
+# took minutes in the debug build the hotkeys run.
+[profile.dev.package.gif]
+opt-level = 3
+[profile.dev.package.color_quant]
+opt-level = 3
+[profile.dev.package.weezl]
+opt-level = 3
