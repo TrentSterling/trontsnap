@@ -104,6 +104,15 @@ Build deps beyond Rust: the usual eframe set (`libgtk-3-dev` is NOT needed;
   `~/Documents/ShareX/Screenshots` does; the legend drops to bare dots (tooltips) when the title bar is
   too narrow for the words.
 
+## Capture speed (Print key)
+
+On GNOME Wayland the grab goes straight to GNOME Shell's screencast service with a one-frame
+`pngenc snapshot=true` pipeline (src/capture.rs `grab_gnome_shell_frame`): a lossless PNG, pointer optional,
+about 1.3 s grab / 1.5 s to file on the Lenovo, versus ~4.3 s for `gnome-screenshot` (1.8 s GTK startup, 1.5 s
+shell wait, 1.8 s after-work). `org.gnome.Shell.Screenshot` is AccessDenied for everyone but gnome-screenshot,
+which is why this uses the open Screencast API. If a recording already holds the service, or the call fails, the
+old gnome-screenshot / spectacle / grim chain runs as before.
+
 ## Hotkeys
 
 On GNOME the app installs five custom keybindings on every app start (and

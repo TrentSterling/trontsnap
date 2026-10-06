@@ -74,6 +74,64 @@ fn run_with_timeout(cmd: &mut std::process::Command, secs: u64) -> bool {
     }
 }
 
+/// One lossless frame straight from GNOME Shell's screencast service, no helper process.
+///
+/// HARD-WON: gnome-screenshot costs ~4.3 s per grab on this class of machine (1.8 s GTK startup,
+/// 1.5 s waiting on the shell, 1.8 s of its own after-work) and it IS the Print-key latency.
+/// org.gnome.Shell.Screenshot is closed to everyone but gnome-screenshot (AccessDenied), but the
+/// Screencast service is open, and its `pipeline` option takes any GStreamer tail: pngenc with
+/// snapshot=true emits exactly one lossless PNG and stops. ~1.3 s end to end, pointer optional.
+/// Any failure (not GNOME, a recording already holds the service, no pngenc) returns None and the
+/// CLI grabbers below take over, so this only ever makes the common case faster.
+#[cfg(target_os = "linux")]
+fn grab_gnome_shell_frame(pointer: bool) -> Option<Vec<u8>> {
+    use std::time::{Duration, Instant};
+    use zbus::zvariant::Value;
+
+    let conn = zbus::blocking::Connection::session().ok()?;
+    let proxy = zbus::blocking::Proxy::new(
+        &conn,
+        "org.gnome.Shell.Screencast",
+        "/org/gnome/Shell/Screencast",
+        "org.gnome.Shell.Screencast",
+    )
+    .ok()?;
+    let dir = dirs::runtime_dir().unwrap_or_else(std::env::temp_dir);
+    // No extension: the shell appends one it picks itself ("undefined" for a custom pipeline);
+    // we use the name it hands back.
+    let template = dir.join(format!("trontsnap-shot-{}", std::process::id())).display().to_string();
+    let mut opts: std::collections::HashMap<&str, Value> = std::collections::HashMap::new();
+    opts.insert("framerate", Value::from(30i32));
+    opts.insert("draw-cursor", Value::from(pointer));
+    opts.insert("pipeline", Value::from("videoconvert ! pngenc snapshot=true"));
+    let (ok, file): (bool, String) = proxy.call("Screencast", &(template.as_str(), opts)).ok()?;
+    if !ok {
+        return None;
+    }
+    let path = std::path::PathBuf::from(file);
+    let t0 = Instant::now();
+    let mut last = 0u64;
+    let mut out = None;
+    while t0.elapsed() < Duration::from_secs(6) {
+        let sz = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        // Settled (same size twice) AND a complete PNG (IEND chunk present): never a partial file.
+        if sz > 0 && sz == last {
+            if let Ok(b) = std::fs::read(&path) {
+                if png_dims(&b).is_some() && b.len() > 12 && &b[b.len() - 8..b.len() - 4] == b"IEND" {
+                    out = Some(b);
+                    break;
+                }
+            }
+        }
+        last = sz;
+        std::thread::sleep(Duration::from_millis(30));
+    }
+    // Always release the service, success or not, or the next grab/recording is refused.
+    let _: zbus::Result<bool> = proxy.call("StopScreencast", &());
+    let _ = std::fs::remove_file(&path);
+    out
+}
+
 /// Run the first CLI grabber that works and return its PNG bytes. gnome-screenshot
 /// covers GNOME Wayland (portal path, no prompt), spectacle covers KDE, grim
 /// covers wlroots. Each writes a PNG to a temp path we read back.
@@ -82,6 +140,13 @@ fn run_cli_grabber(xcap_err: Option<&anyhow::Error>, pointer: bool) -> anyhow::R
     let dir = dirs::runtime_dir().unwrap_or_else(std::env::temp_dir);
     let tmp = dir.join(format!("trontsnap-grab-{}.png", std::process::id()));
     let tmp_s = tmp.display().to_string();
+    // Fast path first on a GNOME Wayland session (see grab_gnome_shell_frame).
+    #[cfg(target_os = "linux")]
+    if crate::cursor::wayland_session() {
+        if let Some(bytes) = grab_gnome_shell_frame(pointer) {
+            return Ok(bytes);
+        }
+    }
     // HARD-WON: "Capture cursor" did nothing for screenshots on Linux (cursor::maybe_overlay is a
     // no-op and a Wayland client can't read the pointer), while the Settings text promised it.
     // The grabbers can draw the pointer themselves, so ask them to.
