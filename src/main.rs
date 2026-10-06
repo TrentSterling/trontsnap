@@ -160,7 +160,9 @@ fn main() {
     // Free the PrintScreen key from Windows' own Snipping Tool binding (per-user,
     // no-admin registry flag) before any mode that installs the RegisterHotKey
     // hotkeys runs. Idempotent + best-effort: never blocks startup.
-    if printscreen::free_printscreen_key() {
+    // Unless the user opted out in Settings (PrintKeyOptOut): that choice used to be undone here on
+    // every launch, including the one-shot modes.
+    if !settings::print_key_opt_out() && printscreen::free_printscreen_key() {
         eprintln!("trontsnap: freed PrintScreen key from Windows' Snipping Tool binding");
     }
 

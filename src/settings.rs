@@ -15,6 +15,7 @@ const RECORD_AUDIO_VALUE: &str = "RecordAudio";
 const SHOW_ABOUT_VALUE: &str = "ShowAboutOnLaunch";
 const HAS_RUN_VALUE: &str = "HasRun";
 const LOUPE_SIZE_VALUE: &str = "LoupeSize";
+const PRINT_KEY_OPT_OUT_VALUE: &str = "PrintKeyOptOut";
 const HOTKEY_FULL_MODS_VALUE: &str = "HotkeyFullMods";
 const HOTKEY_FULL_VK_VALUE: &str = "HotkeyFullVk";
 const HOTKEY_REGION_MODS_VALUE: &str = "HotkeyRegionMods";
@@ -260,6 +261,17 @@ pub fn show_about_on_launch() -> bool {
 pub fn set_show_about_on_launch(on: bool) {
     SHOW_ABOUT.store(on, Ordering::Relaxed);
     persist(SHOW_ABOUT_VALUE, on);
+}
+
+/// The user unticked "Use the PrintScreen key": main() must not free the key again on the
+/// next launch (it used to, every time, so the opt-out lasted until the app restarted).
+/// Read straight from the store: only startup and the Settings toggle ask.
+pub fn print_key_opt_out() -> bool {
+    kvstore::get_u32(PRINT_KEY_OPT_OUT_VALUE).is_some_and(|v| v != 0)
+}
+
+pub fn set_print_key_opt_out(opted_out: bool) {
+    kvstore::set_u32(PRINT_KEY_OPT_OUT_VALUE, opted_out as u32);
 }
 
 pub fn loupe_size() -> i32 {

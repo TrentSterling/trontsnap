@@ -143,16 +143,42 @@ pub fn windows_prefers_dark() -> bool {
 }
 
 /// Same question on Linux (name kept so call sites stay identical): the
-/// freedesktop color-scheme preference via gsettings. Only polled on Auto mode
-/// behind poll_system_mode's own multi-second throttle, so the subprocess spawn
-/// never lands on a hot path.
+/// freedesktop color-scheme preference via gsettings. HARD-WON: poll_system_mode asks every
+/// 2 s on the UI thread and each ask was a ~15 ms `gsettings` spawn; the answer is cached
+/// and refreshed on a worker (the first call, and a mode switch, read it once synchronously).
+/// Following the OS therefore lags by up to one extra poll, which nobody can see.
 #[cfg(not(windows))]
 pub fn windows_prefers_dark() -> bool {
-    std::process::Command::new("gsettings")
-        .args(["get", "org.gnome.desktop.interface", "color-scheme"])
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).contains("dark"))
-        .unwrap_or(false)
+    use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+    const UNREAD: u8 = 0;
+    const LIGHT: u8 = 1;
+    const DARK: u8 = 2;
+    static CACHE: AtomicU8 = AtomicU8::new(UNREAD);
+    static REFRESHING: AtomicBool = AtomicBool::new(false);
+    fn read() -> u8 {
+        let dark = std::process::Command::new("gsettings")
+            .args(["get", "org.gnome.desktop.interface", "color-scheme"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).contains("dark"))
+            .unwrap_or(false);
+        if dark { DARK } else { LIGHT }
+    }
+    match CACHE.load(Ordering::Relaxed) {
+        UNREAD => {
+            let v = read();
+            CACHE.store(v, Ordering::Relaxed);
+            v == DARK
+        }
+        cached => {
+            if !REFRESHING.swap(true, Ordering::SeqCst) {
+                std::thread::spawn(|| {
+                    CACHE.store(read(), Ordering::Relaxed);
+                    REFRESHING.store(false, Ordering::SeqCst);
+                });
+            }
+            cached == DARK
+        }
+    }
 }
 
 fn resolve_dark(pref: ModePref) -> bool {

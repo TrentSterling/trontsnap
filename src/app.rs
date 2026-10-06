@@ -735,21 +735,23 @@ impl App {
                         v.widgets.inactive.bg_fill = egui::Color32::TRANSPARENT;
                         v.widgets.inactive.bg_stroke = egui::Stroke::NONE;
                         ui.menu_button("Capture", |ui| {
-                            if ui.button("Fullscreen   (PrtSc)").clicked() {
+                            use crate::settings::HotkeyAction as Hk;
+                            if ui.button(format!("Fullscreen   ({})", hotkey_text(Hk::Full, "+"))).clicked() {
                                 do_full();
                                 ui.close_menu();
                             }
-                            if ui.button("Region   (Ctrl+PrtSc)").clicked() {
+                            if ui.button(format!("Region   ({})", hotkey_text(Hk::Region, "+"))).clicked() {
                                 std::thread::spawn(region_win32::capture_region);
                                 ui.close_menu();
                             }
+                            let rec_keys = hotkey_text(Hk::Record, "+");
                             #[cfg(windows)]
-                            let rec_label = "Record   (Ctrl+Shift+PrtSc)";
+                            let rec_label = format!("Record   ({rec_keys})");
                             #[cfg(not(windows))]
                             let rec_label = if crate::recorder::status() == crate::recorder::Status::Idle {
-                                "Record   (Ctrl+Shift+PrtSc)"
+                                format!("Record   ({rec_keys})")
                             } else {
-                                "Stop recording   (Ctrl+Shift+PrtSc)"
+                                format!("Stop recording   ({rec_keys})")
                             };
                             if ui.button(rec_label).clicked() {
                                 // Off the UI thread: a restart right after a stop waits for the
@@ -759,14 +761,20 @@ impl App {
                             }
                             #[cfg(not(windows))]
                             {
-                                if crate::recorder::status() == crate::recorder::Status::Idle
-                                    && ui.button("Record region   (Ctrl+Shift+Alt+PrtSc)").clicked()
-                                {
-                                    crate::recordcli::spawn_region();
-                                    ui.close_menu();
+                                if crate::recorder::status() == crate::recorder::Status::Idle {
+                                    let (rm, rv) = crate::settings::hotkey(Hk::Record);
+                                    let keys = match crate::keyhook::record_region_accel(rm, rv) {
+                                        // Same chord as Record plus Alt (see keyhook::record_region_accel).
+                                        Some(_) => format!("   ({})", chord_text(rm | HK_MOD_ALT, rv, "+")),
+                                        None => String::new(),
+                                    };
+                                    if ui.button(format!("Record region{keys}")).clicked() {
+                                        crate::recordcli::spawn_region();
+                                        ui.close_menu();
+                                    }
                                 }
                             }
-                            if ui.button("Copy text   (Ctrl+Alt+PrtSc)").clicked() {
+                            if ui.button(format!("Copy text   ({})", hotkey_text(Hk::Ocr, "+"))).clicked() {
                                 std::thread::spawn(region_win32::capture_region_ocr);
                                 ui.close_menu();
                             }
@@ -1159,6 +1167,27 @@ const CURSOR_HINT: &str = "Include the mouse pointer in screenshots and recordin
 const CURSOR_HINT: &str = "Include the mouse pointer in screenshots. The fast hardware recorder \
      (kms) cannot capture it; the GNOME fallback recorder can (see LINUX.md).";
 #[cfg(windows)]
+const PRINT_KEY_HINT: &str = "Toggles the per-user Windows PrintScreenKeyForSnippingEnabled flag; when \
+     off, use the tray icon, the Capture menu, or Ctrl+PrtSc instead.";
+#[cfg(not(windows))]
+const PRINT_KEY_HINT: &str = "Clears GNOME's own Print-key screenshot UI (org.gnome.shell.keybindings \
+     show-screenshot-ui) so TrontSnap gets the key. Off gives it back; use the Capture menu or \
+     Ctrl+PrtSc instead.";
+#[cfg(windows)]
+const STARTUP_HINT: &str = "Launch TrontSnap hidden in the tray when you sign in to Windows.";
+#[cfg(not(windows))]
+const STARTUP_HINT: &str = "Start TrontSnap in the background when you sign in (unmapped on X11, \
+     minimized on Wayland: open it from the dock).";
+#[cfg(windows)]
+const PORTABLE_NOTE: &str = "Portable single exe. Delete to uninstall.";
+#[cfg(not(windows))]
+const PORTABLE_NOTE: &str = "Settings: ~/.config/trontsnap/settings.conf";
+// The Windows "Win" key is Super on Linux.
+#[cfg(windows)]
+const WIN_KEY_LABEL: &str = "Win";
+#[cfg(not(windows))]
+const WIN_KEY_LABEL: &str = "Super";
+#[cfg(windows)]
 const AUDIO_HINT: &str = "Recordings include a WASAPI loopback track of what you hear.";
 #[cfg(not(windows))]
 const AUDIO_HINT: &str = "Recordings include a track of what you hear (system audio).";
@@ -1185,10 +1214,9 @@ fn settings_tab_ui(ui: &mut egui::Ui) {
                 settings_toggle(
                     ui,
                     "Use the PrintScreen key",
-                    "Toggles the per-user Windows PrintScreenKeyForSnippingEnabled flag; when \
-                     off, use the tray icon, the Capture menu, or Ctrl+PrtSc instead.",
+                    PRINT_KEY_HINT,
                     crate::printscreen::is_free(),
-                    crate::printscreen::set_free,
+                    set_print_key_free,
                 );
 
                 ui.add_space(22.0);
@@ -1254,7 +1282,7 @@ fn settings_tab_ui(ui: &mut egui::Ui) {
                 settings_toggle(
                     ui,
                     "Start at login",
-                    "Launch TrontSnap hidden in the tray when you sign in to Windows.",
+                    STARTUP_HINT,
                     autostart::is_enabled(),
                     autostart::set,
                 );
@@ -1319,10 +1347,11 @@ fn appearance_ui(ui: &mut egui::Ui) {
     });
     if crate::theme::mode_pref() == crate::theme::ModePref::Auto {
         ui.label(
-            egui::RichText::new(if crate::theme::dark_mode() {
-                "Following Windows: currently dark."
-            } else {
-                "Following Windows: currently light."
+            egui::RichText::new(match (cfg!(windows), crate::theme::dark_mode()) {
+                (true, true) => "Following Windows: currently dark.",
+                (true, false) => "Following Windows: currently light.",
+                (false, true) => "Following the system theme: currently dark.",
+                (false, false) => "Following the system theme: currently light.",
             })
             .small()
             .color(crate::theme::t().text_muted),
@@ -1720,6 +1749,16 @@ fn settings_section_header(ui: &mut egui::Ui, title: &str) {
     ui.add_space(8.0);
 }
 
+/// The PrintScreen toggle: the choice is remembered (main() used to re-free the key on every
+/// launch, so unticking it lasted until the next start) and, on Linux, the GNOME binding for
+/// bare Print follows it.
+fn set_print_key_free(free: bool) {
+    crate::settings::set_print_key_opt_out(!free);
+    crate::printscreen::set_free(free);
+    #[cfg(not(windows))]
+    crate::keyhook::reload();
+}
+
 fn settings_toggle(ui: &mut egui::Ui, label: &str, desc: &str, current: bool, set: fn(bool)) {
     let mut value = current;
     if ui.checkbox(&mut value, label).changed() {
@@ -1786,7 +1825,7 @@ fn hotkey_row(ui: &mut egui::Ui, label: &str, action: crate::settings::HotkeyAct
         changed |= ui.checkbox(&mut ctrl, "Ctrl").changed();
         changed |= ui.checkbox(&mut shift, "Shift").changed();
         changed |= ui.checkbox(&mut alt, "Alt").changed();
-        changed |= ui.checkbox(&mut win, "Win").changed();
+        changed |= ui.checkbox(&mut win, WIN_KEY_LABEL).changed();
 
         egui::ComboBox::from_id_salt(("trontsnap-hotkey-key", label))
             .selected_text(current_label)
@@ -1808,6 +1847,30 @@ fn hotkey_row(ui: &mut egui::Ui, label: &str, action: crate::settings::HotkeyAct
         crate::settings::set_hotkey(action, new_mods, new_vk);
         crate::keyhook::reload();
     }
+}
+
+/// "Ctrl + Shift + PrtSc" (sep = " + ") or "Ctrl+Shift+PrtSc" for a stored hotkey. The About
+/// tab and the Capture menu used to hardcode the defaults, so a rebind left them lying.
+fn hotkey_text(action: crate::settings::HotkeyAction, sep: &str) -> String {
+    let (mods, vk) = crate::settings::hotkey(action);
+    chord_text(mods, vk, sep)
+}
+
+fn chord_text(mods: u32, vk: u32, sep: &str) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    for (bit, name) in [
+        (HK_MOD_CONTROL, "Ctrl"),
+        (HK_MOD_SHIFT, "Shift"),
+        (HK_MOD_ALT, "Alt"),
+        (HK_MOD_WIN, WIN_KEY_LABEL),
+    ] {
+        if mods & bit != 0 {
+            parts.push(name);
+        }
+    }
+    let key = HOTKEY_KEYS.iter().find(|(_, v)| *v == vk).map(|(n, _)| *n).unwrap_or("PrintScreen");
+    parts.push(if key == "PrintScreen" { "PrtSc" } else { key });
+    parts.join(sep)
 }
 
 /// One About-tab shortcut line: the key combo in accent, the action in muted, on a
@@ -1880,10 +1943,16 @@ impl App {
 
                 ui.label(egui::RichText::new("Shortcuts").strong().color(crate::theme::accent_ink()));
                 ui.add_space(10.0);
-                shortcut_row(ui, "PrtSc", "Grab the full screen");
-                shortcut_row(ui, "Ctrl + PrtSc", "Freeze, then click a window or drag a region");
-                shortcut_row(ui, "Ctrl + Shift + PrtSc", "Start or stop a screen recording");
-                shortcut_row(ui, "Ctrl + Alt + PrtSc", "Copy the TEXT out of a region (OCR)");
+                use crate::settings::HotkeyAction as Hk;
+                shortcut_row(ui, &hotkey_text(Hk::Full, " + "), "Grab the full screen");
+                shortcut_row(
+                    ui,
+                    &hotkey_text(Hk::Region, " + "),
+                    "Freeze, then click a window or drag a region",
+                );
+                shortcut_row(ui, &hotkey_text(Hk::Record, " + "), "Start or stop a screen recording");
+                shortcut_row(ui, &hotkey_text(Hk::Ocr, " + "), "Copy the TEXT out of a region (OCR)");
+                #[cfg(windows)]
                 shortcut_row(ui, "Tray icon", "Left-click for an instant region capture");
                 ui.add_space(18.0);
                 ui.separator();
@@ -1898,7 +1967,7 @@ impl App {
                 );
                 ui.add_space(8.0);
                 ui.label(
-                    egui::RichText::new("Portable single exe. Delete to uninstall.")
+                    egui::RichText::new(PORTABLE_NOTE)
                         .small()
                         .color(crate::theme::t().text_muted),
                 );

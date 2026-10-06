@@ -87,8 +87,14 @@ fn clicks_still_activate_the_production_navigation_and_caption_controls() {
             "maximize" => {
                 assert!(commands(&released).contains(&egui::ViewportCommand::Maximized(true)))
             }
+            // Windows hides to the tray; Linux has no tray, so Close really closes (recording idle here).
+            #[cfg(windows)]
             "close" => {
                 assert!(commands(&released).contains(&egui::ViewportCommand::Visible(false)))
+            }
+            #[cfg(not(windows))]
+            "close" => {
+                assert!(commands(&released).contains(&egui::ViewportCommand::Close))
             }
             _ => unreachable!(),
         }
