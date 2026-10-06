@@ -49,9 +49,12 @@ def frames_wall(clip, press_t, yoff=None):
     `yoff` = where the strip sits INSIDE the clip (default: its place on the full screen; a
     region recording shifts it by the region's top)."""
     yoff = rec_clock.YOFF if yoff is None else yoff
-    tmp = os.path.join(os.path.dirname(clip), "_frames_" + os.path.basename(clip))
+    # HARD-WON: never next to the clip when the clip is still in ~/Pictures/TrontSnap: tracker indexes
+    # (and journals errors for) every one of the hundreds of PNGs while they are being written/removed.
+    base = os.environ.get("HARNESS_OUT") or os.path.join(os.path.dirname(HERE), "..", "..", "harness_out", time.strftime("%Y-%m-%d"))
+    tmp = os.path.join(os.path.abspath(base), "scratch", "frames_" + os.path.basename(clip))
     shutil.rmtree(tmp, ignore_errors=True)
-    os.makedirs(tmp)
+    os.makedirs(tmp, exist_ok=True)
     r = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "info", "-i", clip, "-an", "-vf",
                         "crop=1344:32:0:%d,showinfo" % yoff, "-vsync", "passthrough", os.path.join(tmp, "f%05d.png")],
                        capture_output=True, text=True)

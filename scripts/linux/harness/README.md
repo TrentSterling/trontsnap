@@ -205,7 +205,8 @@ The kms code path against a FAKE root helper, in an isolated rig: `fake_kms/capk
 `-stats` on stderr, a `kmsgrab`-argv ffmpeg process, 1 s trim, `SAVED:`; knobs in `$FAKE_KMS_DIR/cfg`: `INIT`,
 `STOP_DELAY`, `MODE=empty`), a wall-clock frame source (`fake_kms/gen_frames.py`, same strip encoding as `rec_clock.py`),
 and `notify_mock.py` owning `org.freedesktop.Notifications` on the rig's PRIVATE bus (logs every Notify/Close with an
-epoch time, honours `replaces_id`). The app runs the fakes directly only when `TRONTSNAP_TEST` is set
+epoch time, honours `replaces_id`). The rig puts `fake_bin` first on PATH (no ticks/shutter through the real speakers, `notify-send`/`xdg-open` logged to
+`$FAKE_NOTIFY_LOG`/`$FAKE_OPEN_LOG`). The app runs the fakes directly only when `TRONTSNAP_TEST` is set
 (`TRONTSNAP_KMS_HELPER` / `TRONTSNAP_KMS_STOP`), so a rig can never reach pkexec or the real helper.
 
 | Case | Asserts |
@@ -219,6 +220,7 @@ epoch time, honours `replaces_id`). The app runs the fakes directly only when `T
 | S7 | `trontsnap record region` picker, `drag` -> a 320x180 clip |
 | S8 | no recorder helper thread above 0.02 core while recording (the 20 Hz /proc poll was 0.16 core) |
 | S10 | tray dot: no dot in the dead time, registers when frames flow (`sni_mock.py` = a watcher on the rig bus, logs the properties a host reads), red-dot ARGB pixmaps, Activate (a click) stops the recording, the dot vanishes at the stop |
+| S11 | Open on a video tile during a kms recording is deferred (no xdg-open, a "Not opening the video yet" notice); after the recording it launches the player |
 | X1 | x11 backend (ffmpeg x11grab of the rig's Xvfb): full screen 1366x768 with audio as long as the video, and a region clip whose pixels equal that rectangle of the screen |
 
 S1 screenshots (`harness_out/<date>/fake/shots/`): `1_recording.png` (title-bar `REC 00:00`), `2_saving.png`. READ them.

@@ -189,9 +189,11 @@ fn main() {
             None => Ok(()),
         },
         other => {
-            eprintln!(
-                "trontsnap: unknown mode '{other}' (use app / region / full / ocr / record / edit <png> / toast <png>)"
-            );
+            #[cfg(windows)]
+            const MODES: &str = "app / region / full / ocr / edit <png> / toast <png>";
+            #[cfg(not(windows))]
+            const MODES: &str = "app / region / full / ocr / record [region] / edit <png> / toast <png>";
+            eprintln!("trontsnap: unknown mode '{other}' (use {MODES})");
             std::process::exit(2);
         }
     };

@@ -21,6 +21,7 @@ What it proves (each check prints PASS/FAIL; exit 1 on any FAIL):
   S9  UI: title-bar "Starting.../REC mm:ss/Saving..." (screenshots in $OUT/fake/shots, LOOK at them)
   S10 tray dot (StatusNotifierItem): registers when frames flow with a red-dot pixmap, vanishes at the stop,
       a click (Activate) stops the recording (mock watcher on the rig bus)
+  S11 opening a video from the gallery is deferred while a kmsgrab recording runs, and works after
   X1  x11 backend (ffmpeg x11grab of the rig's Xvfb): full screen + a region, audio kept and as long as the video
 
   rec_fake_test.py [--only S1,S3] [--no-audio] [--keep]
@@ -206,6 +207,11 @@ def rig_start(audio, recorder="kms"):
     hook = FD / "seed_hook.sh"
     hook.write_text(f"#!/bin/sh\nsed -i 's/RecordAudio=0/RecordAudio={1 if audio else 0}/' \"$1/.config/trontsnap/settings.conf\"\n")
     hook.chmod(0o755)
+    # HARD-WON: without this the rig's shutter/ticks played through the REAL speakers (pw-play) on every run.
+    os.environ["PATH"] = f"{HERE / 'fake_bin'}:" + os.environ["PATH"].replace(f"{HERE / 'fake_bin'}:", "")
+    os.environ.update(FAKE_NOTIFY_LOG=str(FD / "cli_notify.log"), FAKE_OPEN_LOG=str(FD / "open.log"))
+    for f in ("cli_notify.log", "open.log"):
+        (FD / f).unlink(missing_ok=True)
     os.environ.update(FAKE_KMS_DIR=str(FD), NOTIFY_LOG=str(FD / "notify.jsonl"), RIG_SEED_HOOK=str(hook),
                       TRONTSNAP_KMS_HELPER=str(HERE / "fake_kms" / "capkit-kms"),
                       TRONTSNAP_KMS_STOP=str(HERE / "fake_kms" / "capkit-stop"))
@@ -593,6 +599,37 @@ def s10():
         say(f"    dot vanished {gone[0]['t'] - t_click:.2f}s after the click")
 
 
+def s11():
+    header("S11 opening a video is deferred while a kmsgrab recording runs (UVD+VCE hung this GPU once)")
+    cfg(INIT="1.0", STOP_DELAY="0.8", MODE="normal")
+    open_log, nlog = FD / "open.log", FD / "cli_notify.log"
+    xin = [str(HERE / "xinput.py"), "-d", f":{N}"]
+    before = media()
+    lc0 = live_count()
+    send("record")
+    wait(lambda: live_count() > lc0, 15)
+    time.sleep(1.0)
+    open_log.unlink(missing_ok=True)
+    nlog.unlink(missing_ok=True)
+    subprocess.run(xin + ["rightclick", "129", "134"], capture_output=True)
+    time.sleep(1.5)
+    subprocess.run(xin + ["click", "153", "221"], capture_output=True)  # "Open" in a video tile's menu
+    time.sleep(2.0)
+    check("S11: Open on a video did NOT launch the player during the recording",
+          not (open_log.exists() and open_log.read_text().strip()), open_log.read_text() if open_log.exists() else "")
+    check("S11: it said why", nlog.exists() and "Not opening the video yet" in nlog.read_text(), nlog.read_text() if nlog.exists() else "no notify-send call")
+    send("record")
+    deliver_wait(before)
+    pause_between_scenarios()
+    time.sleep(1.0)
+    open_log.unlink(missing_ok=True)
+    subprocess.run(xin + ["rightclick", "129", "134"], capture_output=True)
+    time.sleep(1.5)
+    subprocess.run(xin + ["click", "153", "221"], capture_output=True)
+    ok = wait(lambda: open_log.exists() and open_log.read_text().strip(), 8)
+    check("S11: with no recording running, Open launches the player", bool(ok), open_log.read_text() if open_log.exists() else "no xdg-open call")
+
+
 def s9_note():
     header("S9 title-bar indicator")
     say(f"    screenshots: {SHOTS}/1_recording.png (REC pill), 2_saving.png (Saving...). READ THEM.")
@@ -610,7 +647,7 @@ def main():
     rig_start(audio) if (not only or only - {"X1"}) else None
     try:
         for key, fn in (("S1", lambda: s1(audio)), ("S2", s2), ("S3", s3), ("S4", s4), ("S5", lambda: s5(audio)),
-                        ("S8", s8), ("S6", lambda: s6(audio)), ("S7", s7), ("S10", s10)):
+                        ("S8", s8), ("S6", lambda: s6(audio)), ("S7", s7), ("S10", s10), ("S11", s11)):
             if want(key):
                 pause_between_scenarios()
                 fn()
