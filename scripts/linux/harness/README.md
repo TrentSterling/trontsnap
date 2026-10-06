@@ -40,6 +40,9 @@ scripts/linux/harness/gui_env.sh stop 99
   ones (mtimes 90 min apart) + 1 real mp4. Gallery opens on the Gallery tab
   ("13 shots"). `--bare` = empty folder. `--recorder x11|gnome|kms|hook` sets
   `TRONTSNAP_RECORDER`. Re-running `start` re-seeds (wipes only `homes/N`).
+- `RIG_SEED_HOOK=/path/script` runs `script <temp-HOME>` after the default seed and before the app starts
+  (the gallery scans once at launch): use it for a ShareX archive (`$HOME/Documents/ShareX/Screenshots/YYYY-MM/`),
+  odd filenames, webm, truncated PNGs. Example: `harness_out/2026-10-05/audit-gallery/seed2.sh`.
 - Uses `target/debug/trontsnap` (override: `TRONTSNAP_BIN=...`). Rebuild first;
   the rig never builds.
 - Logs: `harness_out/.../rigs/N/app.log`, `xvfb.log`.
@@ -84,6 +87,13 @@ xinput.py -d :99 focus [TITLE]
 
 Park the pointer away from tiles (`move 1270 700`) before screenshotting a
 selection, or the hover highlight/tooltip pollutes the diff.
+
+**Flaky clicks / lost Ctrl on a busy box:** with the debug build under llvmpipe a frame can take
+100+ ms, and the default pacing then drops roughly 1 click in 3 (pointer enters and presses inside
+one frame) and loses Ctrl/Shift (modifier lands after the click or key; Ctrl+click degraded to a
+plain copy, Ctrl+A did nothing). Prefix multi-select / shortcut tests with `XINPUT_SLOW=1`
+(0.5 s settle, 0.3 s modifier lead; ~1 s per ctrl-click) and ALWAYS screenshot to confirm the
+selection took before trusting a later step.
 
 ## 3. Screenshots, diff, clipboard
 

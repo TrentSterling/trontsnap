@@ -107,6 +107,9 @@ ALIASES = {
     "space": "space", "tab": "Tab", "backspace": "BackSpace",
     "pgup": "Prior", "pgdn": "Next", "pageup": "Prior", "pagedown": "Next",
     "print": "Print", "prtsc": "Print",
+    # punctuation for `type` (XStringToKeysym wants names, not glyphs)
+    "-": "minus", ".": "period", "/": "slash", ",": "comma", ";": "semicolon", "=": "equal",
+    "[": "bracketleft", "]": "bracketright", "'": "apostrophe", "`": "grave", "\\": "backslash",
 }
 
 # Pacing. egui repaints on events, but a press+release inside one frame after a
@@ -114,6 +117,13 @@ ALIASES = {
 SETTLE = 0.08   # after a move, before the button goes down
 HOLD = 0.06     # press -> release
 GAP = 0.05      # between keys
+# HARD-WON: on the loaded 4-core box the debug build + llvmpipe takes 100+ ms per frame, and the
+# default pacing above then drops ~1 in 3 clicks (pointer enters and presses inside one frame) and
+# Ctrl/Shift state (modifier lands after the click/key). XINPUT_SLOW=1 is the reliable setting for
+# multi-select and shortcut tests; it costs ~1 s per ctrl-click.
+MOD_LEAD = 0.03
+if os.environ.get("XINPUT_SLOW"):
+    SETTLE, HOLD, GAP, MOD_LEAD = 0.5, 0.12, 0.15, 0.3
 
 
 class X:
@@ -233,12 +243,12 @@ def hold_mods(x, mods):
     codes = [x.keycode(MODS[m])[0] for m in mods]
     for c in codes:
         x.key(c, True)
-    time.sleep(0.03)
+    time.sleep(MOD_LEAD)
     return codes
 
 
 def release_mods(x, codes):
-    time.sleep(0.03)
+    time.sleep(MOD_LEAD)
     for c in reversed(codes):
         x.key(c, False)
 

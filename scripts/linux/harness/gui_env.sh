@@ -101,6 +101,9 @@ cmd_start() {
 
   seed_home "$n"
   local h; h=$(hdir "$n")
+  # RIG_SEED_HOOK=/path/script: extra seeding (ShareX archive, odd filenames...) run with the
+  # temp HOME as $1 AFTER the default seed and BEFORE the app starts (the gallery scans once at launch).
+  [[ -n ${RIG_SEED_HOOK:-} ]] && "$RIG_SEED_HOOK" "$h"
 
   # --- App, under its own dbus session. The inner bash records the REAL app pid
   # (exec replaces it) and the private bus address so `run` can join the session.
