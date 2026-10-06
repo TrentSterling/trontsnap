@@ -11,6 +11,7 @@
 #   H 10 MB PNG through INCR    -> 3 identical reads, owner exits when replaced
 #   I `trontsnap ocr` w/o tesseract -> visible notification, clipboard untouched
 #   J "Copy 2 files" / "Copy 2 paths" menu items; paths survive the app being killed
+#   K 20000 paths through clip-serve's stdin (argv would hit ARG_MAX); a 36 MB copy then a small one end in click order (guards the FIFO; cannot reproduce the old race)
 # Screenshots/logs in $HARNESS_OUT/paste_test/. Exit 0 = all PASS.
 set -u
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -158,6 +159,57 @@ else
   check "I: ocr without tesseract raised a notification" 'grep -q "OCR unavailable" "$S/I_notify.log"' "$(cat "$S/I_notify.log")"
   check "I: clipboard untouched" '[[ $("$HERE/clip.sh" "$N" UTF8_STRING 2>/dev/null) == SENTINEL ]]'
 fi
+
+
+# === K: a huge file list rides stdin; two quick copies land in click order ===
+# HARD-WON: the file list used to be argv. ~17k paths is near ARG_MAX; the spawn failed with E2BIG and the
+# writer silently fell back to xclip with only text/uri-list.
+python3 - "$S/K_paths.bin" "$HOME_N" <<'PY'
+import sys
+out, home = sys.argv[1:3]
+with open(out, "wb") as f:
+    for i in range(20000):
+        f.write(f"{home}/Pictures/TrontSnap/k_{i:05d}_{'x' * 60}.png".encode() + b"\0")
+PY
+argv_bytes=$(tr '\0' ' ' < "$S/K_paths.bin" | wc -c)
+(setsid "$HERE/gui_env.sh" run "$N" "$BIN" clip-serve files < "$S/K_paths.bin" > "$S/K_child.out" 2>&1 &)
+for _ in $(seq 1 50); do grep -q READY "$S/K_child.out" 2>/dev/null && break; sleep 0.2; done
+check "K: clip-serve files (20000 paths on stdin, $argv_bytes bytes: more than ARG_MAX) reported READY" 'grep -q READY "$S/K_child.out"' "$(cat "$S/K_child.out")"
+nuri=$("$HERE/clip.sh" "$N" text/uri-list | grep -c '^file://')
+check "K: all 20000 URIs are on the clipboard" '(( nuri == 20000 ))' "$nuri"
+npath=$("$HERE/clip.sh" "$N" UTF8_STRING | grep -c 'Pictures/TrontSnap/k_')
+check "K: ...and all 20000 bare paths (the terminal flavour)" '(( npath == 20000 ))' "$npath"
+setsent; sleep 1
+check "K: replaced owner exits" '[[ -z $(pgrep -f "[c]lip-serve files") ]]'
+rm -f "$S/K_paths.bin"
+
+# Two plain clicks 'copy' two shots; the LAST click must own the clipboard (a single FIFO worker now; it was
+# a thread per copy, where whichever owner claimed CLIPBOARD last won). HONEST LIMIT: the pre-fix binary also
+# PASSES this (checked): the race needs two clicks inside ~100 ms and XTest pacing on this box can't produce
+# that, so this guards the FIFO against breaking order or deadlocking, it does not reproduce the old race.
+park; "${X[@]}" key Escape; sleep 0.5
+bigf="$HOME_N/Pictures/TrontSnap/TrontSnap_$(date +%F_%H-%M-%S).png"
+python3 - "$bigf" <<'PY'
+import os, sys
+from PIL import Image
+Image.frombytes("RGB", (4000, 3000), os.urandom(4000 * 3000 * 3)).save(sys.argv[1], compress_level=0)
+PY
+sleep 8   # the watcher splices it in as the NEWEST tile: tile 1 is now the big one
+setsent; "${X[@]}" click 310 134; sleep 3        # what tile 2 alone puts on the clipboard = the expected end state
+want_uri=$("$HERE/clip.sh" "$N" text/uri-list | tr -d '\r')
+dist=0
+for rep in 1 2; do
+  setsent
+  "${X[@]}" click 128 134                         # the big one
+  env -u XINPUT_SLOW "${X[@]}" move 310 134; sleep 0.3
+  env -u XINPUT_SLOW "${X[@]}" click 310 134      # then the small one, while the big hand-over is still going
+  sleep 7
+  got=$("$HERE/clip.sh" "$N" text/uri-list | tr -d '\r')
+  [[ $got == "$want_uri" ]] || dist=$((dist + 1))
+  park; sleep 0.5
+done
+check "K: big copy then small copy x2: the clipboard always ends as the LAST click's file" '(( dist == 0 ))' "$dist of 2 ended on the big one ($(stat -c %s "$bigf") bytes)"
+rm -f "$bigf"; sleep 3   # let the watcher drop the tile again: J expects the old layout
 
 # === J: menu items + survival after the app is gone ===
 # Tiles 1+2 are the two newest STILLS here (F/G just added them), so the menu has the

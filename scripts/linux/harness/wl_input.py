@@ -4,7 +4,7 @@
 # usage (via wl_env.sh input):  ACTION...
 #   abs X Y     pin the pointer to the BOTTOM-RIGHT (1365,767), then walk to X,Y (unaccelerated).
 #               HARD-WON: pinning top-left trips GNOME's hot corner (Activities overview) and the click lands in it.
-#   rel DX DY | click | rclick | key Escape|Return|super | wait SEC
+#   rel DX DY | click | rclick | key Escape|Return|super|Print | key ctrl+shift+Print (a chord) | wait SEC
 #   wheel N     N vertical wheel notches (negative = toward you / scroll down; positive = away / up)
 # e.g.  wl_env.sh input key Escape            (leave the overview once after `start`)
 #       wl_env.sh input abs 358 52 wait 0.5 click
@@ -27,7 +27,7 @@ sess = call("/org/gnome/Mutter/RemoteDesktop", "org.gnome.Mutter.RemoteDesktop",
 S = "org.gnome.Mutter.RemoteDesktop.Session"
 call(sess, S, "Start")
 BTN = {"left": 0x110, "right": 0x111}          # evdev BTN_LEFT / BTN_RIGHT
-KEYS = {"Escape": 1, "Return": 28, "super": 125}  # evdev keycodes
+KEYS = {"Escape": 1, "Return": 28, "super": 125, "ctrl": 29, "shift": 42, "alt": 56, "Print": 99}  # evdev keycodes
 
 def rel(dx, dy):
     call(sess, S, "NotifyPointerMotionRelative", GLib.Variant("(dd)", (float(dx), float(dy)))); time.sleep(0.05)
@@ -49,9 +49,13 @@ while i < len(a):
     elif c in ("click", "rclick"):
         b = "left" if c == "click" else "right"; button(b, True); button(b, False); i += 1
     elif c == "key":
-        k = KEYS[a[i + 1]]
-        call(sess, S, "NotifyKeyboardKeycode", GLib.Variant("(ub)", (k, True))); time.sleep(0.08)
-        call(sess, S, "NotifyKeyboardKeycode", GLib.Variant("(ub)", (k, False))); i += 2
+        # "ctrl+shift+Print": modifiers down in order, the key tapped, everything released in reverse
+        ks = [KEYS[n] for n in a[i + 1].split("+")]
+        for k in ks:
+            call(sess, S, "NotifyKeyboardKeycode", GLib.Variant("(ub)", (k, True))); time.sleep(0.08)
+        for k in reversed(ks):
+            call(sess, S, "NotifyKeyboardKeycode", GLib.Variant("(ub)", (k, False))); time.sleep(0.04)
+        i += 2
     elif c == "wheel":
         # axis 0 = vertical; discrete steps, like a mouse wheel (a positive step is wheel-down in evdev
         # terms, so negate to make `wheel 1` mean "forward / up" as the Windows picker reads it)

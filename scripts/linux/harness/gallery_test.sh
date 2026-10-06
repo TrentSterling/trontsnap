@@ -11,6 +11,7 @@
 #   - Reveal stays responsive while the file manager answers slowly (fm1_mock.py)
 #   - status pill: bottom-centre, expires by itself, top bar untouched
 #   - 1500-file bulk delete reports chunked progress (runs off the UI thread)
+#   - a second Delete during a running batch is QUEUED (G13), not refused
 # Screenshots/logs: $HARNESS_OUT/gallery_test/. Exit 1 on any FAIL. ~5 min (XINPUT_SLOW pacing).
 set -u
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -104,10 +105,18 @@ else bad "G6 quick Ctrl+click x2 opened the file" "$(tail -1 "$FAKE_OPEN_LOG")";
 check "G6 ...and toggled it back off" "selected=0 "
 
 # === G9: Open goes through a reaped xdg-open ===
+# HARD-WON: on a loaded box (llvmpipe, another agent's shader run) the pointer can enter and double-press
+# inside one frame and the app sees no double click; retry up to 3 times, but only a SINGLE open may land.
 before=$(wc -l < "$FAKE_OPEN_LOG")
-env -u XINPUT_SLOW "${X[@]}" "doubleclick $(tile 4 0)"
-sleep 2
-if (( $(wc -l < "$FAKE_OPEN_LOG") == before + 1 )); then ok "G9 double-click Open reached xdg-open once"
+for attempt in 1 2 3; do
+  # Hover first: a pointer that ENTERS the tile in the frame it presses can lose the first click of the pair.
+  "${X[@]}" move $(tile 4 0); sleep 0.7
+  env -u XINPUT_SLOW "${X[@]}" "doubleclick $(tile 4 0)"
+  sleep 2.5
+  (( $(wc -l < "$FAKE_OPEN_LOG") > before )) && break
+  "${X[@]}" key Escape; park; sleep 1
+done
+if (( $(wc -l < "$FAKE_OPEN_LOG") == before + 1 )); then ok "G9 double-click Open reached xdg-open once" "attempt $attempt"
 else bad "G9 double-click Open" "log: $(tail -2 "$FAKE_OPEN_LOG" | tr '\n' '|')"; fi
 if (( $(zombies) == 0 )); then ok "G9 no zombie xdg-open left behind"
 else bad "G9 zombie xdg-open children" "$(zombies)"; fi
@@ -124,7 +133,11 @@ for pid in $(ps -eo pid,ppid,cmd | awk -v p="$(app_pid)" '$2==p && / edit / {pri
 sleep 1; "${X[@]}" focus >/dev/null 2>&1; park
 
 # === G5: the status pill: bottom-centre, expires on its own, top bar untouched ===
-shot 03_pill_before --crop 400x90+390+670; shot 03_top_before --crop 1180x40+0+0
+# HARD-WON: the baseline used to be shot straight after the previous step's pointer move, before egui had
+# repainted, so a hover highlight sat in the "before" crop and the "pill gone" diff blamed the pill.
+# Park, let the frame land, then take two identical frames.
+park; "${X[@]}" focus >/dev/null 2>&1; park; sleep 1.2
+shot 03_pill_before --crop 400x90+390+670 --settle; shot 03_top_before --crop 1180x40+0+0 --settle
 "${X[@]}" click $(tile 5 0)      # nothing selected -> copy
 check "G5 'Copied' status set" 'status="Copied"'
 park; sleep 0.4; shot 03_pill_during --crop 400x90+390+670; shot 03_top_during --crop 1180x40+0+0; shot 03_full_pill
@@ -196,7 +209,12 @@ for i in range(1500):
     Image.new("RGB", (32, 24), (i % 256, (i * 7) % 256, (i * 13) % 256)).save(f"{d}/bulk_{i:04d}.png")
 PY
 check "G7 1500 new files spliced in live" "shots=1500 shown=1500 selected=0 " 25
-"${X[@]}" key ctrl+a; sleep 0.5; "${X[@]}" key Delete; sleep 1
+# HARD-WON: earlier steps (Edit window, Reveal mock) can leave X focus elsewhere and Ctrl+A then lands
+# nowhere; focus explicitly and prove the selection before deleting.
+"${X[@]}" focus >/dev/null 2>&1; sleep 0.6
+"${X[@]}" key ctrl+a; sleep 0.5
+check "G7 Ctrl+A selected all 1500" "selected=1500 " 10
+"${X[@]}" key Delete; sleep 1
 "${X[@]}" click 520 422
 sleep 12
 if (( have_trace )); then
@@ -209,6 +227,46 @@ if (( have_trace )); then
   if grep -q 'gallery shots=0 shown=0 selected=0 status="Moved 1500 to the Trash"' "$APPLOG"; then ok "G7 final status: Moved 1500 to the Trash"
   else bad "G7 no 'Moved 1500 to the Trash' status" "last: $(last_trace | sed 's/.*gallery //')"; fi
 else skip "G7 final status" "binary has no TRONTSNAP_TEST trace"; fi
+
+
+# === G13: a second Delete while a batch is still moving is queued, not refused ===
+python3 - "$TS" <<'PY'
+import os, sys
+d = sys.argv[1]
+from PIL import Image
+src = f"{d}/_seed.png"
+Image.new("RGB", (32, 24), (9, 99, 199)).save(src)
+for i in range(1200):
+    os.link(src, f"{d}/queue_{i:04d}.png")   # hard links: 1200 tiles without 1200 encodes
+os.remove(src)
+PY
+l13=$(wc -l < "$APPLOG")
+# every 200-file chunk takes this much longer from here on (read per batch), so the second Delete below lands
+# while batch 1 is provably still moving; removed again right after
+mkdir -p "$HOME_RIG/.cache/trontsnap"; echo "${TRONTSNAP_TEST_TRASH_MS:-1500}" > "$HOME_RIG/.cache/trontsnap/test_trash_ms"
+check "G13 1200 new files spliced in live" "shots=1200 shown=1200 selected=0 " 120
+"${X[@]}" focus >/dev/null 2>&1; sleep 0.6
+"${X[@]}" key ctrl+a; sleep 0.5
+check "G13 Ctrl+A selected all 1200" "selected=1200 " 15
+"${X[@]}" key Delete; sleep 1
+"${X[@]}" click 520 422                       # confirm: batch 1 starts (6 chunks x 1.5 s)
+env -u XINPUT_SLOW "${X[@]}" key Delete       # still selected (tiles leave as chunks finish) -> batch 2 asks to confirm
+sleep 0.6
+env -u XINPUT_SLOW "${X[@]}" click 520 422
+for _ in $(seq 1 60); do (( $(files) == 0 )) && break; sleep 1; done
+# the queued batch walks 5 more slow chunks over paths that are already gone; wait for its summary
+wait_trace 'status="Moved 1200 to the Trash"' 45 >/dev/null
+rm -f "$HOME_RIG/.cache/trontsnap/test_trash_ms"
+if (( have_trace )); then
+  # The refusal status ("Still moving ... more queued") is overwritten by the next progress line before the
+  # trace sees it; what proves the queue is a SECOND batch reporting progress with its own total.
+  totals=$(tail -n +"$l13" "$APPLOG" | grep -o 'Moving to the Trash: [0-9]*/[0-9]*' | sed 's|.*/||' | sort -u | tr '\n' ' ')
+  if (( $(wc -w <<< "$totals") >= 2 )); then ok "G13 the second Delete ran as its own batch after the first" "progress totals: $totals"
+  else bad "G13 second Delete was not queued" "progress totals: ${totals:-none} (a refused or too-late request shows only 1200)"; fi
+  if grep -q 'gallery shots=0 shown=0 selected=0 status="Moved 1200 to the Trash"' "$APPLOG"; then ok "G13 one summary for the whole chain: Moved 1200 to the Trash"
+  else bad "G13 final summary" "last: $(last_trace | sed 's/.*gallery //')"; fi
+else skip "G13 queue" "binary has no TRONTSNAP_TEST trace"; fi
+if (( $(files) == 0 )); then ok "G13 nothing left in the folders"; else bad "G13 files left" "$(files)"; fi
 
 echo "  logs: $D/  (app log: $APPLOG)"
 if (( fails == 0 )); then echo "gallery_test: PASS ($skips skipped)"; else echo "gallery_test: $fails FAIL ($skips skipped)"; fi

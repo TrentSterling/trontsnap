@@ -1,0 +1,3 @@
+#!/bin/sh
+# Harness stand-in for a box without the ffmpeg CLI: what an env wrapper prints for a missing tool.
+exit 127

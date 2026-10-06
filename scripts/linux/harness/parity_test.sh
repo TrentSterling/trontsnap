@@ -16,7 +16,7 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO=$(cd "$HERE/../../.." && pwd)
 OUT=${HARNESS_OUT:-$REPO/harness_out/$(date +%F)}
 BIN=${TRONTSNAP_BIN:-$REPO/target/debug/trontsnap}
-N=94; PORT=48794
+N=${RIG_N:-94}; PORT=${RIG_PORT:-48794}; export WL_PORT=$PORT
 D=$OUT/parity_test; mkdir -p "$D"
 find "${D:?}" -maxdepth 1 -type f \( -name '*.png' -o -name '*.log' -o -name '*.dbg' \) -delete
 RIGHOME=$OUT/homes/$N

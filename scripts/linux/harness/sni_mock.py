@@ -2,7 +2,7 @@
 """Mock org.kde.StatusNotifierWatcher for a rig's PRIVATE bus (what GNOME's AppIndicator extension is
 on the real session). Logs, as JSON lines to $SNI_LOG: every RegisterStatusNotifierItem, the item's
 properties as the host would read them (Id, Status, Category, IconPixmap sizes, ToolTip, Menu), and when
-the item's bus name vanishes. SIGUSR1 = a left click: calls Activate(0,0) on the last registered item.
+the item's bus name vanishes. SIGUSR1 = a left click: calls Activate(0,0) on the last registered item that is still on the bus.
 
   gui_env.sh run N python3 sni_mock.py &
 """
@@ -23,6 +23,7 @@ XML = """<node><interface name="org.kde.StatusNotifierWatcher">
 <signal name="StatusNotifierHostRegistered"/>
 </interface></node>"""
 items, last = [], {}
+proxies = {}   # name -> proxy of every item still on the bus
 
 
 def log(d):
@@ -39,6 +40,7 @@ def inspect(bus, name):
             log({"op": "proxy-error", "name": name, "err": str(e)})
             return
         last["proxy"] = p
+        proxies[name] = p
         g = lambda k: (p.get_cached_property(k).unpack() if p.get_cached_property(k) is not None else None)
         pm = g("IconPixmap") or []
         log({"op": "item", "name": name, "id": g("Id"), "status": g("Status"), "category": g("Category"),
@@ -47,7 +49,7 @@ def inspect(bus, name):
     Gio.DBusProxy.new_for_bus(Gio.BusType.SESSION, Gio.DBusProxyFlags.NONE, None, name, "/StatusNotifierItem",
                               "org.kde.StatusNotifierItem", None, made)
     Gio.bus_watch_name(Gio.BusType.SESSION, name, Gio.BusNameWatcherFlags.NONE, None,
-                       lambda c, n: (log({"op": "gone", "name": n}), items.remove(n) if n in items else None))
+                       lambda c, n: (log({"op": "gone", "name": n}), items.remove(n) if n in items else None, proxies.pop(n, None)))
 
 
 def handle(conn, sender, path, iface, method, params, inv):
@@ -72,7 +74,9 @@ def on_bus(conn, name):
 
 
 def click(*_):
-    p = last.get("proxy")
+    # HARD-WON: the LAST REGISTERED item, not the last seen: a short-lived second instance (rec_fake S6's
+    # cold-started app) used to leave a dead proxy here, and every later click went nowhere.
+    p = next((proxies[n] for n in reversed(items) if n in proxies), None)
     if p is None:
         return True
     log({"op": "activate"})

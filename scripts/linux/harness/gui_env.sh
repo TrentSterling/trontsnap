@@ -122,11 +122,18 @@ cmd_start() {
   echo "${recorder:-x11}" > "$r/recorder"
   # RIG_APP_ARGS="--startup": argv for the app (the autostart entry runs `trontsnap --startup`).
   envs+=(RIG_APP_ARGS="${RIG_APP_ARGS:-}")
+  # RIG_KEEP_BUS=1: the app is a CHILD of a waiting shell, not the dbus-run-session payload itself, so
+  # `kill -9 app` (a crash test) leaves the private bus and everything on it (notification mock, tray
+  # watcher mock) alive for the relaunch. Default: exec, as before.
+  local inner='echo $$ > "$1/app.pid"; echo "$DBUS_SESSION_BUS_ADDRESS" > "$1/dbus.addr"
+        cd "$2"; exec "$3" $RIG_APP_ARGS'
+  if [[ ${RIG_KEEP_BUS:-0} == 1 ]]; then
+    inner='echo "$DBUS_SESSION_BUS_ADDRESS" > "$1/dbus.addr"
+        cd "$2"; "$3" $RIG_APP_ARGS & echo $! > "$1/app.pid"; wait $!; exec sleep 2147483647'
+  fi
   setsid env -u WAYLAND_DISPLAY -u XAUTHORITY -u XDG_CONFIG_HOME -u XDG_CACHE_HOME -u XDG_DATA_HOME \
       -u SESSION_MANAGER -u GNOME_DESKTOP_SESSION_ID "${envs[@]}" \
-      dbus-run-session -- bash -c '
-        echo $$ > "$1/app.pid"; echo "$DBUS_SESSION_BUS_ADDRESS" > "$1/dbus.addr"
-        cd "$2"; exec "$3" $RIG_APP_ARGS' _ "$r" "$h" "$BIN" \
+      dbus-run-session -- bash -c "$inner" _ "$r" "$h" "$BIN" \
       > "$r/app.log" 2>&1 < /dev/null &
   echo $! > "$r/session.pid"
 

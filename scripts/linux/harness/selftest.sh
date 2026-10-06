@@ -7,7 +7,15 @@ set -u
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO=$(cd "$HERE/../../.." && pwd)
 OUT=${HARNESS_OUT:-$REPO/harness_out/$(date +%F)}
-N=${1:-97}; PORT=${2:-48797}
+# HARD-WON: a leftover Xvfb :97 (not ours, from a crashed run) made the default display unusable and the
+# selftest died at "rig start". With no explicit N, walk up to the first free display + a matching port.
+if [[ -z ${1:-} ]]; then
+  N=97
+  while [[ -e /tmp/.X11-unix/X$N ]] && (( N < 110 )); do N=$((N + 1)); done
+  PORT=$((48700 + N))
+else
+  N=$1; PORT=${2:-$((48700 + N))}
+fi
 S="$OUT/selftest"; mkdir -p "$S"
 X=("$HERE/xinput.py" -d ":$N")
 fails=0

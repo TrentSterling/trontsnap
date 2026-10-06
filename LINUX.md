@@ -22,9 +22,9 @@ Build deps beyond Rust: the usual eframe set (`libgtk-3-dev` is NOT needed;
 | `xclip` | text clipboard writes (OCR, copied paths) and the fallback for everything else; used on X11 AND on GNOME Wayland (via XWayland, which Mutter bridges) | `sudo apt install xclip` |
 | `wl-clipboard` | only for wlroots/KDE compositors that implement data-control; GNOME has none, so wl-copy there is not used when xclip exists | `sudo apt install wl-clipboard` |
 | `gnome-screenshot` / `spectacle` / `grim` | screen grab fallback when xcap can't capture your compositor | usually preinstalled |
-| `ffmpeg` + `ffprobe` | recording (audio sidecar, mux, crop), video thumbnails, GIF export | `sudo apt install ffmpeg` |
+| `ffmpeg` + `ffprobe` | recording (audio sidecar, mux, crop, tail trim), video thumbnails, GIF export. Without them a kms/GNOME clip is still saved as captured (no audio, trim or crop) and a one-time "ffmpeg is missing" banner says why; it is never deleted as "too short" | `sudo apt install ffmpeg` |
 | `pkexec` + capkit's `capkit-kms` / `capkit-stop` | the fast **kms** recording backend (root helper, passwordless via capkit's polkit rule). Absent = TrontSnap falls back to GNOME screencast / x11grab | capkit (`~/capkit`) |
-| `notify-send` | one-shot CLI notices (`record` starting the app, OCR). The recorder's own banners go over D-Bus | preinstalled |
+| `notify-send` | only the fallback when there is no notification bus. Every notice (CLI one-shots, the recorder's banners) goes over D-Bus and is CLOSED explicitly: GNOME Shell ignores `-t` and holds a banner until the next keystroke | preinstalled |
 | `tesseract-ocr` | region OCR (`Ctrl+Alt+Print`, gallery "Copy text"). **Not preinstalled on Ubuntu**: without it the hotkey shows an "OCR unavailable" notification instead of a picker | `sudo apt install tesseract-ocr` |
 | `paplay` / `pw-play` / `aplay` | shutter sound + the recorder's start/stop ticks (this box has `pw-play`, no `paplay`) | preinstalled everywhere |
 
@@ -70,7 +70,8 @@ Build deps beyond Rust: the usual eframe set (`libgtk-3-dev` is NOT needed;
 - **Deleting** moves files to the XDG Trash ("Recycle Bin" on Windows) on a worker thread, 200 per
   call, with `Moving to the Trash: 400/1500` progress. A tile leaves only once its file is really gone;
   a path that vanished meanwhile is dropped silently, a file that cannot be trashed is retried alone and
-  counted in `N failed (see log)`. The folder watcher forwards deletes/moves-out as `Gone`, so a file
+  counted in `N failed (see log)`. A second Delete pressed while a batch is still moving is queued behind it
+  (one summary at the end), and clipboard copies go through one worker in click order. The folder watcher forwards deletes/moves-out as `Gone`, so a file
   removed or trashed outside the app leaves the grid too (it used to come back as a blank "ghost"
   tile that broke Ctrl+A + Delete).
 - **Status messages** are a pill at the bottom-centre of the window (they used to draw under the
@@ -100,7 +101,7 @@ gives bare Print back to GNOME, is remembered across launches, and blanks our ba
 | `Print` | `trontsnap full` |
 | `Ctrl+Print` | `trontsnap region` |
 | `Ctrl+Shift+Print` | `trontsnap record` (toggles the recorder; **starts the app first if it isn't running**) |
-| `Ctrl+Shift+Alt+Print` | `trontsnap record region` (drag a rectangle, then record just that) |
+| `Ctrl+Shift+Alt+Print` | `trontsnap record region` (drag a rectangle, then record just that; pressed while a recording runs - or is still starting - it STOPS it, no picker) |
 | `Ctrl+Alt+Print` | `trontsnap ocr` |
 
 `record` hands one command to the running app over its loopback port (48761 by default;
@@ -126,11 +127,13 @@ consumers: native-Wayland GTK4 (texture + real file path), GTK3/VTE (text + uris
 Nautilus 46 (pastes a `Screen Rec #1 (final) 100%é.mp4` that used to error).
 Not checked on this box: Discord/Electron/Chromium, Qt/KDE.
 
-`trontsnap full` hands gnome-screenshot's PNG to the clipboard and disk untouched
-(no decode/re-encode), ~1.7 s in the debug build the GNOME hotkeys run (4.8 s
-before; gnome-screenshot alone is ~1.6 s). The GNOME bindings run whichever binary the
-app was launched from (here `target/debug/trontsnap`). A release build would be faster
-still, but the bindings deliberately don't prefer `target/release` when it exists: it would
+`trontsnap full` hands gnome-screenshot's PNG to the clipboard and disk untouched (no decode/re-encode), so it costs
+about 0.1 s over the grabber itself; it no longer forks `gsettings` on every press either (only the app frees the Print key).
+The grabber is the floor, and on this box it varies with what is on screen: 1.6 s measured once, 4.3 s (2.7 s of CPU) on
+2026-10-06 with the shader-heavy terminal animating (`full` 4.45 s vs `gnome-screenshot -f` 4.33 s, same minute). A grabber
+that hangs is killed after 20 s and the hotkey says "Screenshot failed" (the one-shots notify; stderr goes nowhere from a
+keybinding). The GNOME bindings run whichever binary the app was launched from (here `target/debug/trontsnap`). A release
+build would be faster still, but the bindings deliberately don't prefer `target/release` when it exists: it would
 silently be a stale binary after every debug rebuild.
 
 ## The tray icon and the window (close, autostart, second launch)
@@ -237,12 +240,23 @@ badge appears when frames flow and clears at the stop (a synthetic `record-start
 failed recording ("Recording cancelled" / "too short"), never a clip. Pressing record again within ~1.5 s of a
 stop waits for the old kmsgrab to exit instead of refusing; a *capkit* recording in progress is refused
 ("Press Super+Alt+R to stop it") and capkit's `Super+Alt+R` during a TrontSnap recording is a normal stop. A crash
-mid-recording is salvaged at the next app start. **Opening a video from the gallery/toast is deferred while a kmsgrab
+mid-recording is salvaged at the next app start. The salvage reads the dead session's marker BEFORE the command
+port can start a new session and then touches only that session's own files (`TrontSnap_<stamp>.*` in the stage
+dir, and the capkit clip whose name stamp is the helper's start time): a `record` arriving right after the
+relaunch is not eaten, and a Super+Alt+R clip made meanwhile stays in `~/Videos/captures`. A kms start waits
+(banner "Recovering the last recording", ~5 s) while the dead session's orphan kmsgrab is being stopped. **Opening a video from the gallery/toast is deferred while a kmsgrab
 recording runs**: VLC/mpv default to VA-API hardware decode, and UVD decode + VCE encode at once hung this radeon
 (desktop frozen, hard reset). `TRONTSNAP_OPEN_WHILE_RECORDING=1` overrides; for playback in general set
 `avcodec-hw=none` in `~/.config/vlc/vlcrc` (or `vlc --avcodec-hw=none`) on this machine.
 
 Windows' blinking REC outline and capture-excluded HUD have no Linux twin (no capture exclusion exists here).
+
+**The pointer in kms recordings is a pending decision, not a bug being fixed.** kmsgrab reads the primary plane; the
+pointer is on the hardware cursor plane. Options, none applied: (1) `MUTTER_DEBUG_DISABLE_HW_CURSORS=1` in
+`~/.config/environment.d/` (re-login; the GPU then composites the pointer, a compositor frame per move on this APU);
+(2) record with the `gnome` backend whenever "Capture cursor" is on (draws it, but 3-14 fps on this APU); (3) leave as is
+(the Settings text and the first-recording banner already say so). Nothing can overlay a sampled pointer position:
+on Wayland no client can read it outside its own windows.
 
 ## Test harness
 
@@ -260,6 +274,33 @@ state trace + Trash/file facts), and `tray_test.sh` (the tray icon + close-to-tr
 registration, menu layout, Close hides/shows, the recording badge and label flip, check items, watcher loss, Quit; 37 checks). `TRONTSNAP_PORT` overrides the command port (default 48761);
 `TRONTSNAP_TEST=1` stops an instance from installing keybindings/autostart (and from registering a tray item unless
 `TRONTSNAP_TRAY=on`).
+
+`run_all.sh` runs the whole set sequentially (one rig at a time) and checks the kernel log for UVD/VCE/radeon errors
+at the end; `RIG_N` / `RIG_PORT` pick the display and port. `rec_fake_test.py` also covers: no ffprobe on PATH (S12),
+crash + relaunch + immediate `record` (S13), what the salvage may touch (S14), `record region` during a recording
+(S15), one-shot notices closing, failed/hung grabs (S16). `gallery_test.sh` G13 = a second Delete queued behind a
+running one; `paste_test.sh` K = 20000 paths over stdin, and a 36 MB copy then a small one end in click order (this
+guards the FIFO; the old thread-per-copy race needs two clicks inside ~100 ms, which XTest pacing here cannot make, so
+the pre-fix binary passes it too). Rigs started with
+`RIG_KEEP_BUS=1` survive `kill -9` of the app (the crash tests).
+
+## Verified only in rigs, still owed a physical run
+
+Everything above was driven in Xvfb rigs, a fake root helper, private headless GNOME Shells and (for the recorder, at
+most three short clips) the real session. What a private shell DOES cover (`hotkey_wl_test.sh`, `notice_wl_test.sh`):
+the five bindings pressed as real GNOME custom keybindings (a private `gsd-media-keys` + real key events), and a
+banner disappearing by itself. What it cannot, and what was NOT done with real keys on the real desktop; do this once
+and record the result here:
+
+- press each of the five bindings on the real session, double-tap Ctrl+Shift+Print, record 10 s then restart within
+  2 s (the real kms helper, not the fake one: only sync, region+crop and external stop ran against it);
+- Esc in the region picker on the real session (the private shell gives no freshly mapped window keyboard focus, so
+  only the right-click cancel is proven);
+- Ctrl+click multi-select + Ctrl+C + paste into Nautilus and a terminal in the live gallery (XWayland window);
+- watch the tray dot on the real top bar (the `hidetopbar` extension hides it until the pointer touches the edge).
+
+Not verifiable on this one-output laptop: multi-monitor (PAR-14), Windows runtime of the shared gallery changes
+(CHANGELOG has the smoke list), a 5-minute clip's stop-to-delivery time, the gnome backend at lower fps.
 
 ## Known gaps vs Windows (telling the truth here, in rough priority order)
 

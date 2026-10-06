@@ -22,9 +22,16 @@ What it proves (each check prints PASS/FAIL; exit 1 on any FAIL):
   S10 tray icon (StatusNotifierItem): registered from app start (persistent), red badge on it only while
       frames flow, a click (Activate) stops the recording (mock watcher on the rig bus; tray_test.sh covers the rest)
   S11 opening a video from the gallery is deferred while a kmsgrab recording runs, and works after
+  S12 ffprobe missing (a box without the ffmpeg CLI): clips are delivered, not deleted as "too short" - live and
+      crash-salvaged - and the user is told once why there is no audio/trim
+  S13 crash, relaunch, `record` 0.3 s after the app binds: the salvage must not eat the NEW recording (both clips
+      delivered, told apart by the wall clock in their frames, new one keeps its audio)
+  S14 salvage touches only the dead session's own files: a capkit Super+Alt+R clip and a live-looking stage file survive
+  S15 `record region` pressed during a recording (also during the Starting dead time) stops it: no picker
+  S16 one-shot CLI notices expire (explicit CloseNotification), a failed grab is announced, a stuck grabber is killed
   X1  x11 backend (ffmpeg x11grab of the rig's Xvfb): full screen + a region, audio kept and as long as the video
 
-  rec_fake_test.py [--only S1,S3] [--no-audio] [--keep]
+  rec_fake_test.py [--only S1,S3] [--no-audio] [--keep]     (RIG_N / RIG_PORT override :93 / 48793)
 """
 import argparse, json, os, re, signal, socket, subprocess, sys, time
 from pathlib import Path
@@ -32,7 +39,8 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[2]
 OUT = Path(os.environ.get("HARNESS_OUT") or REPO / "harness_out" / time.strftime("%Y-%m-%d"))
-N, PORT = 93, 48793
+N = int(os.environ.get("RIG_N", 93))
+PORT = int(os.environ.get("RIG_PORT", 48793))
 FD = OUT / "fakekms"
 HOME = OUT / "homes" / str(N)
 PIC = HOME / "Pictures" / "TrontSnap"
@@ -199,7 +207,7 @@ def shot(name):
 
 
 # === Rig ===
-def rig_start(audio, recorder="kms"):
+def rig_start(audio, recorder="kms", path_prefix=None):
     rig_stop()
     FD.mkdir(parents=True, exist_ok=True)
     for f in ("log", "notify.jsonl", "cfg", "ffmpeg.pid", "kmsgrab"):
@@ -216,7 +224,14 @@ def rig_start(audio, recorder="kms"):
     os.environ.update(TRONTSNAP_TRAY="on", FAKE_KMS_DIR=str(FD), NOTIFY_LOG=str(FD / "notify.jsonl"), RIG_SEED_HOOK=str(hook),
                       TRONTSNAP_KMS_HELPER=str(HERE / "fake_kms" / "capkit-kms"),
                       TRONTSNAP_KMS_STOP=str(HERE / "fake_kms" / "capkit-stop"))
-    r = gui("start", str(N), str(PORT), "--recorder", recorder)
+    os.environ["RIG_KEEP_BUS"] = "1"  # `kill -9 app` (S12-S14) must leave the bus + mocks alive
+    saved_path = os.environ["PATH"]
+    if path_prefix:  # only the rig's APP sees it: the harness's own ffprobe stays real
+        os.environ["PATH"] = f"{path_prefix}:{saved_path}"
+    try:
+        r = gui("start", str(N), str(PORT), "--recorder", recorder)
+    finally:
+        os.environ["PATH"] = saved_path
     if "READY" not in r.stdout:
         sys.exit(f"rig failed: {r.stdout}{r.stderr}")
     if recorder == "kms":
@@ -242,7 +257,9 @@ def rig_stop():
 
 def pause_between_scenarios():
     # let the previous scenario's helper/finalize/banners drain so timings don't bleed over
-    wait(lambda: not fake_ffmpeg() and not stage() and not audio_ffmpeg(), 10)
+    # HARD-WON: 10 s was too short on a loaded box (another agent's shader run): S10's stop took 44 s,
+    # the next scenario started over a still-live recording and cascaded. Healthy runs return at once.
+    wait(lambda: not fake_ffmpeg() and not stage() and not audio_ffmpeg(), 60)
     time.sleep(0.6)
 
 
@@ -462,7 +479,7 @@ def s8():
 def s6(audio):
     header("S6 `trontsnap record` with NO app running")
     cfg(INIT="1.0", STOP_DELAY="0.6", MODE="normal")
-    port = 48794
+    port = PORT + 1
     fake_notify = FD / "cli_notify.log"
     fake_notify.unlink(missing_ok=True)
     before = media()
@@ -472,7 +489,11 @@ def s6(audio):
                        env=env, capture_output=True, text=True, timeout=60)
     say(f"    CLI exited {r.returncode} after {time.time() - t0:.1f}s {r.stderr.strip()[-200:]}")
     check("S6: the CLI exited 0", r.returncode == 0)
-    check("S6: it told the user the app was starting", "TrontSnap is starting" in (fake_notify.read_text() if fake_notify.exists() else ""))
+    starting = [n for n in notifs(t0) if n.get("summary") == "TrontSnap is starting"]
+    check("S6: it told the user the app was starting",
+          bool(starting) or "TrontSnap is starting" in (fake_notify.read_text() if fake_notify.exists() else ""))
+    check("S6: ...and took that banner down once the app had the command (it would be in the clip's first frames)",
+          bool(starting) and any(n["op"] == "close" and n["id"] == starting[0]["id"] for n in notifs(t0)))
     live = wait(lambda: flog_t("helper_start", t0), 25)
     check("S6: the recording started in the freshly started app", bool(live), "no helper_start in the fake log")
     time.sleep(4.5)
@@ -607,7 +628,7 @@ def s10():
     t_click = time.time()
     for p in procs(lambda a: str(HERE / "sni_mock.py") in a):
         os.kill(p, signal.SIGUSR1)
-    clip = deliver_wait(before)
+    clip = deliver_wait(before, 120)  # generous: on a loaded box the stop alone has taken 44 s
     check("S10: clicking the badge (Activate) stopped the recording and a clip was delivered", clip is not None)
     time.sleep(1.0)
     after = tray_icon()
@@ -629,13 +650,16 @@ def s11():
     time.sleep(1.0)
     open_log.unlink(missing_ok=True)
     nlog.unlink(missing_ok=True)
+    t_open = time.time()
     subprocess.run(xin + ["rightclick", "129", "134"], capture_output=True)
     time.sleep(1.5)
     subprocess.run(xin + ["click", "153", "221"], capture_output=True)  # "Open" in a video tile's menu
     time.sleep(2.0)
     check("S11: Open on a video did NOT launch the player during the recording",
           not (open_log.exists() and open_log.read_text().strip()), open_log.read_text() if open_log.exists() else "")
-    check("S11: it said why", nlog.exists() and "Not opening the video yet" in nlog.read_text(), nlog.read_text() if nlog.exists() else "no notify-send call")
+    said = [n for n in notifs(t_open) if n.get("summary") == "Not opening the video yet"]
+    check("S11: it said why", bool(said) or (nlog.exists() and "Not opening the video yet" in nlog.read_text()),
+          "no notification")
     send("record")
     deliver_wait(before)
     pause_between_scenarios()
@@ -646,6 +670,238 @@ def s11():
     subprocess.run(xin + ["click", "153", "221"], capture_output=True)
     ok = wait(lambda: open_log.exists() and open_log.read_text().strip(), 8)
     check("S11: with no recording running, Open launches the player", bool(ok), open_log.read_text() if open_log.exists() else "no xdg-open call")
+
+
+
+# === Crash helpers (S12-S14) ===
+NOPROBE = str(HERE / "fake_noprobe")
+
+
+def port_open(port=PORT):
+    try:
+        socket.create_connection(("127.0.0.1", port), timeout=0.3).close()
+        return True
+    except OSError:
+        return False
+
+
+def kill_app():
+    """SIGKILL the rig's app (a crash: no shutdown hook runs, the fake kmsgrab keeps going like the real root one)."""
+    pid = app_pid()
+    os.kill(pid, signal.SIGKILL)
+    wait(lambda: not Path(f"/proc/{pid}").exists() and not port_open(), 8)
+    return pid
+
+
+def relaunch_app(path_prefix=None):
+    """Start the app again inside the rig (same bus, HOME, display) the way the autostart entry does."""
+    env = dict(os.environ, HARNESS_OUT=str(OUT))
+    if path_prefix:
+        env["PATH"] = f"{path_prefix}:{env['PATH']}"
+    log = open(OUT / "rigs" / str(N) / "app.log", "a")  # same file: live_count() keeps counting
+    p = subprocess.Popen([str(HERE / "gui_env.sh"), "run", str(N), "env", "TRONTSNAP_TRAY=on", BIN, "--startup"],
+                         env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+    (OUT / "rigs" / str(N) / "app.pid").write_text(str(p.pid))  # `gui_env.sh stop` kills what this names
+    return p
+
+
+def make_clip(path, secs=3):
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=30",
+                    "-t", str(secs), "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", str(path)], check=True)
+
+
+def s12(audio):
+    header("S12 ffprobe missing: clips are delivered, not deleted (live and crash-salvaged)")
+    rig_start(audio, path_prefix=NOPROBE)
+    cfg(INIT="1.0", STOP_DELAY="0.8", MODE="normal")
+    before = media()
+    mark = time.time()
+    record_once(4.0)
+    clip = deliver_wait(before, 40)
+    sums = [n.get("summary") for n in notifs(mark)]
+    say(f"    banners: {sums}")
+    check("S12: the clip was delivered although ffprobe cannot run", clip is not None and probe(clip) is not None)
+    check("S12: no 'Recording too short' / 'cancelled' banner", "Recording too short" not in sums and "Recording cancelled" not in sums, str(sums))
+    check("S12: the user was told once what is missing", sums.count("ffmpeg is missing") == 1, str(sums))
+    check("S12: stage dir drains", wait(lambda: not stage(), 8) is not None and not stage(), str(stage()))
+    # crash with the same missing tool: the salvage must keep the clip too
+    lc = live_count()
+    send("record")
+    wait(lambda: live_count() > lc, 15)
+    time.sleep(2.5)
+    kill_app()
+    seen = media()
+    relaunch_app(NOPROBE)
+    salv = wait(lambda: sorted(media() - seen), 45)
+    check("S12: the crash-salvaged clip survived (it used to be deleted: no ffprobe = 'unreadable')",
+          bool(salv) and probe(PIC / salv[-1]) is not None, str(salv))
+    check("S12: no kmsgrab left", wait(lambda: not fake_ffmpeg(), 10) is not None and not fake_ffmpeg())
+    rig_start(audio)  # back to a normal rig for whatever runs next
+
+
+def s13(audio):
+    header("S13 crash, relaunch, `record` 0.3 s after the app binds")
+    cfg(INIT="1.0", STOP_DELAY="0.8", MODE="normal")
+    before = media()
+    lc = live_count()
+    send("record")
+    wait(lambda: live_count() > lc, 15)
+    time.sleep(3.0)
+    kill_app()
+    t_kill = time.time()
+    check("S13: the crash left a kmsgrab running and a marker (like the real root helper)",
+          bool(fake_ffmpeg()) and (STAGE / "session.marker").exists())
+    mark = time.time()
+    lc = live_count()
+    relaunch_app()
+    wait(lambda: port_open(), 25, 0.02)
+    time.sleep(0.3)
+    t_rec = send("record")
+    ns = lambda: [n.get("summary") for n in notifs(mark)]
+    wait(lambda: live_count() > lc, 40)
+    check("S13: the new recording went live (waited for the salvage, was not refused)",
+          live_count() > lc and "Another recording is running" not in ns(), str(ns()))
+    time.sleep(3.5)
+    t_stop = send("record")
+    wait(lambda: len(media() - before) >= 2, 60)
+    new = sorted(media() - before)
+    check("S13: both clips delivered (the salvaged one and the new one)", len(new) == 2, str(new))
+    check("S13: 'Recovered a recording' was announced", "Recovered a recording" in ns(), str(ns()))
+    if len(new) == 2:
+        ref = t_kill
+        walls = sorted(((frame_wall(PIC / n, "first", ref), n) for n in new))
+        (w_old, n_old), (w_new, n_new) = walls
+        info_old, info_new = probe(PIC / n_old), probe(PIC / n_new)
+        say(f"    salvaged clip starts {w_old - t_kill:+.1f}s vs the kill; new clip starts {w_new - t_rec:+.1f}s vs its press")
+        check("S13: the salvaged clip is the dead session's (frames from before the kill)", w_old < t_kill, f"{w_old - t_kill:+.1f}s")
+        check("S13: the new clip is the NEW session's (frames from after the relaunch)", w_new > t_rec - 0.5, f"{w_new - t_rec:+.1f}s")
+        check("S13: the new clip is readable h264 and about the length recorded (3-6 s)",
+              bool(info_new) and bool(info_new["v"]) and 2.5 <= info_new["dur"] <= 6.5, str(info_new and info_new["dur"]))
+        if audio and info_new:
+            check("S13: the new clip KEPT its audio (the sidecar was not deleted as a crash leftover)",
+                  info_new["a"] is not None and abs(info_new["dur"] - info_new["a"]["dur"]) < 0.2, str(info_new["a"]))
+    check("S13: nothing left behind (stage, captures, kmsgrab, marker)",
+          wait(lambda: not stage() and not fake_ffmpeg(), 15) is not None and not stage() and not fake_ffmpeg() and not list(CAP.glob("*")),
+          f"{stage()} {fake_ffmpeg()} {list(CAP.glob('*'))}")
+
+
+def s14():
+    header("S14 salvage takes only the dead session's own files (not capkit's clip, not a live stage file)")
+    cfg(INIT="1.0", STOP_DELAY="0.8", MODE="normal")
+    kill_app()
+    now = int(time.time())
+    start = now - 60
+    stamp = "2026-01-01_00-00-00"
+    STAGE.mkdir(parents=True, exist_ok=True)
+    CAP.mkdir(parents=True, exist_ok=True)
+    hhmmss = lambda t: time.strftime("%Y%m%d_%H%M%S", time.localtime(t))
+    mine = CAP / f"rec_{hhmmss(start + 2)}.mp4"   # what the dead session's helper wrote
+    other = CAP / f"rec_{hhmmss(now - 20)}.mp4"   # a Super+Alt+R recording made after the crash
+    make_clip(mine)
+    make_clip(other)
+    (STAGE / "session.marker").write_text(
+        f"backend=Kms\nstart={start}\nsession=1\nstamp={stamp}\npid=999999\nvideo_pgid=0\naudio_pgid=0\n")
+    (STAGE / f"TrontSnap_{stamp}.audio.m4a").write_bytes(b"\0" * 64)
+    live = STAGE / "TrontSnap_2099-01-01_00-00-00.mp4"       # a newer session's in-progress file (no moov yet)
+    live_audio = STAGE / "TrontSnap_2099-01-01_00-00-00.audio.m4a"
+    live.write_bytes(b"\0" * 9000)
+    live_audio.write_bytes(b"\0" * 64)
+    old_mux = STAGE / "TrontSnap_2026-01-01_00-00-01.mp4.muxing"  # an older process's half-done temp
+    old_mux.write_bytes(b"\0" * 64)
+    os.utime(old_mux, (start, start))
+    before = media()
+    mark = time.time()
+    relaunch_app()
+    gone = wait(lambda: not (STAGE / "session.marker").exists(), 30)
+    time.sleep(1.0)
+    check("S14: the stale marker was cleared", bool(gone))
+    new = sorted(media() - before)
+    check("S14: the dead session's own capkit clip (matched by the helper's name stamp) was recovered", len(new) == 1 and probe(PIC / new[0]) is not None, str(new))
+    check("S14: an unrelated capkit clip made later is STILL in ~/Videos/captures", other.exists(), str(list(CAP.glob("*"))))
+    check("S14: a live-looking stage file of another session was left alone", live.exists() and live_audio.exists(), str(stage()))
+    check("S14: the dead session's audio sidecar and an old half-done temp were swept",
+          not (STAGE / f"TrontSnap_{stamp}.audio.m4a").exists() and not old_mux.exists(), str(stage()))
+    for p in (live, live_audio, other):
+        p.unlink(missing_ok=True)
+    pause_between_scenarios()
+
+
+def reap(p, secs=30):
+    """p.wait that kills a hung child (an old binary's picker waits for a drag) and reports rc None."""
+    try:
+        return p.wait(timeout=secs)
+    except subprocess.TimeoutExpired:
+        p.kill()
+        p.wait()
+        return None
+
+
+def find_window(title):
+    return subprocess.run([str(HERE / "xinput.py"), "-d", f":{N}", "find", title], capture_output=True, text=True).stdout.strip()
+
+
+def s15():
+    header("S15 `record region` pressed during a recording stops it instead of opening the picker")
+    cfg(INIT="1.0", STOP_DELAY="0.8", MODE="normal")
+    env = dict(os.environ, HARNESS_OUT=str(OUT))
+    region_cli = lambda: subprocess.Popen([str(HERE / "gui_env.sh"), "run", str(N), BIN, "record", "region"], env=env,
+                                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    before = media()
+    lc = live_count()
+    send("record")
+    wait(lambda: live_count() > lc, 15)
+    time.sleep(1.5)
+    p = region_cli()
+    seen = wait(lambda: find_window("TrontSnap Region"), 5, 0.3)
+    check("S15: no picker window appeared during the recording", not seen, str(seen))
+    rc = reap(p)
+    check("S15: the CLI exited 0 (it did not sit in a picker waiting for a drag)", rc == 0, f"rc={rc}")
+    clip = deliver_wait(before)
+    check("S15: the recording was stopped and delivered", clip is not None and probe(clip) is not None)
+    pause_between_scenarios()
+    # the dead time (Starting): the same press cancels it
+    mark = time.time()
+    send("record")
+    time.sleep(0.4)
+    p = region_cli()
+    seen = wait(lambda: find_window("TrontSnap Region"), 3, 0.3)
+    check("S15: no picker during the Starting dead time either", not seen, str(seen))
+    reap(p)
+    ok = wait(lambda: any(n.get("summary") == "Recording cancelled" for n in notifs(mark)), 20)
+    check("S15: ...it cancelled the recording that was starting", bool(ok), str([n.get("summary") for n in notifs(mark)]))
+    pause_between_scenarios()
+
+
+def s16():
+    header("S16 one-shot CLI notices: closed explicitly, failures announced, a stuck grabber killed")
+    env = dict(os.environ, HARNESS_OUT=str(OUT))
+    run = lambda *a, **kw: subprocess.run([str(HERE / "gui_env.sh"), "run", str(N), *a], env=kw.pop("env", env),
+                                          capture_output=True, text=True, **kw)
+    mark = time.time()
+    r = run(BIN, "ocr", timeout=30)  # no tesseract on this box
+    shown = wait(lambda: [d for d in notifs(mark) if d["op"] == "notify" and d.get("summary") == "OCR unavailable"], 8)
+    check("S16: `ocr` without tesseract posts its notice over D-Bus", bool(shown), f"rc={r.returncode}")
+    if shown:
+        closed = wait(lambda: [d for d in notifs(mark) if d["op"] == "close" and d["id"] == shown[0]["id"]], 14)
+        dt = (closed[0]["t"] - shown[0]["t"]) if closed else None
+        check("S16: ...and a detached closer takes it down after ~6 s (GNOME would keep it until the next keystroke)",
+              dt is not None and 5.0 <= dt <= 10.0, f"{dt}")
+    # a failed grab says so (no display, no grabber on PATH)
+    mark = time.time()
+    r = run("env", "PATH=/nonexistent", "DISPLAY=:77", BIN, "full", timeout=60)
+    sh = wait(lambda: [d for d in notifs(mark) if d["op"] == "notify" and d.get("summary") == "Screenshot failed"], 8)
+    check("S16: `full` with no grabber exits 1 AND announces it", r.returncode == 1 and bool(sh), f"rc={r.returncode} {r.stderr.strip()[-120:]}")
+    # a grabber that hangs is killed at the timeout (it used to hang the hotkey for 60+ s)
+    shim = FD / "hang_bin"
+    shim.mkdir(parents=True, exist_ok=True)
+    (shim / "gnome-screenshot").write_text("#!/bin/sh\nexec sleep 120\n")
+    (shim / "gnome-screenshot").chmod(0o755)
+    mark = time.time()
+    t0 = time.time()
+    r = run("env", f"PATH={shim}:/usr/bin:/bin", "DISPLAY=:77", BIN, "full", timeout=90)
+    dt = time.time() - t0
+    check("S16: a hung grabber is killed at ~20 s and the failure announced", 18 <= dt <= 40 and r.returncode == 1, f"{dt:.1f}s rc={r.returncode}")
+    check("S16: the hung grabber process is gone", not procs(lambda a: a[:2] == ["sleep", "120"]), str(procs(lambda a: a[:2] == ["sleep", "120"])))
 
 
 def s9_note():
@@ -665,7 +921,8 @@ def main():
     rig_start(audio) if (not only or only - {"X1"}) else None
     try:
         for key, fn in (("S1", lambda: s1(audio)), ("S2", s2), ("S3", s3), ("S4", s4), ("S5", lambda: s5(audio)),
-                        ("S8", s8), ("S6", lambda: s6(audio)), ("S7", s7), ("S10", s10), ("S11", s11)):
+                        ("S8", s8), ("S6", lambda: s6(audio)), ("S7", s7), ("S10", s10), ("S11", s11),
+                        ("S15", s15), ("S16", s16), ("S13", lambda: s13(audio)), ("S14", s14), ("S12", lambda: s12(audio))):
             if want(key):
                 pause_between_scenarios()
                 fn()

@@ -18,7 +18,7 @@ set -u
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO=$(cd "$HERE/../../.." && pwd)
 OUT=${HARNESS_OUT:-$REPO/harness_out/$(date +%F)}
-N=86; PORT=48786
+N=${RIG_N:-86}; PORT=${RIG_PORT:-48786}
 D=$OUT/tray_test; mkdir -p "$D"
 RIGHOME=$OUT/homes/$N
 X=("$HERE/xinput.py" -d ":$N")

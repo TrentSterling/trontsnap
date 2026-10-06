@@ -435,3 +435,34 @@ MACHINE SAFETY (learned the hard way, this box hard-reset once):
   `--backend gnome` never touches the VCE.
 - A relative template path makes GNOME Shell write under `~/Videos/`; both scripts pass an
   absolute one.
+
+## Everything at once, and the crash/notice additions (2026-10-06)
+
+```
+run_all.sh [--only selftest,paste,gallery,parity,tray,notice,recfake] [--skip ...]   # RIG_N=95 RIG_PORT=48795
+```
+
+Runs the suites above sequentially (ONE rig at a time: 6 GB RAM), logs each to `$HARNESS_OUT/run_all/<suite>.log`,
+checks the kernel log for `uvd|vce|radeon.*error|hung` at the end, writes `summary.txt`, exits 1 on any failure.
+Refuses to start if its display/port is busy. `rec_test.sh` (real screen, real VCE, capped) is deliberately NOT in it.
+`selftest.sh` with no arguments walks up from :97 to the first free display (an orphan Xvfb used to block it).
+
+- `RIG_KEEP_BUS=1 gui_env.sh start ...`: the app is a child of a waiting shell instead of the `dbus-run-session`
+  payload, so `kill -9 app` leaves the private bus and its mocks alive (crash tests relaunch with
+  `gui_env.sh run N env TRONTSNAP_TRAY=on target/debug/trontsnap --startup`). `rec_fake_test.py` always sets it.
+- `rec_fake_test.py` S12-S16: no ffprobe on PATH (`fake_noprobe/ffprobe` exits 127), crash + relaunch + `record`
+  0.3 s after bind (the two clips are told apart by the wall clock inside their frames), what the salvage may touch,
+  `record region` during a recording, one-shot notices closing / failed and hung grabs. `RIG_N` / `RIG_PORT` pick the rig.
+  Negative control: `TRONTSNAP_BIN=<old binary>` fails them (14 of the 21 checks in S12-S15 failed on the pre-fix binary).
+- `notice_wl_test.sh`: a private headless GNOME Shell shows a plain `notify-send -t 2000` banner (still up 9 s later:
+  GNOME holds banners until user input) and `trontsnap ocr`'s notice (gone by itself 9 s later). Read the PNGs.
+- `<cache>/trontsnap/test_trash_ms` holding a number (TRONTSNAP_TEST instances only, read per delete batch) stretches
+  each 200-file trash chunk by that many ms, so `gallery_test.sh` G13 can land a second Delete while a batch is
+  provably still moving (the test writes it for that one step and removes it).
+- `hotkey_wl_test.sh`: the five GNOME bindings PRESSED. A private headless GNOME Shell + a private `gsd-media-keys`
+  (it complains about the missing session manager and works anyway) + the app without the TEST guard (it installs its
+  bindings into that session's dconf) + real key events through mutter's RemoteDesktop (`wl_input.py key
+  ctrl+shift+Print`). Asserts: Print -> a 1366x768 PNG, Ctrl+Shift+Print x2 -> a clip (hook recorder, `ffmpeg -re -f
+  lavfi`), Ctrl+Shift+Alt+Print during a recording -> no picker and the clip is delivered, Ctrl+Alt+Print -> the OCR
+  notice, Ctrl+Print / Ctrl+Shift+Alt+Print -> a picker process. Pickers are closed with a right click: nothing in the
+  headless shell gets keyboard focus for a freshly mapped window (zenity ignores Escape too), so a KEY cannot reach it.
