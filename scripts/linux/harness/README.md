@@ -40,6 +40,12 @@ scripts/linux/harness/gui_env.sh stop 99
   ones (mtimes 90 min apart) + 1 real mp4. Gallery opens on the Gallery tab
   ("13 shots"). `--bare` = empty folder. `--recorder x11|gnome|kms|hook` sets
   `TRONTSNAP_RECORDER`. Re-running `start` re-seeds (wipes only `homes/N`).
+- The rig ALWAYS exports `TRONTSNAP_RECORDER` (default `x11`, i.e. x11grab of the Xvfb screen):
+  the default backend order is hook > kms > gnome > x11 and `kms` shells out to the passwordless
+  capkit-kms helper, so an unpinned rig would record the REAL screen on the VCE. `gui_env.sh run`
+  inherits the rig's choice. Only pass `--recorder kms` when the test is about kms.
+- `--keep-home` = start without re-seeding (does a setting survive a relaunch?).
+  `RIG_APP_ARGS="--startup" gui_env.sh start ...` passes argv to the app (the autostart entry runs `--startup`).
 - `RIG_SEED_HOOK=/path/script` runs `script <temp-HOME>` after the default seed and before the app starts
   (the gallery scans once at launch): use it for a ShareX archive (`$HOME/Documents/ShareX/Screenshots/YYYY-MM/`),
   odd filenames, webm, truncated PNGs. Example: `harness_out/2026-10-05/audit-gallery/seed2.sh`.
@@ -214,3 +220,30 @@ clipboard unless noted. A selection only exists while its owner lives.
   `snap run --shell firefox -c "DISPLAY=:N GDK_BACKEND=x11 MOZ_ENABLE_WAYLAND=0 .../firefox --no-remote --profile P file://.../paste_page.html"`
   (plain `firefox` says "cannot open display"; the snap wrapper must be bypassed).
   Focus it with `xinput.py -d :N focus 0x<winid>` (its X name is empty).
+
+## Windows compile check (`wincheck.sh`) and the real-Wayland rig (`wl_env.sh`) (2026-10-05 parity audit)
+
+`wincheck.sh` = `cargo check --target x86_64-pc-windows-gnu --workspace --bins --tests` from this Linux box
+(rust-std for the target is already installed; no mingw: check never links, and a fake `windres` + host `ar`
+satisfy winresource, so `build.rs` is untouched). Own `CARGO_TARGET_DIR` (`harness_out/<date>/wincheck-target`,
+~1.3 GB, never takes the lock on `target/`). Cold ~10 min, warm ~10 s-1.5 min. Proven non-vacuous: an error
+injected into a `cfg(windows)` fn is caught, one injected into a `cfg(not(windows))` fn is invisible to it.
+It proves the tree COMPILES for Windows (gnu ABI, not msvc); it cannot run anything. Run it before pushing any
+shared-code edit (anything outside `src/linux/`). CI (`.github/workflows/ci.yml`) is the real Windows build.
+
+`wl_env.sh` = a private headless GNOME Shell (mutter 46) so TrontSnap runs as a genuine native-Wayland client,
+with scripted pointer/keys (`wl_env.sh input ...` over mutter's RemoteDesktop D-Bus API) and screenshots
+(`wl_env.sh shot out.png`). Xvfb cannot reproduce Wayland: winit-wayland's `set_visible` is a no-op,
+`set_minimized(false)` is ignored, `focus_window` is empty, and no `app_id` is sent.
+```
+H/wl_env.sh start harness_out/<date>/homes/94   # optional seed home (Pictures + settings)
+(setsid H/wl_env.sh run target/debug/trontsnap > app.log 2>&1 < /dev/null &)   # port 48794, TEST=1, x11 recorder
+H/wl_env.sh input key Escape                    # leave the Activities overview once
+H/wl_env.sh input abs 1342 52 wait 0.5 click    # walk the pointer to X,Y and click
+H/wl_env.sh shot out.png ; H/wl_env.sh stop     # kill the client by its port pid first
+```
+Safety: headless mutter opens the radeon render node (no modesetting) with `LIBGL_ALWAYS_SOFTWARE=1`; no video
+decode is involved, but check `journalctl -k -b --since "-2 min" | grep -i -E "uvd|vce|radeon.*error|hung"` after
+`start` and stop at the first hit. XWayland clients do not work in it (no systemd --user on the private bus), so the
+toast (which strips WAYLAND_DISPLAY to dock on XWayland) cannot be tested there. Never pin the pointer top-left (hot corner).
+

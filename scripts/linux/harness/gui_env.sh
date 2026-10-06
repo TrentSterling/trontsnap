@@ -2,7 +2,7 @@
 # gui_env.sh — isolated TrontSnap GUI rig: own Xvfb, own dbus session, own temp
 # HOME, own command port. Nothing it does can reach the live session.
 #
-#   gui_env.sh start  N PORT [--no-guard] [--bare] [--recorder x11|gnome|kms|hook]
+#   gui_env.sh start  N PORT [--no-guard] [--bare] [--keep-home] [--recorder x11|gnome|kms|hook]
 #   gui_env.sh stop   N
 #   gui_env.sh status [N]
 #   gui_env.sh run    N CMD...      run CMD inside the rig's env (DISPLAY, HOME, dbus)
@@ -12,6 +12,8 @@
 # --no-guard : don't set TRONTSNAP_TEST=1 (used once to prove the private dbus +
 #              temp HOME isolate gsettings/autostart even without the guard).
 # --bare     : empty Pictures/TrontSnap instead of the seeded 12 PNG + 1 mp4.
+# --keep-home: reuse the existing temp HOME as-is (no re-seed) for relaunch/persistence tests.
+# RIG_APP_ARGS="--startup" (env) passes argv to the app.
 set -u
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO=$(cd "$HERE/../../.." && pwd)
@@ -72,12 +74,13 @@ cmd_start() {
   check_n "$n"
   [[ $port =~ ^[0-9]+$ ]] || die "PORT required (usage: start N PORT)"
   [[ $port != 48761 ]] || die "48761 is the live app's port"
-  local guard=1 recorder=""
+  local guard=1 recorder="" keep=0
   BARE=0
   while (( $# )); do
     case $1 in
       --no-guard) guard=0 ;;
       --bare) BARE=1 ;;
+      --keep-home) keep=1 ;;
       --recorder) recorder=$2; shift ;;
       *) die "unknown option $1" ;;
     esac
@@ -90,7 +93,7 @@ cmd_start() {
   fi
   port_listening "$port" && die "port $port is already in use"
   [[ -e /tmp/.X11-unix/X$n ]] && die "display :$n is taken (stale socket? stop it or pick another N)"
-  rm -f "$r"/*.pid "$r"/*.log "$r/dbus.addr"
+  rm -f "$r"/*.pid "$r"/*.log "$r/dbus.addr" "$r/recorder"
   echo "$port" > "$r/port"
 
   # --- Xvfb ---
@@ -99,7 +102,8 @@ cmd_start() {
   for _ in $(seq 1 50); do [[ -S /tmp/.X11-unix/X$n ]] && break; sleep 0.1; done
   [[ -S /tmp/.X11-unix/X$n ]] || { cat "$r/xvfb.log" >&2; die "Xvfb :$n did not come up"; }
 
-  seed_home "$n"
+  # --keep-home: restart tests (does a setting survive a relaunch?) must not re-seed the temp HOME.
+  if (( keep )); then mkdir -p "$(hdir "$n")"; else seed_home "$n"; fi
   local h; h=$(hdir "$n")
   # RIG_SEED_HOOK=/path/script: extra seeding (ShareX archive, odd filenames...) run with the
   # temp HOME as $1 AFTER the default seed and BEFORE the app starts (the gallery scans once at launch).
@@ -110,12 +114,19 @@ cmd_start() {
   local envs=(DISPLAY=":$n" HOME="$h" TRONTSNAP_PORT="$port" XDG_SESSION_TYPE=x11
               LIBGL_ALWAYS_SOFTWARE=1 RUST_BACKTRACE=1)
   (( guard )) && envs+=(TRONTSNAP_TEST=1)
-  [[ -n $recorder ]] && envs+=(TRONTSNAP_RECORDER="$recorder")
+  # HARD-WON: default backend order is hook > kms > gnome > x11, and kms shells out to the
+  # passwordless capkit-kms helper, i.e. a rig's recording would grab the REAL screen on the
+  # VCE (the kmsgrab+UVD/VCE load is what wedged the radeon). A rig is x11grab-in-Xvfb unless
+  # a test explicitly asks for another backend.
+  envs+=(TRONTSNAP_RECORDER="${recorder:-x11}")
+  echo "${recorder:-x11}" > "$r/recorder"
+  # RIG_APP_ARGS="--startup": argv for the app (the autostart entry runs `trontsnap --startup`).
+  envs+=(RIG_APP_ARGS="${RIG_APP_ARGS:-}")
   setsid env -u WAYLAND_DISPLAY -u XAUTHORITY -u XDG_CONFIG_HOME -u XDG_CACHE_HOME -u XDG_DATA_HOME \
       -u SESSION_MANAGER -u GNOME_DESKTOP_SESSION_ID "${envs[@]}" \
       dbus-run-session -- bash -c '
         echo $$ > "$1/app.pid"; echo "$DBUS_SESSION_BUS_ADDRESS" > "$1/dbus.addr"
-        cd "$2"; exec "$3"' _ "$r" "$h" "$BIN" \
+        cd "$2"; exec "$3" $RIG_APP_ARGS' _ "$r" "$h" "$BIN" \
       > "$r/app.log" 2>&1 < /dev/null &
   echo $! > "$r/session.pid"
 
@@ -182,7 +193,8 @@ cmd_run() {
   local port; port=$(cat "$r/port" 2>/dev/null)
   exec env -u WAYLAND_DISPLAY -u XAUTHORITY -u XDG_CONFIG_HOME -u XDG_CACHE_HOME -u XDG_DATA_HOME \
     DISPLAY=":$n" HOME="$h" XDG_SESSION_TYPE=x11 LIBGL_ALWAYS_SOFTWARE=1 TRONTSNAP_TEST=1 \
-    TRONTSNAP_PORT="${port:-0}" DBUS_SESSION_BUS_ADDRESS="$(cat "$r/dbus.addr")" "$@"
+    TRONTSNAP_PORT="${port:-0}" TRONTSNAP_RECORDER="$(cat "$r/recorder" 2>/dev/null || echo x11)" \
+    DBUS_SESSION_BUS_ADDRESS="$(cat "$r/dbus.addr")" "$@"
 }
 
 cmd_reseed() {
