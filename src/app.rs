@@ -593,6 +593,7 @@ impl App {
         // Vocabulary:
         //   "full" / "region" / "record" / "ocr"  -> same actions as a local hotkey
         //   "ping"                                -> broker liveness probe, ignore it
+        //   "recstate" (Linux)                    -> answers "stop" or "pick" for `record region`
         //   anything else (incl. "open")          -> surface the window
         //
         // An unrecognised payload MUST keep meaning "show the window": that is
@@ -615,6 +616,12 @@ impl App {
                         // `trontsnap record region` picked a rectangle: "record x,y,w,h".
                         #[cfg(not(windows))]
                         cmd if cmd.starts_with("record ") => dispatch_record_region(&cmd[7..]),
+                        // ...and asks first whether a press would stop a recording (then no picker).
+                        #[cfg(not(windows))]
+                        "recstate" => {
+                            let reply: &[u8] = if crate::recorder::press_would_stop() { b"stop" } else { b"pick" };
+                            let _ = s.write_all(reply);
+                        }
                         "ocr" => dispatch_hotkey(HotkeyEvent::Ocr),
                         _ => {
                             request_window_show(&ctx, &cell, &flag);
@@ -2170,8 +2177,13 @@ fn rec_pill(ui: &mut egui::Ui, ctx: &egui::Context) {
 fn setup_hotkeys() -> anyhow::Result<KeyboardHook> {
     // Linux: a crash mid-recording leaves its ffmpegs running (the kmsgrab one as
     // root, out of our reach). Stop and salvage them once per app start, off-thread.
+    // The marker is read HERE, before the command listener exists, so a `record` arriving right
+    // after a crash can't overwrite it first (see recorder::take_stale).
     #[cfg(not(windows))]
-    std::thread::spawn(crate::recorder::recover_orphans);
+    {
+        let stale = crate::recorder::take_stale();
+        std::thread::spawn(move || crate::recorder::recover_orphans(stale));
+    }
     let (hook, rx) = KeyboardHook::install()?;
     std::thread::spawn(move || {
         while let Ok(ev) = rx.recv() {

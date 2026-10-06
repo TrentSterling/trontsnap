@@ -335,6 +335,12 @@ pub fn toggle_region(region: Option<Region>) {
     }
 }
 
+/// Would a record press right now STOP a recording (Starting or Recording)? During Saving a press
+/// starts a new one. `trontsnap record region` asks before it opens its picker.
+pub fn press_would_stop() -> bool {
+    matches!(status(), Status::Starting | Status::Recording(_))
+}
+
 /// Stop any live recording and wait for it to finalize. Called on app quit so
 /// an exit never orphans a recorder that would run until the disk fills.
 pub fn shutdown() {
@@ -546,6 +552,7 @@ fn start(region: Option<Region>) -> anyhow::Result<Session> {
     let stage = stage_dir()?;
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
     if backend == Backend::Kms {
+        wait_for_salvage();
         kms_guard()?;
     }
     let ctl = Ctl::new(backend, region);
@@ -572,7 +579,7 @@ fn start(region: Option<Region>) -> anyhow::Result<Session> {
         StopHandle::Pgid(pg) | StopHandle::HookScript(_, pg) => Some(*pg),
         _ => None,
     };
-    write_marker(backend, id, video_pgid, ctl.audio_pgid.load(Ordering::SeqCst));
+    write_marker(backend, id, &stamp, video_pgid, ctl.audio_pgid.load(Ordering::SeqCst));
     eprintln!("trontsnap: recording via {backend:?}{}", region.map(|r| format!(" region {}", r.to_arg())).unwrap_or_default());
 
     if backend == Backend::Kms {
@@ -979,10 +986,20 @@ impl Drop for SavingGuard {
     }
 }
 
-/// A clip worth keeping: not empty, not a stub, something ffprobe can read.
+/// A clip worth keeping: not empty, not a stub, and (when ffprobe can tell) not unreadable.
+/// HARD-WON: a missing ffprobe used to count as "unreadable", so on a box without the ffmpeg
+/// CLI every clip was deleted on delivery as "too short", including the GNOME backend's, which
+/// is encoded inside the shell and never needed ffmpeg. Only an ffprobe that RAN and said
+/// "short"/"unreadable" may condemn a file; otherwise the size floor is all there is.
 fn clip_usable(p: &Path) -> bool {
-    std::fs::metadata(p).map(|m| m.len() >= MIN_CLIP_BYTES).unwrap_or(false)
-        && probe_duration(p).map(|d| d >= MIN_CLIP_SECS).unwrap_or(false)
+    if !std::fs::metadata(p).map(|m| m.len() >= MIN_CLIP_BYTES).unwrap_or(false) {
+        return false;
+    }
+    match probe(p) {
+        Probe::Secs(d) => d >= MIN_CLIP_SECS,
+        Probe::Unreadable => false,
+        Probe::Missing => true,
+    }
 }
 
 /// Common tail for every backend: trim/mux/crop as needed, move the result into the
@@ -1050,7 +1067,11 @@ fn finish(id: u64, raw: Option<PathBuf>, audio: Audio, ctl: Arc<Ctl>) {
     let audio_file = sidecar
         .as_deref()
         .filter(|a| probe_duration(a).map(|d| d >= MIN_CLIP_SECS).unwrap_or(false));
+    // The sidecar can only be mixed in (aligned) with ffprobe's help, and a region crop or the
+    // tail trim need ffmpeg itself: say so once instead of silently delivering a plain clip.
+    let wanted_pass = sidecar.is_some() || post.tail > 0.0 || post.region.is_some();
     let needs_pass = audio_file.is_some() || post.tail > 0.0 || post.region.is_some();
+    let ffprobe_gone = FFPROBE_MISSING.load(Ordering::Relaxed);
     if needs_pass && post_process(&raw, audio_file, &out, &post) {
         let _ = std::fs::remove_file(&raw);
     } else if let Err(e) = move_file(&raw, &out) {
@@ -1068,7 +1089,15 @@ fn finish(id: u64, raw: Option<PathBuf>, audio: Audio, ctl: Arc<Ctl>) {
             false
         }
     };
-    banner_close();
+    if wanted_pass && ffprobe_gone && !FFMPEG_NOTE_SHOWN.swap(true, Ordering::SeqCst) {
+        banner(
+            "ffmpeg is missing",
+            "Saved the clip as captured: no audio, trimming or region crop.\nsudo apt install ffmpeg",
+            10,
+        );
+    } else {
+        banner_close();
+    }
     crate::sound::play_shutter();
     crate::toast::launch(&out, clipboard_ok);
     println!("recorded -> {}", out.display());
@@ -1175,13 +1204,44 @@ fn post_process(video: &Path, audio: Option<&Path>, out: &Path, p: &Post) -> boo
     false
 }
 
-fn probe_duration(p: &Path) -> Option<f64> {
+/// What ffprobe made of a file.
+enum Probe {
+    /// ffprobe can't run at all (not installed). Nothing is known, so nothing may be judged.
+    Missing,
+    /// ffprobe ran and found no duration (no moov atom, truncated, not media).
+    Unreadable,
+    Secs(f64),
+}
+
+static FFPROBE_MISSING: AtomicBool = AtomicBool::new(false);
+static FFMPEG_NOTE_SHOWN: AtomicBool = AtomicBool::new(false);
+
+fn probe(p: &Path) -> Probe {
     let out = Command::new("ffprobe")
         .args(["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0"])
         .arg(p)
-        .output()
-        .ok()?;
-    String::from_utf8_lossy(&out.stdout).trim().parse().ok()
+        .stdin(Stdio::null())
+        .output();
+    match out {
+        // 126/127 = the shell's "can't execute / not found" (an env wrapper or a broken shim).
+        Ok(o) if !matches!(o.status.code(), Some(126 | 127)) => match String::from_utf8_lossy(&o.stdout).trim().parse() {
+            Ok(d) => Probe::Secs(d),
+            Err(_) => Probe::Unreadable,
+        },
+        _ => {
+            FFPROBE_MISSING.store(true, Ordering::Relaxed);
+            Probe::Missing
+        }
+    }
+}
+
+/// Seconds, when ffprobe ran and knows. `None` for a missing tool AND an unreadable file:
+/// callers that need the number (mux, crop) can do nothing with either.
+fn probe_duration(p: &Path) -> Option<f64> {
+    match probe(p) {
+        Probe::Secs(d) => Some(d),
+        _ => None,
+    }
 }
 
 fn probe_dims(p: &Path) -> Option<(u32, u32)> {
@@ -1228,11 +1288,14 @@ fn now_epoch() -> u64 {
         .unwrap_or(0)
 }
 
-fn write_marker(backend: Backend, id: u64, video_pgid: Option<u32>, audio_pgid: u32) {
+fn write_marker(backend: Backend, id: u64, stamp: &str, video_pgid: Option<u32>, audio_pgid: u32) {
     let Some(p) = marker_path() else { return };
+    // `stamp` names this session's staged files (TrontSnap_<stamp>.*) and `pid` the app that owns
+    // them: recover_orphans touches nothing else, so a session started right after a crash is safe.
     let body = format!(
-        "backend={backend:?}\nstart={}\nsession={id}\nvideo_pgid={}\naudio_pgid={audio_pgid}\n",
+        "backend={backend:?}\nstart={}\nsession={id}\nstamp={stamp}\npid={}\nvideo_pgid={}\naudio_pgid={audio_pgid}\n",
         now_epoch(),
+        std::process::id(),
         video_pgid.unwrap_or(0),
     );
     let _ = std::fs::write(p, body);
@@ -1248,35 +1311,77 @@ fn clear_marker(id: u64) {
     }
 }
 
-/// Run once at app start (off the UI thread).
-pub fn recover_orphans() {
+/// What a dead session left behind, snapshotted at app start.
+pub struct Stale {
+    /// The marker's text: only a marker that still says exactly this is ours to delete.
+    body: String,
+    /// When THIS app process began: files and processes born after it are not the dead session's.
+    app_start: u64,
+}
+
+impl Stale {
+    fn field(&self, k: &str) -> &str {
+        self.body.lines().find_map(|l| l.strip_prefix(k).and_then(|v| v.strip_prefix('='))).unwrap_or("")
+    }
+}
+
+/// Set from take_stale() until recover_orphans ends: a kms start waits for it, because the dead
+/// session's kmsgrab may still be running and kms_guard would refuse (or capkit-stop kill) a new one.
+static SALVAGING: AtomicBool = AtomicBool::new(false);
+
+struct SalvageDone;
+impl Drop for SalvageDone {
+    fn drop(&mut self) {
+        SALVAGING.store(false, Ordering::SeqCst);
+    }
+}
+
+/// Read the previous session's marker. HARD-WON: this must run SYNCHRONOUSLY at startup, before
+/// the command listener exists. It used to be read on the salvage thread, which raced a
+/// `trontsnap record` arriving right after a crash: the new session's marker replaced the stale one
+/// and the salvage then took the NEW session's half-written clip and audio for crash leftovers.
+pub fn take_stale() -> Option<Stale> {
+    let body = std::fs::read_to_string(marker_path()?).ok()?;
+    SALVAGING.store(true, Ordering::SeqCst);
+    Some(Stale { body, app_start: now_epoch() })
+}
+
+/// Run once at app start (off the UI thread) with take_stale()'s result.
+pub fn recover_orphans(stale: Option<Stale>) {
+    let Some(st) = stale else { return };
+    let _done = SalvageDone;
     let Some(marker) = marker_path() else { return };
-    let Ok(body) = std::fs::read_to_string(&marker) else { return };
-    let field = |k: &str| {
-        body.lines()
-            .find_map(|l| l.strip_prefix(k).and_then(|v| v.strip_prefix('=')))
-            .unwrap_or("")
-            .to_string()
-    };
-    let start: u64 = field("start").parse().unwrap_or(0);
     let Ok(stage) = stage_dir() else { return };
+    let start: u64 = st.field("start").parse().unwrap_or(0);
+
+    // A marker whose owner is alive is not stale: another instance (a second port, same HOME) is
+    // recording. Its process is the only thing that may finish that session.
+    if let Ok(owner) = st.field("pid").parse::<u32>() {
+        if owner != 0 && owner != std::process::id() && cmdline_has(owner, "trontsnap") {
+            eprintln!("trontsnap: recording marker belongs to a running instance (pid {owner}); leaving it");
+            return;
+        }
+    }
     eprintln!("trontsnap: found a recording left running by a previous session; salvaging");
 
     // User-owned groups: only signal a pgid that still IS one of our ffmpegs
     // (its cmdline points into the stage dir) so a recycled pid is never hit.
     for k in ["video_pgid", "audio_pgid"] {
-        if let Ok(pg) = field(k).parse::<u32>() {
-            if pg > 0 && cmdline_mentions(pg, &stage) {
+        if let Ok(pg) = st.field(k).parse::<u32>() {
+            if pg > 0 && cmdline_has(pg, &stage.display().to_string()) {
                 sigint_group(pg);
             }
         }
     }
 
-    // Root kmsgrab: only stop one that started with our dead session, not a
-    // capkit recording Trent began afterwards.
+    // Root kmsgrab: only stop one that started with the dead session (before this app existed),
+    // never a capkit recording begun afterwards or one a session of ours started since.
     let mut kms_file = None;
-    if field("backend") == "Kms" {
-        if kmsgrab_pids().iter().any(|&pid| proc_start_epoch(pid).map(|t| t + 2 >= start && t <= start + 30).unwrap_or(false)) {
+    if st.field("backend") == "Kms" {
+        let stale_grab = kmsgrab_pids().iter().any(|&pid| {
+            proc_start_epoch(pid).is_some_and(|t| t + 2 >= start && t <= start + 30 && t < st.app_start)
+        });
+        if stale_grab {
             let _ = kms_cmd(KMS_STOP, "TRONTSNAP_KMS_STOP").stdin(Stdio::null()).status();
             for _ in 0..100 {
                 if !kmsgrab_running() {
@@ -1287,10 +1392,14 @@ pub fn recover_orphans() {
             // capkit's warmup-trim remux runs after ffmpeg exits.
             std::thread::sleep(Duration::from_secs(3));
         }
-        kms_file = newest_capkit_since(start);
+        kms_file = capkit_file_of(start);
     }
     std::thread::sleep(Duration::from_millis(800)); // let SIGINTed ffmpegs finalize
 
+    let prefix = match st.field("stamp") {
+        "" => None, // a marker from before stamps existed
+        s => Some(format!("TrontSnap_{s}.")),
+    };
     let mut salvaged = Vec::new();
     let staged = std::fs::read_dir(&stage)
         .map(|rd| rd.flatten().map(|e| e.path()).collect::<Vec<_>>())
@@ -1298,6 +1407,20 @@ pub fn recover_orphans() {
     for p in staged.iter().chain(kms_file.iter()) {
         let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
         let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        // HARD-WON: only the dead session's own files. The stage dir is shared with whatever
+        // session the new app has started since; its in-progress mp4 (no moov atom yet) used to be
+        // "salvaged" away, along with its audio sidecar and marker.
+        let ours = match &prefix {
+            Some(pre) => name.starts_with(pre.as_str()),
+            None => mtime_epoch(p).is_some_and(|t| t + 1 < st.app_start),
+        } || p.parent() != Some(stage.as_path());
+        if !ours {
+            // Half-finished post-processing temp files of an older process.
+            if matches!(ext, "muxing" | "moving" | "part") && mtime_epoch(p).is_some_and(|t| t + 1 < st.app_start) {
+                let _ = std::fs::remove_file(p);
+            }
+            continue;
+        }
         if matches!(ext, "mp4" | "webm") && !name.contains(".audio.") {
             wait_settled(p);
             if !clip_usable(p) {
@@ -1314,7 +1437,10 @@ pub fn recover_orphans() {
             let _ = std::fs::remove_file(p);
         }
     }
-    let _ = std::fs::remove_file(&marker);
+    // A new session has replaced the marker by now: only delete the one we read.
+    if std::fs::read_to_string(&marker).is_ok_and(|b| b == st.body) {
+        let _ = std::fs::remove_file(&marker);
+    }
     if !salvaged.is_empty() {
         banner(
             "Recovered a recording",
@@ -1324,10 +1450,27 @@ pub fn recover_orphans() {
     }
 }
 
-fn cmdline_mentions(pid: u32, dir: &Path) -> bool {
-    let needle = dir.display().to_string();
+fn mtime_epoch(p: &Path) -> Option<u64> {
+    std::fs::metadata(p).ok()?.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs())
+}
+
+/// Block a kms start until the startup salvage is done (bounded), saying why.
+fn wait_for_salvage() {
+    if !SALVAGING.load(Ordering::SeqCst) {
+        return;
+    }
+    banner("Recovering the last recording", "A new recording starts as soon as that is done.", 15);
+    for _ in 0..300 {
+        if !SALVAGING.load(Ordering::SeqCst) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn cmdline_has(pid: u32, needle: &str) -> bool {
     std::fs::read(format!("/proc/{pid}/cmdline"))
-        .map(|c| String::from_utf8_lossy(&c).contains(&needle))
+        .map(|c| String::from_utf8_lossy(&c).contains(needle))
         .unwrap_or(false)
 }
 
@@ -1348,22 +1491,25 @@ fn proc_start_epoch(pid: u32) -> Option<u64> {
     Some(btime + ticks / 100)
 }
 
-fn newest_capkit_since(start: u64) -> Option<PathBuf> {
+/// The capkit clip the helper wrote for a session that began at `start`. HARD-WON: matched by the
+/// helper's own name (rec_YYYYmmdd_HHMMSS.mp4 = when the HELPER started, a second or few after our
+/// press), not "newest since": that took any Super+Alt+R recording made between a crash and the
+/// next app start, which is capkit's, not ours.
+fn capkit_file_of(start: u64) -> Option<PathBuf> {
+    use chrono::TimeZone as _;
     let dir = dirs::video_dir()?.join("captures");
     std::fs::read_dir(dir)
         .ok()?
         .flatten()
         .map(|e| e.path())
         .filter(|p| {
-            p.file_name().and_then(|n| n.to_str()).map(|n| n.starts_with("rec_") && n.ends_with(".mp4")).unwrap_or(false)
+            let named = p.file_name().and_then(|n| n.to_str()).and_then(|n| n.strip_prefix("rec_")?.strip_suffix(".mp4"));
+            let Some(stamp) = named else { return false };
+            let Ok(naive) = chrono::NaiveDateTime::parse_from_str(stamp, "%Y%m%d_%H%M%S") else { return false };
+            let Some(t) = chrono::Local.from_local_datetime(&naive).earliest().map(|d| d.timestamp()) else { return false };
+            (start as i64 - 1..=start as i64 + 10).contains(&t)
         })
-        .filter_map(|p| {
-            let t = std::fs::metadata(&p).ok()?.modified().ok()?;
-            let secs = t.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
-            (secs + 2 >= start).then_some((secs, p))
-        })
-        .max_by_key(|(t, _)| *t)
-        .map(|(_, p)| p)
+        .max_by_key(|p| mtime_epoch(p).unwrap_or(0))
 }
 
 // === Helpers ===
