@@ -195,7 +195,10 @@ class X:
         return out
 
     def focus_title(self, want):
-        hits = [t for t in self.toplevels() if t[5] and want.lower() in t[6].lower()]
+        if want.lower().startswith("0x"):  # focus by window id (Firefox/GTK4 only set _NET_WM_NAME)
+            hits = [t for t in self.toplevels() if t[5] and t[0] == int(want, 16)]
+        else:
+            hits = [t for t in self.toplevels() if t[5] and want.lower() in t[6].lower()]
         if not hits:
             return None
         w = hits[-1][0]  # topmost match

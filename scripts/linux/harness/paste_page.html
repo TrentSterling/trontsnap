@@ -1,0 +1,14 @@
+<!doctype html><meta charset=utf-8><title>pastepage</title>
+<body style="font:18px monospace;background:#fff;color:#000;margin:0">
+<pre id=out style="margin:8px;white-space:pre-wrap;height:150px;overflow:hidden">(nothing pasted yet)</pre>
+<div id=box contenteditable style="height:200px;overflow:hidden;border:4px solid #06f;margin:8px;padding:8px">click here then ctrl+v</div>
+<script>
+const out=document.getElementById('out'), box=document.getElementById('box');
+box.addEventListener('paste', e=>{
+  const cd=e.clipboardData; let s='PASTE EVENT\ntypes: '+JSON.stringify([...cd.types])+'\n';
+  s+='items: '+JSON.stringify([...cd.items].map(i=>i.kind+':'+i.type))+'\n';
+  s+='files: '+JSON.stringify([...cd.files].map(f=>f.name+' '+f.type+' '+f.size+'B'))+'\n';
+  for(const t of cd.types){ if(t.startsWith('text/')) s+=t+' => '+JSON.stringify(cd.getData(t).slice(0,160))+'\n'; }
+  out.textContent=s; box.innerHTML='';   // fresh box per paste; default paste inserts after this returns
+});
+</script>

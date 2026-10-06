@@ -192,3 +192,25 @@ bottom-right dock (`screen - 340x188 - (24, 48)`). Rig mode also screenshots.
   vanished path is spliced in as a "new capture". Skip non-existent paths / `Name(From)`.
 - Gallery strings are Windows words on Linux: "Reveal in Explorer", "Delete
   (Recycle Bin)", "Move N shots to the Recycle Bin?".
+
+## Clipboard / paste probes (2026-10-05 paste audit)
+
+What can a real destination actually consume? Tools, all read-only against the
+clipboard unless noted. A selection only exists while its owner lives.
+
+- `gtk4_clip_probe.py [--tag T --out DIR]` : native GTK4 window; dumps advertised mimes,
+  per-mime bytes (size+sha1), `read_texture`, `read_text`, `Gdk.FileList`. On the LIVE
+  session this is a native Wayland client (needs focus; it maps a window briefly). In a rig
+  run it with `GDK_BACKEND=x11 GSK_RENDERER=cairo`. HARD-WON: reads are async; a sync stream
+  read on X11 deadlocks the main loop.
+- `gtk3_text_probe.py [--window]` : what VTE / gedit-style GTK3 text consumers get
+  (`text`, `uris`, `image_available`). `GDK_BACKEND=wayland --window` = gnome-terminal's path.
+- `clip_owner_proto.py OFFER...` : PROTOTYPE of a one-process multi-target owner
+  (`image/png=@file`, `text/uri-list=uri:/path`, `x-special/gnome-copied-files=gnome:/path`,
+  `text/plain;charset=utf-8=path:/path`). xclip/wl-copy can only serve one type.
+- `ff_paste_case.sh N WINID NAME -- <owner cmd>` : sets the clipboard, ctrl+v into
+  `paste_page.html` in a Firefox running on rig :N, screenshots the page's report of
+  `clipboardData.types/items/files`. Snap Firefox needs the rig launched as
+  `snap run --shell firefox -c "DISPLAY=:N GDK_BACKEND=x11 MOZ_ENABLE_WAYLAND=0 .../firefox --no-remote --profile P file://.../paste_page.html"`
+  (plain `firefox` says "cannot open display"; the snap wrapper must be bypassed).
+  Focus it with `xinput.py -d :N focus 0x<winid>` (its X name is empty).
