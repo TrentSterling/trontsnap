@@ -19,8 +19,25 @@ pub fn grab_primary() -> anyhow::Result<RgbaImage> {
         // particular locks its shell screenshot API down); fall through to the
         // desktop's own CLI grabbers before giving up.
         #[cfg(not(windows))]
-        Err(e) => grab_linux_fallback(&e),
+        Err(e) => grab_linux_fallback(Some(&e), false),
     }
+}
+
+/// `grab_primary`, drawing the pointer when "Capture cursor" is on. Windows composites it afterwards
+/// (cursor::maybe_overlay); here the CLI grabber does it, so with the pointer wanted it goes FIRST
+/// (xcap can't draw it) and xcap is only the fallback.
+#[cfg(not(windows))]
+fn grab_primary_pointer() -> anyhow::Result<RgbaImage> {
+    if crate::settings::capture_cursor() {
+        if let Ok(img) = grab_linux_fallback(None, true) {
+            return Ok(img);
+        }
+    }
+    grab_primary()
+}
+#[cfg(windows)]
+fn grab_primary_pointer() -> anyhow::Result<RgbaImage> {
+    grab_primary()
 }
 
 fn grab_xcap() -> anyhow::Result<RgbaImage> {
@@ -37,15 +54,26 @@ fn grab_xcap() -> anyhow::Result<RgbaImage> {
 /// covers GNOME Wayland (portal path, no prompt), spectacle covers KDE, grim
 /// covers wlroots. Each writes a PNG to a temp path we read back.
 #[cfg(not(windows))]
-fn run_cli_grabber(xcap_err: &anyhow::Error) -> anyhow::Result<Vec<u8>> {
+fn run_cli_grabber(xcap_err: Option<&anyhow::Error>, pointer: bool) -> anyhow::Result<Vec<u8>> {
     let dir = dirs::runtime_dir().unwrap_or_else(std::env::temp_dir);
     let tmp = dir.join(format!("trontsnap-grab-{}.png", std::process::id()));
     let tmp_s = tmp.display().to_string();
-    let attempts: [(&str, Vec<&str>); 3] = [
-        ("gnome-screenshot", vec!["-f", &tmp_s]),
-        ("spectacle", vec!["-b", "-n", "-o", &tmp_s]),
-        ("grim", vec![&tmp_s]),
-    ];
+    // HARD-WON: "Capture cursor" did nothing for screenshots on Linux (cursor::maybe_overlay is a
+    // no-op and a Wayland client can't read the pointer), while the Settings text promised it.
+    // The grabbers can draw the pointer themselves, so ask them to.
+    let attempts: [(&str, Vec<&str>); 3] = if pointer {
+        [
+            ("gnome-screenshot", vec!["-p", "-f", &tmp_s]),
+            ("spectacle", vec!["-p", "-b", "-n", "-o", &tmp_s]),
+            ("grim", vec!["-c", &tmp_s]),
+        ]
+    } else {
+        [
+            ("gnome-screenshot", vec!["-f", &tmp_s]),
+            ("spectacle", vec!["-b", "-n", "-o", &tmp_s]),
+            ("grim", vec![&tmp_s]),
+        ]
+    };
     for (cmd, args) in attempts {
         let ok = std::process::Command::new(cmd)
             .args(&args)
@@ -60,9 +88,8 @@ fn run_cli_grabber(xcap_err: &anyhow::Error) -> anyhow::Result<Vec<u8>> {
             return Ok(bytes?);
         }
     }
-    anyhow::bail!(
-        "no screen grabber worked (xcap: {xcap_err:#}; also tried gnome-screenshot/spectacle/grim)"
-    )
+    let xcap = xcap_err.map_or_else(|| "not tried".to_string(), |e| format!("{e:#}"));
+    anyhow::bail!("no screen grabber worked (xcap: {xcap}; also tried gnome-screenshot/spectacle/grim)")
 }
 
 /// The primary monitor's rect inside a multi-monitor grab, or None when the grab
@@ -81,8 +108,8 @@ fn primary_crop_rect(grab_w: u32, grab_h: u32) -> Option<(u32, u32, u32, u32)> {
 /// CLI grabber -> decoded primary-monitor image (region picker, anything that
 /// needs pixels).
 #[cfg(not(windows))]
-fn grab_linux_fallback(xcap_err: &anyhow::Error) -> anyhow::Result<RgbaImage> {
-    let bytes = run_cli_grabber(xcap_err)?;
+fn grab_linux_fallback(xcap_err: Option<&anyhow::Error>, pointer: bool) -> anyhow::Result<RgbaImage> {
+    let bytes = run_cli_grabber(xcap_err, pointer)?;
     let mut img = image::load_from_memory(&bytes)?.to_rgba8();
     if let Some((x, y, w, h)) = primary_crop_rect(img.width(), img.height()) {
         img = image::imageops::crop_imm(&img, x, y, w, h).to_image();
@@ -105,14 +132,25 @@ fn png_dims(b: &[u8]) -> Option<(u32, u32)> {
 /// round trip was ~3 s of a ~4.8 s capture in the debug build the hotkeys run,
 /// and the clipboard is only set at the end, so a quick paste got the previous
 /// one. Skipping the overlay is safe because cursor::maybe_overlay is a no-op on
-/// Linux; if that ever changes this path must decode when the overlay is on.
+/// Linux (the grabber draws the pointer itself when "Capture cursor" is on).
 #[cfg(not(windows))]
 fn grab_png_linux() -> anyhow::Result<Vec<u8>> {
-    let xcap_err = match grab_xcap() {
-        Ok(img) => return encode_png(&img),
-        Err(e) => e,
+    let pointer = crate::settings::capture_cursor();
+    // xcap can't draw the pointer: with it wanted, the CLI grabber goes first.
+    let xcap_err = if pointer {
+        None
+    } else {
+        match grab_xcap() {
+            Ok(img) => return encode_png(&img),
+            Err(e) => Some(e),
+        }
     };
-    let bytes = run_cli_grabber(&xcap_err)?;
+    let bytes = match run_cli_grabber(xcap_err.as_ref(), pointer) {
+        Ok(b) => b,
+        // Pointer wanted but no grabber ran: a pointer-less shot beats none.
+        Err(_) if pointer => return encode_png(&grab_xcap()?),
+        Err(e) => return Err(e),
+    };
     let needs_crop = png_dims(&bytes).map_or(true, |(w, h)| primary_crop_rect(w, h).is_some());
     if !needs_crop {
         return Ok(bytes);
@@ -128,7 +166,7 @@ fn grab_png_linux() -> anyhow::Result<Vec<u8>> {
 /// "capture cursor" setting is on. Every capture path (full, region, one-shot CLI) goes
 /// through this; `grab_primary` stays pointer-free for callers that don't want it.
 pub fn grab_for_shot() -> anyhow::Result<RgbaImage> {
-    let mut img = grab_primary()?;
+    let mut img = grab_primary_pointer()?;
     crate::cursor::maybe_overlay(&mut img, (0, 0));
     Ok(img)
 }

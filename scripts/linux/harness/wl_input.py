@@ -5,6 +5,7 @@
 #   abs X Y     pin the pointer to the BOTTOM-RIGHT (1365,767), then walk to X,Y (unaccelerated).
 #               HARD-WON: pinning top-left trips GNOME's hot corner (Activities overview) and the click lands in it.
 #   rel DX DY | click | rclick | key Escape|Return|super | wait SEC
+#   wheel N     N vertical wheel notches (negative = toward you / scroll down; positive = away / up)
 # e.g.  wl_env.sh input key Escape            (leave the overview once after `start`)
 #       wl_env.sh input abs 358 52 wait 0.5 click
 import sys, time
@@ -51,6 +52,10 @@ while i < len(a):
         k = KEYS[a[i + 1]]
         call(sess, S, "NotifyKeyboardKeycode", GLib.Variant("(ub)", (k, True))); time.sleep(0.08)
         call(sess, S, "NotifyKeyboardKeycode", GLib.Variant("(ub)", (k, False))); i += 2
+    elif c == "wheel":
+        # axis 0 = vertical; discrete steps, like a mouse wheel (a positive step is wheel-down in evdev
+        # terms, so negate to make `wheel 1` mean "forward / up" as the Windows picker reads it)
+        call(sess, S, "NotifyPointerAxisDiscrete", GLib.Variant("(ui)", (0, -int(a[i + 1])))); time.sleep(0.15); i += 2
     elif c == "wait":
         time.sleep(float(a[i + 1])); i += 2
     else:

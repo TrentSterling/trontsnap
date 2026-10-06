@@ -24,6 +24,15 @@ use crate::overlay::{enumerate_windows_raw, RawRect};
 /// (smart-rect pick), not a drag.
 const CLICK_SLOP: f32 = 5.0;
 
+// Loupe: same numbers as the Windows picker (region_win32.rs). The box size is wheel-adjustable
+// and persisted via settings::loupe_size(); bounds + step are multiples of the zoom so the source
+// square (size / zoom) stays whole pixels. Zoom is constant: a bigger box shows MORE area.
+const LOUPE_ZOOM: i32 = 8;
+const LOUPE_MARGIN: i32 = 26;
+const LOUPE_MIN: i32 = 96;
+const LOUPE_MAX: i32 = 528;
+const LOUPE_STEP: i32 = 48;
+
 /// One-shot CLI mode this process was started in, if any.
 fn cli_mode() -> Option<String> {
     std::env::args().nth(1)
@@ -176,6 +185,12 @@ struct Picker {
     press: Option<egui::Pos2>,
     /// Current pointer in physical pixels.
     cursor: egui::Pos2,
+    /// The pointer has been seen inside the window (no loupe at the 0,0 placeholder before that).
+    have_cursor: bool,
+    /// Loupe box edge in physical pixels (settings::loupe_size, wheel-adjustable).
+    loupe_size: i32,
+    /// Fractional wheel notches carried between frames (touchpads scroll in points).
+    wheel_acc: f32,
     done: bool,
 }
 
@@ -185,7 +200,18 @@ impl Picker {
         windows: Vec<RawRect>,
         result: Arc<Mutex<Option<RawRect>>>,
     ) -> Self {
-        Self { frame, windows, result, tex: None, press: None, cursor: egui::Pos2::ZERO, done: false }
+        Self {
+            frame,
+            windows,
+            result,
+            tex: None,
+            press: None,
+            cursor: egui::Pos2::ZERO,
+            have_cursor: false,
+            loupe_size: crate::settings::loupe_size().clamp(LOUPE_MIN, LOUPE_MAX),
+            wheel_acc: 0.0,
+            done: false,
+        }
     }
 
     /// Topmost enumerated window containing the point, else the full frame.
@@ -226,7 +252,34 @@ impl eframe::App for Picker {
                 [self.frame.width() as usize, self.frame.height() as usize],
                 self.frame.as_raw(),
             );
-            self.tex = Some(ctx.load_texture("frozen-frame", ci, egui::TextureOptions::LINEAR));
+            // NEAREST: the frame is drawn 1:1 (physical px), and the loupe magnifies it 8x, where
+            // LINEAR would smear exactly the pixel edges the loupe exists to show.
+            self.tex = Some(ctx.load_texture("frozen-frame", ci, egui::TextureOptions::NEAREST));
+        }
+
+        // Wheel = loupe box size, a notch at a time (Windows: WM_MOUSEWHEEL, forward grows).
+        let notches: f32 = ctx.input(|i| {
+            i.events
+                .iter()
+                .map(|e| match e {
+                    egui::Event::MouseWheel { unit, delta, .. } => match unit {
+                        egui::MouseWheelUnit::Line => delta.y,
+                        egui::MouseWheelUnit::Page => delta.y * 5.0,
+                        egui::MouseWheelUnit::Point => delta.y / 50.0,
+                    },
+                    _ => 0.0,
+                })
+                .sum()
+        });
+        self.wheel_acc += notches;
+        let steps = self.wheel_acc.trunc() as i32;
+        if steps != 0 {
+            self.wheel_acc -= steps as f32;
+            let new = (self.loupe_size + steps * LOUPE_STEP).clamp(LOUPE_MIN, LOUPE_MAX);
+            if new != self.loupe_size {
+                self.loupe_size = new;
+                crate::settings::set_loupe_size(new);
+            }
         }
 
         // Pointer state in PHYSICAL pixels (the frame's coordinate space).
@@ -239,6 +292,7 @@ impl eframe::App for Picker {
         });
         if let Some(p) = hover {
             self.cursor = egui::pos2(p.x * ppp, p.y * ppp);
+            self.have_cursor = true;
         }
         if pressed {
             self.press = Some(self.cursor);
@@ -331,13 +385,49 @@ impl eframe::App for Picker {
                 }
                 None => {
                     painter.rect_filled(screen, 0.0, scrim);
+                    // Wayland can't enumerate other clients' windows (windows is empty), so a plain
+                    // click falls back to the whole screen: say that instead of promising a window.
+                    let hint = if self.windows.is_empty() {
+                        "drag to select a region  ·  click for the full screen  ·  Esc to cancel"
+                    } else {
+                        "drag to select a region  ·  click for a window  ·  Esc to cancel"
+                    };
                     painter.text(
                         egui::pos2(screen.center().x, screen.top() + 42.0),
                         egui::Align2::CENTER_TOP,
-                        "drag to select a region  ·  click for a window  ·  Esc to cancel",
+                        hint,
                         egui::FontId::proportional(15.0),
                         egui::Color32::from_white_alpha(220),
                     );
+                }
+            }
+
+            // Pixel-crisp loupe beside the pointer, flipped to the other side near the right/bottom edge.
+            if self.have_cursor {
+                if let Some(tex) = &self.tex {
+                    let size = self.loupe_size as f32 / ppp;
+                    let margin = LOUPE_MARGIN as f32 / ppp;
+                    let c = egui::pos2(self.cursor.x / ppp, self.cursor.y / ppp);
+                    let mut o = c + egui::vec2(margin, margin);
+                    if o.x + size > screen.right() {
+                        o.x = c.x - margin - size;
+                    }
+                    if o.y + size > screen.bottom() {
+                        o.y = c.y - margin - size;
+                    }
+                    let rect = egui::Rect::from_min_size(o, egui::vec2(size, size));
+                    let src = (self.loupe_size / LOUPE_ZOOM) as f32;
+                    let (fw, fh) = (self.frame.width() as f32, self.frame.height() as f32);
+                    let uv = egui::Rect::from_min_max(
+                        egui::pos2((self.cursor.x - src / 2.0) / fw, (self.cursor.y - src / 2.0) / fh),
+                        egui::pos2((self.cursor.x + src / 2.0) / fw, (self.cursor.y + src / 2.0) / fh),
+                    );
+                    let painter = ui.painter();
+                    painter.image(tex.id(), rect, uv, egui::Color32::WHITE);
+                    painter.rect_stroke(rect, 0.0, egui::Stroke::new(1.5, accent));
+                    let m = rect.center();
+                    painter.rect_filled(egui::Rect::from_center_size(m, egui::vec2(2.0, size)), 0.0, accent);
+                    painter.rect_filled(egui::Rect::from_center_size(m, egui::vec2(size, 2.0)), 0.0, accent);
                 }
             }
         });
