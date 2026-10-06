@@ -154,14 +154,16 @@ consumers: native-Wayland GTK4 (texture + real file path), GTK3/VTE (text + uris
 Nautilus 46 (pastes a `Screen Rec #1 (final) 100%é.mp4` that used to error).
 Not checked on this box: Discord/Electron/Chromium, Qt/KDE.
 
-`trontsnap full` hands gnome-screenshot's PNG to the clipboard and disk untouched (no decode/re-encode), so it costs
-about 0.1 s over the grabber itself; it no longer forks `gsettings` on every press either (only the app frees the Print key).
-The grabber is the floor, and on this box it varies with what is on screen: 1.6 s measured once, 4.3 s (2.7 s of CPU) on
-2026-10-06 with the shader-heavy terminal animating (`full` 4.45 s vs `gnome-screenshot -f` 4.33 s, same minute). A grabber
-that hangs is killed after 20 s and the hotkey says "Screenshot failed" (the one-shots notify; stderr goes nowhere from a
-keybinding). The GNOME bindings run whichever binary the app was launched from: `~/.local/bin/trontsnap` since 2026-10-06 (see
+`trontsnap full` hands the grabber's PNG to the clipboard and disk untouched (no decode/re-encode), so it costs
+about 0.1 s over the grab itself; it no longer forks `gsettings` on every press either (only the app frees the Print key).
+On GNOME Wayland the grab is the one-frame screencast PNG (see "Capture speed"): `full` takes ~1.5 s to the finished file
+(measured 2026-10-06, debug build, real session) where `gnome-screenshot -f` takes 4.3 s on the same screen. The slow CLI
+grabbers remain the fallback; a grabber that hangs is killed after 20 s and the hotkey says "Screenshot failed" (the
+one-shots notify; stderr goes nowhere from a keybinding). Benchmarking gotcha: measuring `trontsnap full | tail` reports
+~4.7 s because the detached clipboard owner inherits the pipe and holds it open; time the process, not the pipe.
+The GNOME bindings run whichever binary the app was launched from: `~/.local/bin/trontsnap` since 2026-10-06 (see
 "Stable install"). They deliberately don't prefer `target/release` when it exists: it would silently be a stale binary
-after every rebuild. Release `full` through the installed binary: 4.4 s wall (the grabber is the floor, see above).
+after every rebuild.
 
 ## The tray icon and the window (close, autostart, second launch)
 
