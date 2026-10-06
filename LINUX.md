@@ -36,8 +36,10 @@ Build deps beyond Rust: the usual eframe set (`libgtk-3-dev` is NOT needed;
 - `trontsnap region` / `ocr` — freeze-frame picker (drag a region, click a
   window where enumeration works, Esc cancels)
 - Live gallery splice via inotify, capture toast with Edit chip
+- Tray icon + menu (StatusNotifierItem), Close hides to the tray, recording badge on the icon: "The tray icon and
+  the window" below
 - Autostart via `~/.config/autostart/trontsnap.desktop` (`--startup`: no window at login, see
-  "The window" below)
+  "The tray icon and the window" below)
 - Settings persist to `~/.config/trontsnap/settings.conf`
 - Region picker with the Windows picker's loupe: 8x magnifier + crosshair beside the pointer, mouse
   wheel resizes it (96-528 px, remembered; Settings > Region picker). Where other windows can't be
@@ -131,20 +133,55 @@ app was launched from (here `target/debug/trontsnap`). A release build would be 
 still, but the bindings deliberately don't prefer `target/release` when it exists: it would
 silently be a stale binary after every debug rebuild.
 
-## The window (close, autostart, second launch)
+## The tray icon and the window (close, autostart, second launch)
 
-There is no persistent tray icon on Linux, so the window lifecycle is plain:
+TrontSnap has a real tray icon when the desktop offers one (`src/linux/sni.rs`): a StatusNotifierItem plus a
+`com.canonical.dbusmenu` menu, hand-rolled on zbus (no gtk / libappindicator, so the AppImage stays simple). KDE,
+most trays and **GNOME with the `ubuntu-appindicators` extension** (Ubuntu ships and enables it) draw it. Plain
+GNOME without that extension has no tray at all; then everything below falls back to "no tray".
 
-- **Close (the title-bar X) quits**, same path as Alt+F4 (live recording stopped and finalized first). With
-  a recording running, X minimizes instead so the clip isn't taken down with the window. Nothing is lost by
-  quitting: the capture keybindings are one-shot processes and `trontsnap record` starts the app on demand.
-- **`--startup`** (what the autostart entry and `record` run) starts without a visible window: on X11 it stays
-  unmapped (a vendored-eframe backport, see `vendor/eframe/VENDOR.md`); a native Wayland client cannot hide, so
-  it starts **minimized** (open it from the dock or Activities).
-- **A second `trontsnap` launch** pokes the running app. On X11 that maps/raises the window. On Wayland winit
-  can't unminimize or focus, so the app asks GNOME to raise it with an xdg-activation request: a buried window
-  gets the "TrontSnap is ready" notification (click it). A **minimized Wayland window cannot be raised this
-  way**: it gets no frame callbacks, so its event loop never runs the request. Click its dock icon instead.
+- **Icon**: the rainbow app icon (ARGB pixmaps, 16-64 px). While a recording is live it carries a **red badge**;
+  tooltip "TrontSnap is recording / Click to stop".
+- **Menu**: Show TrontSnap, Capture fullscreen, Capture region, Record screen (reads **Stop recording** while
+  recording), Record region, Copy text (OCR), Capture cursor, Record audio, Start at login (the three checks are the
+  same settings as Settings > ..., live both ways), Quit TrontSnap.
+- **Clicks** (checked against the real extension in a private shell, not just a mock): right click = menu. On GNOME a
+  single left click ALSO opens the menu (the extension waits for a double click first) and **double click =
+  Activate = open the window**; KDE-style hosts send Activate on a single click. While recording, Activate stops the
+  recording instead (the badge is the cue). Middle click = region capture.
+- **Close (the title-bar X, Alt+F4) hides to the tray** when the tray is registered with the watcher AND the main
+  window is an X11 window; the process, the hotkeys and the command port keep running (hidden = 0 CPU ticks in 5 s),
+  a live recording keeps going. Show it again with the tray (double click / menu), a second `trontsnap` launch, or
+  the dock icon. **Quit** is in the tray menu.
+- **No tray (or the watcher went away): Close quits**, same path as Alt+F4 (live recording stopped and finalized
+  first; with a recording running and no tray, X minimizes instead). If the watcher vanishes while the window is
+  hidden (extension switched off, shell restarted) the window comes back by itself so the app can't be stranded.
+  Nothing is lost by quitting: the capture keybindings are one-shot processes and `trontsnap record` starts the app
+  on demand.
+
+**Why the main window runs on XWayland when a tray exists.** HARD-WON: winit-wayland's `set_visible` is a no-op and
+"unminimizing is ignored", so a native Wayland window can neither hide to a tray nor be brought back. X11 map/unmap
+is real, and GNOME runs XWayland (the toast already lives there). So at startup, **before the window exists**,
+`app::linux_window_setup` brings the tray up and, if it registered and an X server is reachable, forces winit onto X11
+(`EventLoopBuilderExtX11::with_x11`; a direct `winit` dependency, already in the tree). Without a tray the window
+stays native Wayland, exactly as before. `TRONTSNAP_NATIVE_WAYLAND=1` keeps the native window (no close-to-tray);
+`TRONTSNAP_TRAY=off` disables the tray; a `TRONTSNAP_TEST` instance has no tray unless `TRONTSNAP_TRAY=on` (a test
+sharing the REAL session bus must not put an icon in the real tray). At login the extension can load after our
+autostart entry, so `--startup` on GNOME waits up to 3 s for the watcher; any other start answers at once.
+Costs of XWayland: no fractional-scale crispness (this 1366x768 box is 1x; a HiDPI user can opt out), and Mutter
+auto-maximizes a window this size. Showing it: winit maps and raises it, then `x11win.rs` asks the window manager
+to activate it like a pager (`_NET_ACTIVE_WINDOW`, source 2) because winit cannot focus a window it just mapped
+and Mutter's focus-stealing rules would otherwise leave it behind the focused one. Verified live: hidden window
+unmapped, Activate -> mapped + `_NET_WM_STATE_FOCUSED` over a fullscreen terminal.
+
+- **`--startup`** (what the autostart entry and `record` run) starts without a visible window: with a tray
+  that is an unmapped X11 window (a vendored-eframe backport, see `vendor/eframe/VENDOR.md`); without one, X11 still
+  stays unmapped, and a native Wayland client cannot hide, so it starts **minimized** (open it from the dock).
+- **A second `trontsnap` launch** pokes the running app. With an X11 window (tray case, or a real X11 session) that
+  maps, raises and focuses it. On native Wayland winit can't unminimize or focus, so the app asks GNOME to raise it
+  with an xdg-activation request: a buried window gets the "TrontSnap is ready" notification (click it). A
+  **minimized native Wayland window cannot be raised this way**: it gets no frame callbacks, so its event loop never
+  runs the request. Click its dock icon instead.
 - Every window sends `app_id = trontsnap` (X11: WM_CLASS) so GNOME ties it to `trontsnap.desktop` /
   `StartupWMClass=trontsnap` (dock icon, grouping, pinning).
 
@@ -188,12 +225,13 @@ to the app as `record x,y,w,h`. x11 passes it to x11grab, gnome calls `Screencas
 screen and crops afterwards with one libx264 pass (about 0.2x realtime here, so a minute costs ~12 s of "Saving"
 and the audio is still copied).
 
-**Feedback while it runs:** a red dot in the tray (a StatusNotifierItem: GNOME's AppIndicator extension, KDE and most
-trays; click = stop) exists from the moment frames flow to the stop press, and the title bar shows `Starting...` /
-`REC mm:ss` (click = stop) / `Saving...` when the window is open; the Capture menu item reads "Stop recording". The dot
-is in the top bar, so a full-screen recording shows it too, and a `hidetopbar`-style extension (enabled on this box) hides
-the bar, dot included, until the pointer touches the top edge. Verified: the item registers with the real shell watcher
-during a recording and goes away at the stop; not verified: how the extension draws it on this box.
+**Feedback while it runs:** the tray icon (a StatusNotifierItem: GNOME's AppIndicator extension, KDE and most
+trays) grows a red badge from the moment frames flow to the stop press (tooltip "TrontSnap is recording", Activate
+= stop, the menu item reads "Stop recording"), and the title bar shows `Starting...` / `REC mm:ss` (click = stop) /
+`Saving...` when the window is open; the Capture menu item reads "Stop recording". The badge is in the top bar, so a
+full-screen recording shows it too, and a `hidetopbar`-style extension (enabled on this box) hides the bar, badge
+included, until the pointer touches the top edge. Verified in a private GNOME Shell with the real extension: the
+badge appears when frames flow and clears at the stop (a synthetic `record-start.sh` hook, no screen grab).
 
 **Safety:** a stub or unreadable output (the helper `mv`s a 0-byte file when the stop beats the first frame) is a
 failed recording ("Recording cancelled" / "too short"), never a clip. Pressing record again within ~1.5 s of a
@@ -218,12 +256,18 @@ end-to-end recorder test against the live app (A/V content sync included), `rec_
 against a fake root helper in a rig: cues, tail trim, restart, double press, empty output, region, cold-start CLI, CPU;
 no GPU/root, run it freely), `gif_test.py` (GIF export timing on a 30 fps mp4 and a real VFR screencast), and `gallery_test.sh` (deletes/ghost tiles, selection
 gestures, Edit/Open/Reveal, the status pill, bulk-delete progress; asserts the app's `TRONTSNAP_TEST`
-state trace + Trash/file facts). `TRONTSNAP_PORT` overrides the command port (default 48761);
-`TRONTSNAP_TEST=1` stops an instance from installing keybindings/autostart.
+state trace + Trash/file facts), and `tray_test.sh` (the tray icon + close-to-tray against a mock watcher:
+registration, menu layout, Close hides/shows, the recording badge and label flip, check items, watcher loss, Quit; 37 checks). `TRONTSNAP_PORT` overrides the command port (default 48761);
+`TRONTSNAP_TEST=1` stops an instance from installing keybindings/autostart (and from registering a tray item unless
+`TRONTSNAP_TRAY=on`).
 
 ## Known gaps vs Windows (telling the truth here, in rough priority order)
 
-1. No persistent tray icon (the recording dot above is a bare D-Bus StatusNotifierItem that exists only while recording; a resident one with a menu needs dbusmenu) — so Close quits and `--startup` leaves a minimized window on Wayland
+1. Tray: needs a StatusNotifier host (KDE, GNOME with `ubuntu-appindicators`); a bare GNOME has none and Close quits.
+   On GNOME a single left click opens the menu and a double click opens the window (the extension's rule). With a
+   tray the main window is an XWayland window (see above): fine at 1x, not fractional-scale-crisp. A hidden
+   window is brought back by the tray or a second `trontsnap` launch (what an installed `trontsnap.desktop` / dock
+   click runs; this box has no installed entry, so the dock path itself is untested)
 2. No drag-out from gallery/toast (no XDND backend yet) — paste covers most of it. A press-and-move
    over ~6 px on a tile therefore does nothing (egui's own click rule, independent of the tile's Sense)
    and a plain double-click still Copies on its first click before it Opens
@@ -233,5 +277,5 @@ state trace + Trash/file facts). `TRONTSNAP_PORT` overrides the command port (de
 5. Multi-monitor untested and unverifiable on this one-output laptop (same primary-monitor scope as Windows; static review worry: the CLI grabber's multi-monitor PNG is cropped with xcap's scaled geometry, and the picker is fullscreen on whichever output the compositor picks)
 6. The toast docks bottom-right via XWayland (measured 340x188+1002+532, exactly the intended spot); GNOME's own
    banners (OCR/recorder notices) stay top-centre, which the app can't move
-7. A second `trontsnap` launch can't un-minimize a minimized Wayland window (no xdg-shell unminimize, and a minimized surface gets no redraw to act on the request) — restore it from the dock. A buried but mapped window is raised through GNOME's notification
+7. Without a tray (native Wayland window), a second `trontsnap` launch can't un-minimize a minimized Wayland window (no xdg-shell unminimize, and a minimized surface gets no redraw to act on the request) — restore it from the dock. A buried but mapped window is raised through GNOME's notification
 

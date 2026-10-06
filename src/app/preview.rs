@@ -52,6 +52,10 @@ impl App {
             show_theme_window: false,
             #[cfg(not(windows))]
             start_hidden: false,
+            #[cfg(not(windows))]
+            x11_win: 0,
+            #[cfg(not(windows))]
+            hidden: false,
         }
     }
 

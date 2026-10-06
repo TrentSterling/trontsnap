@@ -25,7 +25,6 @@ use std::time::Duration;
 #[cfg(windows)]
 use crossbeam_channel::Receiver;
 use eframe::egui;
-#[cfg(windows)]
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 #[cfg(windows)]
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
@@ -52,6 +51,49 @@ use crate::region_win32;
 mod chrome_input_tests;
 
 pub(crate) const DEFAULT_PORT: u16 = 48761;
+
+/// Linux: the main window is an X11 window (a native X11 session, or XWayland on a Wayland one).
+/// Only there can it be hidden and mapped again; see `linux_window_setup`.
+#[cfg(not(windows))]
+static X11_WINDOW: AtomicBool = AtomicBool::new(false);
+
+/// Linux: does Close hide the window to the tray? Needs a window that can hide AND a tray that is
+/// registered right now (the watcher can vanish, e.g. the extension is switched off).
+#[cfg(not(windows))]
+fn tray_hides() -> bool {
+    X11_WINDOW.load(Ordering::Relaxed) && crate::sni::registered()
+}
+
+/// Linux: bring the tray up, then decide which windowing backend the main window gets. Returns
+/// true when the window must be forced onto X11.
+///
+/// HARD-WON: winit-wayland's set_visible is a no-op and "unminimizing is ignored", so a native
+/// Wayland window can neither hide to a tray nor be brought back from one. X11 maps and unmaps for
+/// real, and GNOME runs XWayland (the toast already lives there), so with a tray present the window
+/// goes through XWayland. Without a tray nothing changes: native Wayland, Close quits.
+/// TRONTSNAP_NATIVE_WAYLAND=1 keeps the native window (no close-to-tray).
+#[cfg(not(windows))]
+fn linux_window_setup(start_hidden: bool) -> bool {
+    let set = |k: &str| std::env::var_os(k).map_or(false, |v| !v.is_empty());
+    let wayland = set("WAYLAND_DISPLAY") || set("WAYLAND_SOCKET");
+    let have_x = set("DISPLAY");
+    // A test instance must not put an icon in the REAL tray (rec_gnome_test talks to the live bus):
+    // TRONTSNAP_TEST turns the tray off unless TRONTSNAP_TRAY=on asks for it (the tray harness does).
+    let tray_on = match std::env::var("TRONTSNAP_TRAY").as_deref() {
+        Ok("on") | Ok("1") => true,
+        Ok("off") | Ok("0") => false,
+        _ => !set("TRONTSNAP_TEST"),
+    };
+    // At login the AppIndicator extension can load after our autostart entry: give a GNOME session
+    // a few seconds to grow a watcher. Anywhere else a missing watcher is answered at once.
+    let gnome = std::env::var("XDG_CURRENT_DESKTOP")
+        .map_or(false, |d| d.to_ascii_uppercase().contains("GNOME"));
+    let patience = if start_hidden && gnome { Duration::from_secs(3) } else { Duration::ZERO };
+    let tray = tray_on && crate::sni::start(patience);
+    let force = wayland && have_x && tray && !set("TRONTSNAP_NATIVE_WAYLAND") && crate::x11win::reachable();
+    X11_WINDOW.store(force || (!wayland && have_x), Ordering::Relaxed);
+    force
+}
 
 /// Loopback command/single-instance port. TRONTSNAP_PORT overrides it so the
 /// test harness can run isolated instances beside the live app (and so the Linux
@@ -116,7 +158,11 @@ pub fn run(start_hidden: bool) -> anyhow::Result<()> {
 
     autostart::ensure_first_run();
 
-    let options = eframe::NativeOptions {
+    #[cfg(not(windows))]
+    let force_x11 = linux_window_setup(start_hidden);
+
+    #[cfg_attr(windows, allow(unused_mut))]
+    let mut options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("TrontSnap")
             // HARD-WON: without an app_id the Wayland toplevel is anonymous, so GNOME can't
@@ -132,6 +178,13 @@ pub fn run(start_hidden: bool) -> anyhow::Result<()> {
             .with_decorations(false),
         ..Default::default()
     };
+    #[cfg(not(windows))]
+    if force_x11 {
+        options.event_loop_builder = Some(Box::new(|b| {
+            use winit::platform::x11::EventLoopBuilderExtX11 as _;
+            b.with_x11();
+        }));
+    }
 
     eframe::run_native(
         "TrontSnap",
@@ -270,6 +323,13 @@ pub struct App {
     // set_visible(true)); a Wayland client can't hide, so update() minimizes it once instead.
     #[cfg(not(windows))]
     start_hidden: bool,
+    // Linux: the X11 window id (from the raw handle), for the post-map raise in show().
+    #[cfg(not(windows))]
+    x11_win: u32,
+    // Linux: the window is unmapped (to the tray, or born hidden by `--startup`). update() skips the
+    // whole UI then: nobody sees it, and a REC pill's per-second repaint would keep a core waking.
+    #[cfg(not(windows))]
+    hidden: bool,
 }
 
 impl App {
@@ -324,9 +384,9 @@ impl App {
         let hwnd_cell = Arc::new(AtomicIsize::new(0));
         let show_flag = Arc::new(AtomicBool::new(false));
 
-        // Tray icon + menu. Windows-only for now: on Linux tray-icon requires a
-        // gtk main loop this winit app doesn't run, so the window just stays
-        // visible and Close quits (captures work app-less via the one-shots).
+        // Tray icon + menu. Windows: tray-icon. Linux has no tray-icon (it wants a gtk main loop and
+        // libappindicator); src/linux/sni.rs is a StatusNotifierItem on zbus, started in run() before
+        // the window exists (it decides the windowing backend), and its clicks are drained below.
         #[cfg(windows)]
         let (tray, auto_i, cursor_i, audio_i, menu_rx) = {
         let menu = Menu::new();
@@ -497,6 +557,34 @@ impl App {
             crate::recorder::on_change(move || ctx.request_repaint());
         }
 
+        // Linux tray clicks. Done HERE, not in update(): a hidden window may not run update() at all
+        // (same constraint as the Windows tray handlers above), and Quit must work while it is hidden.
+        #[cfg(not(windows))]
+        {
+            use crate::sni::Action;
+            let ctx = cc.egui_ctx.clone();
+            let cell = hwnd_cell.clone();
+            let flag = show_flag.clone();
+            let rx = crate::sni::actions();
+            std::thread::spawn(move || {
+                while let Ok(a) = rx.recv() {
+                    match a {
+                        Action::Show => request_window_show(&ctx, &cell, &flag),
+                        Action::Full => dispatch_hotkey(HotkeyEvent::Full),
+                        Action::Region => dispatch_hotkey(HotkeyEvent::Region),
+                        Action::Record => dispatch_hotkey(HotkeyEvent::Record),
+                        Action::RecordRegion => crate::recordcli::spawn_region(),
+                        Action::Ocr => dispatch_hotkey(HotkeyEvent::Ocr),
+                        Action::Quit => {
+                            // A live ffmpeg must be stopped and finalized first, or it is orphaned.
+                            crate::recorder::shutdown();
+                            std::process::exit(0);
+                        }
+                    }
+                }
+            });
+        }
+
         // Loopback command channel. Originally just single-instance handling (a
         // second launch pokes us to surface), now also how trontsnap-hotkeys.exe
         // delivers hotkeys it registered from a uiAccess process, since ours
@@ -584,6 +672,11 @@ impl App {
             show_theme_window: false,
             #[cfg(not(windows))]
             start_hidden,
+            #[cfg(not(windows))]
+            x11_win: 0,
+            // Born unmapped only where the window can be (X11); native Wayland minimizes instead.
+            #[cfg(not(windows))]
+            hidden: start_hidden && X11_WINDOW.load(Ordering::Relaxed),
         })
     }
 
@@ -603,13 +696,28 @@ impl App {
         // minimized or buried window. xdg-activation is the one request a Wayland client has:
         // GNOME answers with a "TrontSnap is ready" notification that raises + unminimizes it.
         #[cfg(not(windows))]
-        if !ctx.input(|i| i.viewport().focused.unwrap_or(false)) {
+        if X11_WINDOW.load(Ordering::Relaxed) {
+            // X11 can really map it. winit's set_visible(true) above does the map + raise; it cannot
+            // focus a window it just mapped, so ask the window manager (x11win.rs).
+            self.hidden = false;
+            ctx.request_repaint();
+            if self.x11_win != 0 {
+                crate::x11win::activate_when_mapped(self.x11_win);
+            }
+        } else if !ctx.input(|i| i.viewport().focused.unwrap_or(false)) {
             ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
                 egui::UserAttentionType::Informational,
             ));
         }
         // No rescan here: the live capture watcher keeps the gallery current, so
         // opening the window no longer flashes/reloads. Manual Refresh still exists.
+    }
+
+    /// Linux: unmap the window (close-to-tray). Only reached on X11 with a registered tray.
+    #[cfg(not(windows))]
+    fn hide(&mut self, ctx: &egui::Context) {
+        self.hidden = true;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
     }
 
     #[cfg(windows)]
@@ -643,6 +751,10 @@ impl App {
         // update() doesn't run while hidden, so if we're here the window is live; still
         // skip while minimized (its reported size is meaningless then).
         if ctx.input(|i| i.viewport().minimized).unwrap_or(false) {
+            return;
+        }
+        #[cfg(not(windows))]
+        if self.hidden {
             return;
         }
         // Just under the 680x420 min_inner_size, so only genuine breakage trips it.
@@ -876,19 +988,21 @@ impl App {
                                 ));
                             }
                             if window_button(ui, WinBtn::Close)
-                                .on_hover_text(CLOSE_HINT)
+                                .on_hover_text(close_hint())
                                 .clicked()
                             {
                                 #[cfg(windows)]
                                 self.hide(ctx);
-                                // HARD-WON: there is no tray to hide to here, and a Wayland client
-                                // can't hide at all (set_visible is a no-op), so the old hide() left a
-                                // window that never went away on Wayland and an unrecoverable one on
-                                // X11. Close quits (same path as Alt+F4); the keybindings are one-shot
-                                // processes and `record` starts the app on demand. A live recording
-                                // is not taken down with the window: minimize instead.
+                                // HARD-WON: without a tray to hide to, and a Wayland client can't
+                                // hide at all (set_visible is a no-op), the old hide() left a window
+                                // that never went away on Wayland and an unrecoverable one on X11.
+                                // So with no registered tray Close quits (same path as Alt+F4); the
+                                // keybindings are one-shot processes and `record` starts the app on
+                                // demand. A live recording is not taken down with the window:
+                                // minimize instead. WITH a tray, Close is the close_requested path
+                                // in update(), which hides (the recording keeps running).
                                 #[cfg(not(windows))]
-                                if crate::recorder::status() == crate::recorder::Status::Idle {
+                                if tray_hides() || crate::recorder::status() == crate::recorder::Status::Idle {
                                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                                 } else {
                                     ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
@@ -1064,6 +1178,10 @@ impl eframe::App for App {
         if let Some(h) = hwnd {
             self.hwnd_cell.store(h, Ordering::Relaxed);
         }
+        #[cfg(not(windows))]
+        if let Some(w) = x11_window_from_frame(frame) {
+            self.x11_win = w;
+        }
 
         self.heal_tiny_window(ctx);
 
@@ -1085,17 +1203,24 @@ impl eframe::App for App {
             self.show(ctx);
         }
 
+        // Native Wayland can't start unmapped, so it starts minimized instead.
         #[cfg(not(windows))]
-        if std::mem::take(&mut self.start_hidden) && std::env::var_os("WAYLAND_DISPLAY").is_some() {
+        if std::mem::take(&mut self.start_hidden) && !X11_WINDOW.load(Ordering::Relaxed) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
         }
 
         // Closing the window hides to tray instead of quitting (Quit is in the
-        // menu). Linux has no tray yet, so Close means quit — the hotkey
-        // keybindings run one-shot processes and keep working without the app.
+        // menu). Linux does that only with a registered tray AND an X11 window (tray_hides);
+        // otherwise Close means quit — the hotkey keybindings run one-shot processes and keep
+        // working without the app.
         if ctx.input(|i| i.viewport().close_requested()) {
             #[cfg(not(windows))]
             {
+                if tray_hides() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                    self.hide(ctx);
+                    return;
+                }
                 // A live ffmpeg session must be stopped (and finalized) before
                 // exit, or it keeps recording orphaned until the disk fills.
                 crate::recorder::shutdown();
@@ -1120,8 +1245,14 @@ impl eframe::App for App {
             .map(|h| unsafe { IsWindowVisible(HWND(h)).as_bool() })
             .unwrap_or(false);
         #[cfg(not(windows))]
-        let window_visible = true; // update() only runs while visible anyway
+        let window_visible = !self.hidden;
         crate::theme::poll_system_mode(ctx, window_visible);
+
+        // Unmapped (tray / born hidden): paint nothing, request nothing; show() wakes us.
+        #[cfg(not(windows))]
+        if self.hidden {
+            return;
+        }
 
         self.draw(ctx, hwnd);
     }
@@ -1156,9 +1287,13 @@ impl App {
 /// with the other. Scrollable because the Hotkeys section makes it taller than
 /// the window on smaller sizes.
 #[cfg(windows)]
-const CLOSE_HINT: &str = "Close to tray";
+fn close_hint() -> &'static str {
+    "Close to tray"
+}
 #[cfg(not(windows))]
-const CLOSE_HINT: &str = "Close (quits)";
+fn close_hint() -> &'static str {
+    if tray_hides() { "Close to tray" } else { "Close (quits)" }
+}
 #[cfg(windows)]
 const CURSOR_HINT: &str = "Include the mouse pointer in screenshots and recordings.";
 // HARD-WON: the Linux hardware recorder (kmsgrab) reads the primary plane; the pointer is
@@ -1176,8 +1311,8 @@ const PRINT_KEY_HINT: &str = "Clears GNOME's own Print-key screenshot UI (org.gn
 #[cfg(windows)]
 const STARTUP_HINT: &str = "Launch TrontSnap hidden in the tray when you sign in to Windows.";
 #[cfg(not(windows))]
-const STARTUP_HINT: &str = "Start TrontSnap in the background when you sign in (unmapped on X11, \
-     minimized on Wayland: open it from the dock).";
+const STARTUP_HINT: &str = "Start TrontSnap in the background when you sign in: hidden to the tray \
+     icon when there is one, otherwise unmapped on X11 / minimized on Wayland (open it from the dock).";
 #[cfg(windows)]
 const PORTABLE_NOTE: &str = "Portable single exe. Delete to uninstall.";
 #[cfg(not(windows))]
@@ -1954,6 +2089,10 @@ impl App {
                 shortcut_row(ui, &hotkey_text(Hk::Ocr, " + "), "Copy the TEXT out of a region (OCR)");
                 #[cfg(windows)]
                 shortcut_row(ui, "Tray icon", "Left-click for an instant region capture");
+                #[cfg(not(windows))]
+                if crate::sni::registered() {
+                    shortcut_row(ui, "Tray icon", "Double-click to open, middle-click for a region capture");
+                }
                 ui.add_space(18.0);
                 ui.separator();
                 ui.add_space(14.0);
@@ -1989,8 +2128,8 @@ impl App {
 
 /// Linux recording indicator in the title bar: a red dot + mm:ss while a clip is
 /// being captured ("Starting..." in the ~3 s before a kms clip begins, "Saving..." after
-/// the stop). Click = stop. Windows has its own REC outline; Linux has no tray, so this
-/// is the one place a recording is visible while the window is open.
+/// the stop). Click = stop. Windows has its own REC outline; on Linux the tray icon grows a
+/// red badge instead (sni.rs), and this is what shows while the window is open.
 #[cfg(not(windows))]
 fn rec_pill(ui: &mut egui::Ui, ctx: &egui::Context) {
     use crate::recorder::Status;
@@ -2286,6 +2425,16 @@ fn hwnd_from_frame(_frame: &eframe::Frame) -> Option<isize> {
     None
 }
 
+/// Linux: the X11 window id of the main window (None on native Wayland).
+#[cfg(not(windows))]
+fn x11_window_from_frame(frame: &eframe::Frame) -> Option<u32> {
+    match frame.window_handle().ok()?.as_raw() {
+        RawWindowHandle::Xlib(h) => Some(h.window as u32),
+        RawWindowHandle::Xcb(h) => Some(h.window.get()),
+        _ => None,
+    }
+}
+
 /// Native OS file drag-out via the `drag` crate (DoDragDrop under the hood).
 /// Blocking/modal on the calling thread by Win32 design; gallery.rs calls this
 /// synchronously from update() (the UI thread), which is required.
@@ -2339,7 +2488,7 @@ impl HasWindowHandle for RawHwnd {
 
 /// Decode the embedded TrontSnap icon (the face in its rainbow capture-frame,
 /// distinct from TrontEQ's bare face) resized to `size`, or None on failure.
-fn face_rgba(size: u32) -> Option<Vec<u8>> {
+pub(crate) fn face_rgba(size: u32) -> Option<Vec<u8>> {
     let bytes = include_bytes!("../assets/trontsnap.png");
     let img = image::load_from_memory(bytes).ok()?;
     let resized = img.resize_exact(size, size, image::imageops::FilterType::Lanczos3);

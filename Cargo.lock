@@ -4255,6 +4255,7 @@ dependencies = [
  "tray-icon",
  "walkdir",
  "windows 0.56.0",
+ "winit",
  "winreg",
  "winresource",
  "x11rb",

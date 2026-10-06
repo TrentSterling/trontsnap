@@ -88,6 +88,10 @@ zbus = "4"
 # winit/arboard; "xfixes" is the one extra: it reads the cursor image for "Capture cursor" on X11
 # sessions (linux/cursor.rs).
 x11rb = { version = "0.13", features = ["xfixes"] }
+# Already in the tree via eframe (which enables x11 and wayland). Direct only for
+# EventLoopBuilderExtX11::with_x11(): the main window is forced onto XWayland when a tray exists,
+# because native Wayland can't hide or un-minimize a window (see app.rs). Nothing new compiles.
+winit = { version = "0.30", default-features = false, features = ["x11"] }
 
 [build-dependencies]
 # Embeds the distinct rainbow icon + a Win32 manifest (asInvoker; uiAccess only
