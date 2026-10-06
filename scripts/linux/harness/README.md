@@ -115,6 +115,27 @@ clip.sh 99 image/png out.png            # dump a target to a file
 List TARGETS first: asking xclip for a type the owner doesn't offer can hand back
 a different one. Don't print binary targets to the terminal.
 
+## 3b. Paste test (`paste_test.sh`, ~80 s)
+
+```
+scripts/linux/harness/paste_test.sh            # own rig :92 / 48792, stopped after
+TRONTSNAP_BIN=/path/to/old/trontsnap scripts/linux/harness/paste_test.sh   # negative control
+```
+
+Asserts what a paste destination would get, on the rig's X clipboard: A) video tile with a
+name needing URI escaping (`Screen Rec #1 (final) 100%é.mp4`, seeded by `paste_seed.sh`) -> the
+Nautilus file set, percent-encoded, CRLF; B) still tile -> image/png byte-identical to the file
+its own URI names; C/D/E) Ctrl+C with 2 / 1 selected, and NOT from the search box; F) `trontsnap
+full` -> image/png == the saved file; G) `TRONTSNAP_CLIPSERVE=off` fallback + log line; H) a 10 MB
+PNG through INCR x3 and the owner exiting when replaced; I) `trontsnap ocr` without tesseract ->
+a notification (stand-in `fake_bin/notify-send`; `fake_bin/paplay` etc. keep the rig's shutter
+off the real speakers) and an untouched clipboard; J) "Copy 2 files" / "Copy 2 paths" menu items,
+and the copied paths still there after the app is killed. Run against the pre-fix binary it fails
+24 checks (kept log: `harness_out/2026-10-05/fix-paste/paste_test_BEFORE.log`). Tile geometry:
+tiles are 182 px apart from x=128,y=134; the F/G captures become tiles 1-2, which is why J
+works on those; a still's context menu puts "Copy N files" at pointer+(45,285), "Copy N paths"
+at +(49,319) (a video's menu has two fewer rows, so offsets shift).
+
 ## 4. Recorder test vs the LIVE app (`rec_test.sh`)
 
 ```
@@ -168,8 +189,8 @@ bottom-right dock (`screen - 340x188 - (24, 48)`). Rig mode also screenshots.
 - The Xvfb app is a software-GL debug build: allow ~0.5 s after an input for the
   next frame before screenshotting (scripts here sleep 0.6-0.8 s).
 - A plain tile click IS "copy to clipboard" (gallery.rs), so a click with a dropped
-  Ctrl (see focus) silently copies instead of selecting. There is no Ctrl+C handler
-  in the gallery grid; use click / context menu "Copy to clipboard".
+  Ctrl (see focus) silently copies instead of selecting. Ctrl+C on a selection copies
+  it (1 = image, N = files); it only fires when no text field has focus.
 - egui repaints on events: after a non-input state change (a file appearing,
   a thumbnail decoding) nudge the pointer 1 px or use `shot.sh --settle` before
   trusting a shot. Pixel-diff only against shots taken with `--settle`.

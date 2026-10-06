@@ -1,0 +1,4 @@
+#!/bin/sh
+# Harness stand-in: record the notification instead of popping it on a desktop.
+# Log path: $FAKE_NOTIFY_LOG (default: /dev/null).
+printf '%s\n' "$*" >> "${FAKE_NOTIFY_LOG:-/dev/null}"

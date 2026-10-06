@@ -19,10 +19,11 @@ Build deps beyond Rust: the usual eframe set (`libgtk-3-dev` is NOT needed;
 
 | Tool | For | Install |
 |---|---|---|
-| `wl-clipboard` (Wayland) or `xclip` (X11) | clipboard writes that outlive the one-shot capture process | `sudo apt install wl-clipboard` |
+| `xclip` | text clipboard writes (OCR, copied paths) and the fallback for everything else; used on X11 AND on GNOME Wayland (via XWayland, which Mutter bridges) | `sudo apt install xclip` |
+| `wl-clipboard` | only for wlroots/KDE compositors that implement data-control; GNOME has none, so wl-copy there is not used when xclip exists | `sudo apt install wl-clipboard` |
 | `gnome-screenshot` / `spectacle` / `grim` | screen grab fallback when xcap can't capture your compositor | usually preinstalled |
 | `ffmpeg` | recording, video thumbnails, GIF export | `sudo apt install ffmpeg` |
-| `tesseract-ocr` | region OCR (optional) | `sudo apt install tesseract-ocr` |
+| `tesseract-ocr` | region OCR (`Ctrl+Alt+Print`, gallery "Copy text"). **Not preinstalled on Ubuntu**: without it the hotkey shows an "OCR unavailable" notification instead of a picker | `sudo apt install tesseract-ocr` |
 | `paplay` / `pw-play` / `aplay` | shutter sound | preinstalled everywhere |
 
 ## What works (verified on GNOME Wayland, Ubuntu)
@@ -35,8 +36,17 @@ Build deps beyond Rust: the usual eframe set (`libgtk-3-dev` is NOT needed;
 - Live gallery splice via inotify, capture toast with Edit chip
 - Autostart via `~/.config/autostart/trontsnap.desktop`
 - Settings persist to `~/.config/trontsnap/settings.conf`
-- Clipboard: `image/png` for shots, `text/uri-list` for recordings, plain text
-  for OCR — all survive the capturing process exiting
+- Clipboard, all of it surviving the capturing process exiting:
+  - shots: `image/png` + the saved file (`text/uri-list` + `x-special/gnome-copied-files`),
+    so Firefox/file-manager-style destinations get a real named file; no text flavor
+    on purpose (a path next to the picture could win in a rich-text field — unverified
+    either way, so we kept the safe side)
+  - recordings and gallery "Copy N files": exactly what Nautilus offers on Ctrl+C
+    (uri-list, gnome-copied-files, bare-path text), so terminals paste the path too
+  - OCR text and "Copy path(s)": plain text via xclip
+  - URIs are RFC 3986 percent-encoded (a `#` or `%20` in a name used to break paste)
+- Gallery: click = copy, Ctrl+click / Shift+click = select, Ctrl+A, Delete, and
+  **Ctrl+C copies the selection** (1 = the image, N = the files)
 
 ## Hotkeys
 
@@ -54,6 +64,27 @@ key from Snipping Tool on Windows):
 Other desktops: bind those same commands in your DE's keyboard settings.
 The one-shots don't need the app running.
 
+## How the clipboard works here (and why it is a daemon)
+
+On Linux the clipboard is owned by a live process; the one-shot `trontsnap full`
+exits in seconds. `xclip`/`wl-copy` fork a daemon but serve ONE mime type, so shots
+and files go through `trontsnap clip-serve` (`src/linux/clipserve.rs`): a small
+detached X11 selection owner on XWayland offering several targets at once. It
+exits by itself when anything else takes the clipboard. If it can't start (no
+`DISPLAY`, exec failure, no ownership within 4 s) the writer falls back to the
+single-target tool and logs why to `~/.local/share/trontsnap/trontsnap.log`;
+`TRONTSNAP_CLIPSERVE=off` forces that fallback (used by the harness). Measured
+consumers: native-Wayland GTK4 (texture + real file path), GTK3/VTE (text + uris),
+Nautilus 46 (pastes a `Screen Rec #1 (final) 100%é.mp4` that used to error).
+Not checked on this box: Discord/Electron/Chromium, Qt/KDE.
+
+`trontsnap full` hands gnome-screenshot's PNG to the clipboard and disk untouched
+(no decode/re-encode), ~1.7 s in the debug build the GNOME hotkeys run (4.8 s
+before; gnome-screenshot alone is ~1.6 s). The GNOME bindings run whichever binary the
+app was launched from (here `target/debug/trontsnap`). A release build would be faster
+still, but the bindings deliberately don't prefer `target/release` when it exists: it would
+silently be a stale binary after every debug rebuild.
+
 ## Recording
 
 X11 sessions: ffmpeg x11grab, full screen, 30fps, libx264 ultrafast (+ Pulse
@@ -65,8 +96,9 @@ audio when "Record audio" is on). Wayland: not wired yet — drop a
 
 `scripts/linux/harness/` (see its README): isolated Xvfb GUI rig + XTest input
 driver + screenshot/clipboard tools (`gui_env.sh`, `xinput.py`, `shot.sh`,
-`clip.sh`, `selftest.sh`) and `rec_test.sh`, an end-to-end recorder test against
-the live app. `TRONTSNAP_PORT` overrides the command port (default 48761);
+`clip.sh`, `selftest.sh`), `paste_test.sh` (what lands on the clipboard, asserted:
+file set, URI escaping, Ctrl+C, INCR, fallback, OCR notice) and `rec_test.sh`, an
+end-to-end recorder test against the live app. `TRONTSNAP_PORT` overrides the command port (default 48761);
 `TRONTSNAP_TEST=1` stops an instance from installing keybindings/autostart.
 
 ## Known gaps vs Windows (telling the truth here, in rough priority order)

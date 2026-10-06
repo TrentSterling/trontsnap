@@ -1,0 +1,3 @@
+#!/bin/sh
+# Harness stand-in: a rig capture must not play the shutter on the real speakers.
+exit 0

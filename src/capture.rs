@@ -1,6 +1,7 @@
 // Screen grab + delivery (clipboard + disk).
 // Capture is via xcap. Clipboard is our own multi-format writer (see clipboard.rs)
-// so screenshots paste everywhere ShareX does, including as a file into terminals.
+// so screenshots paste everywhere ShareX does (Windows: CF_HDROP also pastes a path
+// into terminals; Linux: the clip-serve target set, see LINUX.md).
 
 use std::path::{Path, PathBuf};
 
