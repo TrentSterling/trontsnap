@@ -32,11 +32,11 @@ fn grab_xcap() -> anyhow::Result<RgbaImage> {
     Ok(monitor.capture_image()?)
 }
 
-/// CLI grabber chain for desktops xcap can't capture: each writes a PNG to a
-/// temp path we then load. gnome-screenshot covers GNOME Wayland (portal path,
-/// no prompt), spectacle covers KDE, grim covers wlroots.
+/// Run the first CLI grabber that works and return its PNG bytes. gnome-screenshot
+/// covers GNOME Wayland (portal path, no prompt), spectacle covers KDE, grim
+/// covers wlroots. Each writes a PNG to a temp path we read back.
 #[cfg(not(windows))]
-fn grab_linux_fallback(xcap_err: &anyhow::Error) -> anyhow::Result<RgbaImage> {
+fn run_cli_grabber(xcap_err: &anyhow::Error) -> anyhow::Result<Vec<u8>> {
     let dir = dirs::runtime_dir().unwrap_or_else(std::env::temp_dir);
     let tmp = dir.join(format!("trontsnap-grab-{}.png", std::process::id()));
     let tmp_s = tmp.display().to_string();
@@ -54,26 +54,73 @@ fn grab_linux_fallback(xcap_err: &anyhow::Error) -> anyhow::Result<RgbaImage> {
             .map(|s| s.success())
             .unwrap_or(false);
         if ok && tmp.exists() {
-            let mut img = image::open(&tmp)?.to_rgba8();
+            let bytes = std::fs::read(&tmp);
             let _ = std::fs::remove_file(&tmp);
-            // These tools shoot ALL monitors; everything downstream (picker
-            // geometry, cursor math, smart rects) assumes the primary. Crop to
-            // the primary's bounds when the monitor list is available.
-            if let Ok(monitors) = Monitor::all() {
-                if let Some(m) = monitors.iter().find(|m| m.is_primary()).or(monitors.first()) {
-                    let (x, y) = (m.x().max(0) as u32, m.y().max(0) as u32);
-                    let (w, h) = (m.width(), m.height());
-                    if x + w <= img.width() && y + h <= img.height() && (w, h) != img.dimensions() {
-                        img = image::imageops::crop_imm(&img, x, y, w, h).to_image();
-                    }
-                }
-            }
-            return Ok(img);
+            return Ok(bytes?);
         }
     }
     anyhow::bail!(
         "no screen grabber worked (xcap: {xcap_err:#}; also tried gnome-screenshot/spectacle/grim)"
     )
+}
+
+/// The primary monitor's rect inside a multi-monitor grab, or None when the grab
+/// is already exactly the primary (or the monitor list isn't available). These
+/// tools shoot ALL monitors; everything downstream (picker geometry, cursor math,
+/// smart rects) assumes the primary.
+#[cfg(not(windows))]
+fn primary_crop_rect(grab_w: u32, grab_h: u32) -> Option<(u32, u32, u32, u32)> {
+    let monitors = Monitor::all().ok()?;
+    let m = monitors.iter().find(|m| m.is_primary()).or(monitors.first())?;
+    let (x, y) = (m.x().max(0) as u32, m.y().max(0) as u32);
+    let (w, h) = (m.width(), m.height());
+    (x + w <= grab_w && y + h <= grab_h && (w, h) != (grab_w, grab_h)).then_some((x, y, w, h))
+}
+
+/// CLI grabber -> decoded primary-monitor image (region picker, anything that
+/// needs pixels).
+#[cfg(not(windows))]
+fn grab_linux_fallback(xcap_err: &anyhow::Error) -> anyhow::Result<RgbaImage> {
+    let bytes = run_cli_grabber(xcap_err)?;
+    let mut img = image::load_from_memory(&bytes)?.to_rgba8();
+    if let Some((x, y, w, h)) = primary_crop_rect(img.width(), img.height()) {
+        img = image::imageops::crop_imm(&img, x, y, w, h).to_image();
+    }
+    Ok(img)
+}
+
+/// Width/height out of a PNG's IHDR without decoding (sig 8 + len 4 + "IHDR" 4 + w + h).
+#[cfg(not(windows))]
+fn png_dims(b: &[u8]) -> Option<(u32, u32)> {
+    if b.len() < 24 || b[..8] != *b"\x89PNG\r\n\x1a\n" || b[12..16] != *b"IHDR" {
+        return None;
+    }
+    Some((u32::from_be_bytes(b[16..20].try_into().ok()?), u32::from_be_bytes(b[20..24].try_into().ok()?)))
+}
+
+/// Full-screen grab as finished PNG bytes. HARD-WON: when gnome-screenshot's PNG
+/// already is the primary monitor (single-screen box, the common case) its bytes
+/// go to the clipboard and disk untouched; the old decode -> overlay -> re-encode
+/// round trip was ~3 s of a ~4.8 s capture in the debug build the hotkeys run,
+/// and the clipboard is only set at the end, so a quick paste got the previous
+/// one. Skipping the overlay is safe because cursor::maybe_overlay is a no-op on
+/// Linux; if that ever changes this path must decode when the overlay is on.
+#[cfg(not(windows))]
+fn grab_png_linux() -> anyhow::Result<Vec<u8>> {
+    let xcap_err = match grab_xcap() {
+        Ok(img) => return encode_png(&img),
+        Err(e) => e,
+    };
+    let bytes = run_cli_grabber(&xcap_err)?;
+    let needs_crop = png_dims(&bytes).map_or(true, |(w, h)| primary_crop_rect(w, h).is_some());
+    if !needs_crop {
+        return Ok(bytes);
+    }
+    let mut img = image::load_from_memory(&bytes)?.to_rgba8();
+    if let Some((x, y, w, h)) = primary_crop_rect(img.width(), img.height()) {
+        img = image::imageops::crop_imm(&img, x, y, w, h).to_image();
+    }
+    encode_png(&img)
 }
 
 /// Grab the primary monitor for a screenshot, compositing in the mouse cursor when the
@@ -86,10 +133,22 @@ pub fn grab_for_shot() -> anyhow::Result<RgbaImage> {
 }
 
 /// Full-screen capture path: grab primary, deliver.
+#[cfg(windows)]
 pub fn capture_full() -> anyhow::Result<()> {
     let img = grab_for_shot()?;
     let path = deliver(&img)?;
     println!("captured {}x{} -> clipboard + {}", img.width(), img.height(), path.display());
+    Ok(())
+}
+
+/// Full-screen capture path, Linux: PNG bytes straight through (see grab_png_linux).
+#[cfg(not(windows))]
+pub fn capture_full() -> anyhow::Result<()> {
+    let png_bytes = grab_png_linux()?;
+    let (w, h) = png_dims(&png_bytes).unwrap_or((0, 0));
+    let path = save_png_bytes(&png_bytes)?;
+    finish_delivery(&path, crate::clipboard::set_png(&png_bytes, &path));
+    println!("captured {w}x{h} -> clipboard + {}", path.display());
     Ok(())
 }
 
@@ -100,10 +159,16 @@ pub fn capture_full() -> anyhow::Result<()> {
 pub fn deliver(img: &RgbaImage) -> anyhow::Result<PathBuf> {
     let png_bytes = encode_png(img)?;
     let path = save_png_bytes(&png_bytes)?;
+    finish_delivery(&path, crate::clipboard::set_all(img, &png_bytes, &path));
+    Ok(path)
+}
+
+/// Shared tail of every capture: report the clipboard outcome, shutter, toast.
+fn finish_delivery(path: &Path, clipboard: anyhow::Result<()>) {
     // Best-effort, but NOT silent: the toast reports the real outcome. Previously
     // this only logged to stderr, which goes nowhere in a windowed exe, so a lost
     // clipboard race looked identical to success.
-    let clipboard_ok = match crate::clipboard::set_all(img, &png_bytes, &path) {
+    let clipboard_ok = match clipboard {
         Ok(()) => true,
         Err(e) => {
             eprintln!("trontsnap: clipboard set failed: {e:#}");
@@ -115,8 +180,7 @@ pub fn deliver(img: &RgbaImage) -> anyhow::Result<PathBuf> {
     // Corner toast (ShareX-style) as its own tiny process, so it never touches the main
     // app's window/loop. A plain std::process::Command spawn (inside toast::launch) is all
     // it takes now that TrontSnap is a portable, non-uiAccess, Medium-integrity exe.
-    crate::toast::launch(&path, clipboard_ok);
-    Ok(path)
+    crate::toast::launch(path, clipboard_ok);
 }
 
 /// Load a PNG/JPG off disk and put it on the clipboard (used by the gallery).

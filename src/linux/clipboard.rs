@@ -88,8 +88,14 @@ fn pipe_to_clipboard(mime: &str, bytes: &[u8]) -> anyhow::Result<()> {
 /// `file_path` is unused here — Linux paste targets read the pixels, and a
 /// text/uri-list alongside would require a second selection owner fighting the
 /// first.
-pub fn set_all(img: &RgbaImage, png_bytes: &[u8], _file_path: &Path) -> anyhow::Result<()> {
+pub fn set_all(img: &RgbaImage, png_bytes: &[u8], file_path: &Path) -> anyhow::Result<()> {
     let _ = img;
+    set_png(png_bytes, file_path)
+}
+
+/// Same as `set_all` for callers that never decoded pixels (the capture fast
+/// path hands gnome-screenshot's PNG bytes straight through).
+pub fn set_png(png_bytes: &[u8], _file_path: &Path) -> anyhow::Result<()> {
     pipe_to_clipboard("image/png", png_bytes).inspect_err(|e| log_line(&format!("clipboard image failed: {e:#}")))
 }
 

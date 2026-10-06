@@ -107,3 +107,24 @@ lto = true
 codegen-units = 1
 strip = true
 panic = "abort"
+
+# HARD-WON: the hotkeys run target/debug/trontsnap, and at opt-level 0 the PNG
+# decode + re-encode of a 1366x768 grab cost ~3 s of the ~4.8 s capture-to-clipboard
+# latency (an immediate paste got the PREVIOUS clipboard). Optimizing just the
+# image-codec deps keeps debug info and incremental builds for our own code.
+[profile.dev.package.image]
+opt-level = 3
+[profile.dev.package.png]
+opt-level = 3
+[profile.dev.package.flate2]
+opt-level = 3
+[profile.dev.package.miniz_oxide]
+opt-level = 3
+[profile.dev.package.fdeflate]
+opt-level = 3
+[profile.dev.package.crc32fast]
+opt-level = 3
+[profile.dev.package.adler2]
+opt-level = 3
+[profile.dev.package.simd-adler32]
+opt-level = 3
