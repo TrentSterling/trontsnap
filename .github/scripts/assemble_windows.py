@@ -43,6 +43,15 @@ def die(msg):
     sys.exit(1)
 
 
+def check_cmd_eol(path, name):
+    """HARD-WON: cmd.exe can mis-parse goto labels in LF-only batch files, so the .cmd
+    wrappers must ship CRLF. .gitattributes (*.cmd text eol=crlf) does it at checkout;
+    this fails the build if that ever stops working (a bare LF anywhere is enough)."""
+    data = path.read_bytes()
+    if data.count(b"\n") != data.count(b"\r\n"):
+        die("%s has LF-only line endings; check .gitattributes (*.cmd text eol=crlf)" % name)
+
+
 def check_binaries(ui, broker, version):
     """Same gates bootstrap.ps1 applies at install time, moved to build time."""
     ui_b, broker_b = ui.read_bytes(), broker.read_bytes()
@@ -82,6 +91,9 @@ def main():
         die("missing inputs:\n  " + "\n  ".join(missing))
 
     check_binaries(src("bin:trontsnap.exe"), src("bin:trontsnap-hotkeys.exe"), a.version)
+    for name, spec in ZIP_LAYOUT:
+        if name.endswith(".cmd"):
+            check_cmd_eol(src(spec), name)
 
     out.mkdir(parents=True, exist_ok=True)
     zip_path = out / ("TrontSnap-v%s-windows.zip" % a.version)
