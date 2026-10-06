@@ -369,19 +369,28 @@ impl eframe::App for Toast {
                 egui::FontId::proportional(14.0),
                 crate::theme::accent_over_media(),
             );
+            // HARD-WON: a full stamped name (33 chars) plus the hint is wider than the 340 px toast, and
+            // the two ran together ("...pngclick to open"). The name gives way, middle first.
+            let hint = if cfg!(windows) { "click to open  .  drag to send" } else { "click to open  .  Ctrl+V to paste" };
+            // (No drag-out backend on Linux yet: don't advertise one.)
+            let name_font = egui::FontId::proportional(11.0);
+            let hint_w = painter
+                .layout_no_wrap(hint.to_owned(), name_font.clone(), egui::Color32::WHITE)
+                .size()
+                .x;
+            let shown = fit_middle(painter, &name, &name_font, rect.width() - 2.0 * 10.0 - hint_w - 12.0);
             painter.text(
                 egui::pos2(x, band.top() + 26.0),
                 egui::Align2::LEFT_TOP,
-                &name,
-                egui::FontId::proportional(11.0),
+                shown,
+                name_font.clone(),
                 egui::Color32::from_white_alpha(190),
             );
             painter.text(
                 egui::pos2(rect.right() - 10.0, band.top() + 26.0),
                 egui::Align2::RIGHT_TOP,
-                // No drag-out backend on Linux yet: don't advertise one.
-                if cfg!(windows) { "click to open  .  drag to send" } else { "click to open  .  Ctrl+V to paste" },
-                egui::FontId::proportional(11.0),
+                hint,
+                name_font,
                 egui::Color32::from_white_alpha(140),
             );
 
@@ -546,4 +555,23 @@ fn position_bottom_right(frame: &eframe::Frame) {
         let y = wa.bottom - h - 24;
         let _ = SetWindowPos(hwnd, HWND_TOPMOST, x, y, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
     }
+}
+
+/// `text` with the middle replaced by an ellipsis until it fits `max_w` (the ends carry the
+/// meaning of a file name: its prefix and its extension).
+fn fit_middle(painter: &egui::Painter, text: &str, font: &egui::FontId, max_w: f32) -> String {
+    let width = |t: &str| painter.layout_no_wrap(t.to_owned(), font.clone(), egui::Color32::WHITE).size().x;
+    if width(text) <= max_w {
+        return text.to_owned();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    for cut in 1..chars.len() {
+        let keep = chars.len() - cut;
+        let (head, tail) = (keep.div_ceil(2), keep / 2);
+        let cand: String = chars[..head].iter().chain(['\u{2026}'].iter()).chain(&chars[chars.len() - tail..]).collect();
+        if width(&cand) <= max_w {
+            return cand;
+        }
+    }
+    "\u{2026}".to_owned()
 }
