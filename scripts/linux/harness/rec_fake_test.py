@@ -19,8 +19,8 @@ What it proves (each check prints PASS/FAIL; exit 1 on any FAIL):
   S7  `trontsnap record region` picker (drag) -> region recording
   S8  CPU: no app thread burns CPU while a recording runs (kms_watch used to poll /proc at 20 Hz)
   S9  UI: title-bar "Starting.../REC mm:ss/Saving..." (screenshots in $OUT/fake/shots, LOOK at them)
-  S10 tray dot (StatusNotifierItem): registers when frames flow with a red-dot pixmap, vanishes at the stop,
-      a click (Activate) stops the recording (mock watcher on the rig bus)
+  S10 tray icon (StatusNotifierItem): registered from app start (persistent), red badge on it only while
+      frames flow, a click (Activate) stops the recording (mock watcher on the rig bus; tray_test.sh covers the rest)
   S11 opening a video from the gallery is deferred while a kmsgrab recording runs, and works after
   X1  x11 backend (ffmpeg x11grab of the rig's Xvfb): full screen + a region, audio kept and as long as the video
 
@@ -212,7 +212,8 @@ def rig_start(audio, recorder="kms"):
     os.environ.update(FAKE_NOTIFY_LOG=str(FD / "cli_notify.log"), FAKE_OPEN_LOG=str(FD / "open.log"))
     for f in ("cli_notify.log", "open.log"):
         (FD / f).unlink(missing_ok=True)
-    os.environ.update(FAKE_KMS_DIR=str(FD), NOTIFY_LOG=str(FD / "notify.jsonl"), RIG_SEED_HOOK=str(hook),
+    # A test rig keeps off the tray unless asked (rec_gnome_test shares the REAL bus); S10 asks.
+    os.environ.update(TRONTSNAP_TRAY="on", FAKE_KMS_DIR=str(FD), NOTIFY_LOG=str(FD / "notify.jsonl"), RIG_SEED_HOOK=str(hook),
                       TRONTSNAP_KMS_HELPER=str(HERE / "fake_kms" / "capkit-kms"),
                       TRONTSNAP_KMS_STOP=str(HERE / "fake_kms" / "capkit-stop"))
     r = gui("start", str(N), str(PORT), "--recorder", recorder)
@@ -566,37 +567,54 @@ def sni_log(after=0.0):
     return out
 
 
+def tray_icon():
+    """The persistent tray item as a host reads it: pixmap sizes, sha of the 22 px one, red badge pixels."""
+    r = gui("run", str(N), "python3", str(HERE / "tray_probe.py"), "icon")
+    try:
+        return json.loads(r.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        return {}
+
+
 def s10():
-    header("S10 tray indicator (StatusNotifierItem) against a mock watcher")
+    header("S10 tray icon (StatusNotifierItem): persistent item, red badge only while recording")
     cfg(INIT="1.0", STOP_DELAY="0.8", MODE="normal")
     before = media()
+    reg = wait(lambda: [d for d in sni_log() if d["op"] == "item"], 10)
+    check("S10: the item registered at app start, BEFORE any recording (persistent tray icon)", bool(reg), str(sni_log()))
+    if reg:
+        it = reg[0]
+        check("S10: Id / Category / Status as a tray host expects",
+              (it["id"], it["category"], it["status"]) == ("trontsnap", "ApplicationStatus", "Active"), str(it))
+        check("S10: app-icon pixmaps 16/22/24/32/48/64 px with the full ARGB payload",
+              [p[:2] for p in it["pixmaps"]] == [[s, s] for s in (16, 22, 24, 32, 48, 64)]
+              and all(p[2] == p[0] * p[1] * 4 for p in it["pixmaps"]), str(it["pixmaps"]))
+        check("S10: it carries a dbusmenu", it["menu"] == "/MenuBar", str(it["menu"]))
+    idle = tray_icon()
+    check("S10: idle icon has no recording badge", idle.get("badge_px") == 0, str(idle))
     t0 = time.time()
     lc0 = live_count()
     send("record")
     time.sleep(0.8)
-    check("S10: no dot yet during the dead time (kms clip not started)", not sni_log(t0), str(sni_log(t0)))
+    check("S10: still the plain icon during the dead time (kms clip not started)", tray_icon().get("sha") == idle.get("sha"))
     wait(lambda: live_count() > lc0, 15)
-    reg = wait(lambda: [d for d in sni_log(t0) if d["op"] == "item"], 15)
-    check("S10: the item registers with the watcher when frames flow", bool(reg), str(sni_log(t0)))
-    if reg:
-        it = reg[0]
-        check("S10: Id / Category / Status as a tray host expects",
-              (it["id"], it["category"], it["status"]) == ("trontsnap-recording", "ApplicationStatus", "Active"), str(it))
-        check("S10: red-dot pixmaps 16/22/32 px with the full ARGB payload",
-              [p[:2] for p in it["pixmaps"]] == [[16, 16], [22, 22], [32, 32]] and all(p[2] == p[0] * p[1] * 4 for p in it["pixmaps"]), str(it["pixmaps"]))
-        check("S10: tooltip says it is recording", it["tooltip"] and "recording" in it["tooltip"][0].lower(), str(it["tooltip"]))
+    time.sleep(0.5)
+    rec = tray_icon()
+    check("S10: red badge on the icon once frames flow", rec.get("badge_px", 0) > 15 and rec.get("sha") != idle.get("sha"), str(rec))
+    check("S10: tooltip says it is recording", "recording" in rec.get("tip", "").lower(), str(rec.get("tip")))
     time.sleep(2.0)
-    # a left click on the dot = stop (SIGUSR1 makes the mock call Activate on it)
-    pid = procs(lambda a: str(HERE / "sni_mock.py") in a)
+    # a click on the badge = stop (SIGUSR1 makes the mock call Activate on the item)
     t_click = time.time()
-    for p in pid:
+    for p in procs(lambda a: str(HERE / "sni_mock.py") in a):
         os.kill(p, signal.SIGUSR1)
     clip = deliver_wait(before)
-    check("S10: clicking the dot (Activate) stopped the recording and a clip was delivered", clip is not None)
-    gone = wait(lambda: [d for d in sni_log(t0) if d["op"] == "gone"], 10)
-    check("S10: the dot is gone from the tray after the stop (bus name released)", bool(gone))
-    if gone:
-        say(f"    dot vanished {gone[0]['t'] - t_click:.2f}s after the click")
+    check("S10: clicking the badge (Activate) stopped the recording and a clip was delivered", clip is not None)
+    time.sleep(1.0)
+    after = tray_icon()
+    check("S10: badge gone after the stop, identical to the idle icon", after.get("sha") == idle.get("sha") and after.get("badge_px") == 0, str(after))
+    check("S10: ...and the icon is still in the tray (persistent: the bus name was not released)",
+          not [d for d in sni_log(t0) if d["op"] == "gone"])
+    say(f"    icon back to idle {time.time() - t_click:.2f}s after the click")
 
 
 def s11():

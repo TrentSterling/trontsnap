@@ -16,7 +16,9 @@ ctypes over libX11 + libXtst. Targets the display from -d / $DISPLAY.
   xinput.py -d :99 key Delete Escape ctrl+c # several in a row
   xinput.py -d :99 type "hello world"
   xinput.py -d :99 pos                      # prints "X Y"
-  xinput.py -d :99 focus [TITLE]            # XSetInputFocus on the top-level whose name contains
+  xinput.py -d :99 wmclose [TITLE]          # WM_DELETE_WINDOW: what the X button / Alt+F4 send
+  xinput.py -d :99 focus [TITLE]
+                                            # XSetInputFocus on the top-level whose name contains
                                             # TITLE (default "TrontSnap"). REQUIRED once: with no
                                             # window manager nothing is focused, and egui drops
                                             # keyboard events + Ctrl/Shift state until FocusIn.
@@ -67,6 +69,18 @@ x11.XTranslateCoordinates.argtypes = [
     ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_ulong),
 ]
 x11.XGetInputFocus.argtypes = [VP, ctypes.POINTER(ctypes.c_ulong), ctypes.POINTER(ctypes.c_int)]
+
+
+x11.XInternAtom.restype = ctypes.c_ulong
+x11.XInternAtom.argtypes = [VP, ctypes.c_char_p, ctypes.c_int]
+x11.XSendEvent.argtypes = [VP, ctypes.c_ulong, ctypes.c_int, ctypes.c_long, VP]
+
+
+class ClientMsg(ctypes.Structure):
+    # XClientMessageEvent (the head of the 192-byte XEvent union), format 32.
+    _fields_ = [("type", ctypes.c_int), ("serial", ctypes.c_ulong), ("send_event", ctypes.c_int),
+                ("display", VP), ("window", ctypes.c_ulong), ("message_type", ctypes.c_ulong),
+                ("format", ctypes.c_int), ("l", ctypes.c_long * 5)]
 
 
 class Attrs(ctypes.Structure):
@@ -207,6 +221,18 @@ class X:
         self.sync()
         return w
 
+    def wm_close(self, w):
+        """Ask the window to close the way a window manager's X / Alt+F4 does
+        (WM_DELETE_WINDOW). No WM on Xvfb, and XTest-clicking a custom-drawn button
+        is a pixel guess; this is the exact message the app's close path handles."""
+        buf = ctypes.create_string_buffer(192)
+        ev = ClientMsg.from_buffer(buf)
+        ev.type, ev.window, ev.format = 33, w, 32  # ClientMessage
+        ev.message_type = x11.XInternAtom(self.dpy, b"WM_PROTOCOLS", 0)
+        ev.l[0] = x11.XInternAtom(self.dpy, b"WM_DELETE_WINDOW", 0)
+        x11.XSendEvent(self.dpy, w, 0, 0, ctypes.byref(ev))
+        self.sync()
+
     def ensure_focus(self):
         """HARD-WON: no window manager on Xvfb means no window ever has input focus
         (PointerRoot), and then keys + Ctrl/Shift state never reach egui. Quietly
@@ -325,6 +351,13 @@ def run(x, argv):
             print(f"0x{w:x} {ww}x{wh}+{ax}+{ay} {'mapped' if mapped else 'unmapped'} {name!r}")
         if not hits:
             sys.exit(1)
+    elif cmd == "wmclose":
+        want = args[0] if args else "TrontSnap"
+        hits = [h for h in x.find(want) if h[5]]
+        if not hits:
+            sys.exit(f"xinput: no mapped window named like {want!r}")
+        x.wm_close(hits[-1][0])
+        print(f"wmclose 0x{hits[-1][0]:x}")
     elif cmd == "focus":
         want = args[0] if args else "TrontSnap"
         w = x.focus_title(want)

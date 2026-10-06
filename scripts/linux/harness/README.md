@@ -70,7 +70,8 @@ landed in the rig's private dbus + dconf under the temp HOME: the real
 - `TRONTSNAP_PORT=<n>` overrides the single-instance/command port (`app::port()`,
   default 48761 unchanged). The GNOME record keybinding command now follows
   `app::port()` too (so a non-default port can't leave a dead `/dev/tcp/.../48761`).
-- `TRONTSNAP_TEST=1` = never touch the session (keybindings/autostart).
+- `TRONTSNAP_TEST=1` = never touch the session (keybindings/autostart/tray; `TRONTSNAP_TRAY=on` re-enables
+  the tray for the tray tests).
 
 ## 2. Input (`xinput.py`)
 
@@ -88,6 +89,7 @@ xinput.py -d :99 type "hello"
 xinput.py -d :99 pos                    # "X Y"
 xinput.py -d :99 windows                # top-level windows
 xinput.py -d :99 find "TrontSnap Toast" # whole-tree search, abs root coords (works on :0 XWayland too)
+xinput.py -d :99 wmclose               # WM_DELETE_WINDOW = the X button / Alt+F4 (close-to-tray tests)
 xinput.py -d :99 focus [TITLE]
 ```
 
@@ -192,6 +194,35 @@ persists `LoupeSize`.
   injection needs an `abs X Y` in the SAME `wl_env.sh input` call (a fresh RemoteDesktop session has no pointer
   focus otherwise); `shot.sh` paints the pointer unless `SHOT_MOUSE=0`; a capture adds a tile to the live gallery, so
   pointer diffs look at an empty strip, not the whole frame.
+
+## 3e. Tray test (`tray_test.sh`, ~3 min)
+
+```
+scripts/linux/harness/tray_test.sh               # own rig :86 / 48786 + a mock watcher, stops it after
+scripts/linux/harness/tray_test.sh --only A      # A no tray, B/C/D the registered tray (see the header)
+```
+
+The Linux tray icon (`src/linux/sni.rs`) and close-to-tray, asserted. `sni_mock.py` is the watcher on the rig's
+PRIVATE bus (what GNOME's AppIndicator extension is on the real session) and `tray_probe.py` is the HOST: it reads
+the item, walks the dbusmenu (`GetLayout`), clicks (`Event`, `Activate`) and listens for `NewIcon` / `LayoutUpdated`.
+`xinput.py wmclose` sends WM_DELETE_WINDOW, exactly what the X button / Alt+F4 does (Xvfb has no WM and the X button
+is a custom-drawn pixel target). Covers: no watcher -> Close quits; the default `TRONTSNAP_TEST` guard never touches
+the bus; late-watcher registration; icon pixmaps + WindowId type; menu labels; Close hides (process, port, ~0 CPU,
+`full` over the port still captures, window unmapped not destroyed); Activate / menu Show / second launch map it
+again; recording while hidden flips the label to "Stop recording", greys "Record region", badges the icon and fires
+`NewIcon`, Activate stops it; the check items flip real settings and the autostart file; watcher vanishing while
+hidden brings the window back and Close quits again; menu Quit exits. Needs `TRONTSNAP_TRAY=on` (a rig is
+`TRONTSNAP_TEST`, which keeps the tray off so a test can't put an icon in the REAL tray); the script sets it.
+
+What it can NOT show: what GNOME's extension and Mutter do with the item. That was checked by hand in a private
+headless GNOME Shell (`wl_env.sh start`, then `gsettings set org.gnome.shell enabled-extensions
+"['ubuntu-appindicators@ubuntu.com']"` on ITS bus, then the app with `env TRONTSNAP_TRAY=on`): the icon is drawn from
+the ARGB pixmap, right click shows the menu (check marks, separators, a greyed item), a left click opens the menu
+and a DOUBLE click is what sends `Activate`, a menu click toggles `settings.conf`, and a `record-start.sh` hook (an
+`ffmpeg -re -f lavfi -i testsrc2` generator, no screen grab, no GPU) puts the red badge on the icon and the menu's
+"Stop recording" ends it. Gotchas there: `wl_input.py` opens a RemoteDesktop session that shows an ORANGE pill in
+the top bar, which shifts the tray icon ~62 px left while input is injected (aim at x=1204, not 1266), and a press
+on that pill ends the session ("Object does not exist ... Session/uN").
 
 ## 4. Recorder test vs the LIVE app (`rec_test.sh`)
 
