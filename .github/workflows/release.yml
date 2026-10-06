@@ -1,0 +1,330 @@
+name: Release
+
+# Tag push (v*) builds everything and leaves a DRAFT release. Draft on purpose: the
+# release title is hand-written ('TrontSnap 0.25.0: <headline>') before it goes public.
+#
+# Dry run (workflow_dispatch, default): same builds, artifacts stay on the workflow
+# run, no release. Safe to fire from a branch before the tag exists.
+#
+# Cutting a release:
+#   1. bump version in Cargo.toml + hotkeyd/Cargo.toml, refresh Cargo.lock, add
+#      '## vX.Y.Z' to CHANGELOG.md (verify job fails loudly if any of those disagree)
+#   2. git tag vX.Y.Z && git push origin vX.Y.Z
+#   3. open the DRAFT release, set the title to 'TrontSnap X.Y.Z: <headline>', publish
+# To publish by hand instead of by tag push: Run workflow, choose the TAG under
+# "Use workflow from", type the same tag, untick dry_run.
+#
+# The Windows bundle ships unsigned: 'installed' mode is signed on the user's own
+# machine by bootstrap.ps1 (local cert), so CI has no key to hold.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build, e.g. v0.26.0 (must match Cargo.toml, hotkeyd/Cargo.toml, Cargo.lock and CHANGELOG.md)"
+        required: true
+        type: string
+      dry_run:
+        description: "Dry run: build and keep workflow artifacts only, no release. Unchecking it also requires starting the run FROM the tag ref."
+        required: true
+        type: boolean
+        default: true
+
+# Never cancel: killing a half-uploaded release leaves a draft with some assets.
+# Note GitHub keeps only ONE pending run per group, so two quick re-pushes of the
+# same tag collapse into the newest.
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  # === 1. verify ===
+  verify:
+    name: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      version: ${{ steps.check.outputs.version }}
+      publish: ${{ steps.resolve.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Inputs reach the script through env, never interpolated into the script text.
+      - name: Resolve tag + publish decision
+        id: resolve
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          INPUT_DRY: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = push ]; then
+            TAG="$REF_NAME"; DRY=false
+          else
+            TAG="$INPUT_TAG"; DRY="$INPUT_DRY"
+          fi
+          # Validated before it is written to GITHUB_OUTPUT: a newline in a dispatch
+          # input could otherwise smuggle in a second output (publish=true).
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::tag '$TAG' is not vMAJOR.MINOR.PATCH (e.g. v0.26.0)"
+            exit 1
+          fi
+          if [ "$REF_TYPE" = tag ] && [ "$REF_NAME" != "$TAG" ]; then
+            echo "::error::this run started on tag $REF_NAME but the tag input is $TAG"
+            exit 1
+          fi
+          publish=false
+          if [ "$DRY" = true ]; then
+            echo "::notice::dry run: artifacts only, no release will be created"
+          elif [ "$REF_TYPE" = tag ]; then
+            publish=true
+          else
+            echo "::error::dry_run is off, which publishes a draft, but this run started on branch $REF_NAME. Pick tag $TAG under 'Use workflow from' so the release is built from the tag itself."
+            exit 1
+          fi
+          { echo "tag=$TAG"; echo "publish=$publish"; } >> "$GITHUB_OUTPUT"
+
+      - name: Verify versions + changelog
+        id: check
+        env:
+          TAG: ${{ steps.resolve.outputs.tag }}
+        run: bash .github/scripts/verify-release.sh "$TAG" out/release-notes.md
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: out/release-notes.md
+          if-no-files-found: error
+          retention-days: 14
+
+  # === 2. windows ===
+  windows:
+    name: windows
+    needs: verify
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    env:
+      VERSION: ${{ needs.verify.outputs.version }}
+    steps:
+      # HARD-WON: windows-latest git defaults to core.autocrlf=true, which would CRLF
+      # every .cmd/.ps1/.md in the bundle. The shipped v0.25.0 bundle is LF.
+      - name: Keep LF line endings in the checkout
+        run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@v4
+
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+          rustc --version
+
+      # Tag runs can only restore caches made on the default branch, so only branch
+      # (dry-run) runs save, otherwise every tag would add a cache nobody reads.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-windows
+          save-if: ${{ github.ref_type == 'branch' }}
+
+      # `python` for the assemble script; setup-python guarantees it is on PATH.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # One invocation, two crates: build.rs embeds a different manifest per crate
+      # (UI asInvoker, broker uiAccess=true), which is why the broker is its own crate.
+      - name: Build UI + hotkey broker
+        run: cargo build --release --locked -p trontsnap -p trontsnap-hotkeys
+
+      - name: Assemble portable exe + bundle zip
+        run: python .github/scripts/assemble_windows.py --version "$VERSION" --out dist
+
+      - name: Checksums
+        run: |
+          cd dist
+          { echo '```'; sha256sum -- *; echo '```'; } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-dist
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+  # === 3. linux ===
+  linux:
+    name: linux
+    needs: verify
+    # 22.04 on purpose: an AppImage runs on anything with glibc >= the build host's.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    env:
+      VERSION: ${{ needs.verify.outputs.version }}
+      # Runs appimagetool (itself an AppImage) without FUSE, which runners lack.
+      APPIMAGE_EXTRACT_AND_RUN: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+          rustc --version
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-linux
+          save-if: ${{ github.ref_type == 'branch' }}
+
+      # Build deps: libxcb1-dev only (libdbus is vendored, the rest is dlopen'd; see
+      # ci.yml). Packaging deps: zsync gives appimagetool its zsyncmake for the
+      # .zsync file; desktop-file-utils lets it validate the .desktop entry.
+      - name: Build + packaging deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libxcb1-dev zsync desktop-file-utils fakeroot
+
+      - name: Build
+        run: cargo build --release --locked -p trontsnap
+
+      # Informational: the floor an AppImage built here imposes on users.
+      - name: glibc floor
+        run: |
+          floor=$(objdump -T target/release/trontsnap | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -1 || true)
+          echo "binary needs ${floor:-unknown}" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # Contract with packaging/linux/build-all.sh: target/release/trontsnap already
+      # built; writes the AppImage, its .zsync, the .deb and the tarball into --out.
+      - name: Package (AppImage, zsync, deb, tarball)
+        run: |
+          if [ ! -f packaging/linux/build-all.sh ]; then
+            echo "::error::packaging/linux/build-all.sh is missing; the Linux release cannot be packaged"
+            exit 1
+          fi
+          bash packaging/linux/build-all.sh --version "$VERSION" --out dist/
+
+      - name: Check package set
+        run: |
+          missing=0
+          for f in \
+            "TrontSnap-v${VERSION}-x86_64.AppImage" \
+            "TrontSnap-v${VERSION}-x86_64.AppImage.zsync" \
+            "trontsnap_${VERSION}_amd64.deb" \
+            "trontsnap-${VERSION}-linux-x86_64.tar.gz"; do
+            if [ ! -s "dist/$f" ]; then
+              echo "::error::build-all.sh did not produce dist/$f"
+              missing=1
+            fi
+          done
+          ls -l dist
+          [ "$missing" = 0 ]
+
+      - name: Checksums
+        run: |
+          cd dist
+          { echo '```'; sha256sum -- *; echo '```'; } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # upload-artifact drops file modes: the AppImage comes back non-executable.
+      # Fine for a release (browsers strip the bit anyway), but remember it when
+      # downloading from a dry run.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-dist
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+  # === 4. publish ===
+  publish:
+    name: publish (draft)
+    needs: [verify, windows, linux]
+    if: needs.verify.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # The only job that can write. Everything above is read-only.
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ needs.verify.outputs.tag }}
+      VERSION: ${{ needs.verify.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: "*-dist"
+          merge-multiple: true
+          path: dist
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-notes
+          path: notes
+
+      - name: Check asset set
+        run: |
+          missing=0
+          for f in \
+            "TrontSnap.exe" \
+            "TrontSnap-v${VERSION}-windows.zip" \
+            "Rajdhani-OFL.txt" \
+            "TrontSnap-v${VERSION}-x86_64.AppImage" \
+            "TrontSnap-v${VERSION}-x86_64.AppImage.zsync" \
+            "trontsnap_${VERSION}_amd64.deb" \
+            "trontsnap-${VERSION}-linux-x86_64.tar.gz"; do
+            if [ ! -s "dist/$f" ]; then
+              echo "::error::release asset missing: $f"
+              missing=1
+            fi
+          done
+          [ "$missing" = 0 ]
+
+      - name: SHA256SUMS
+        run: |
+          cd dist
+          sha256sum -- * > ../SHA256SUMS
+          mv ../SHA256SUMS SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Create draft release (or add to the existing one)
+        run: |
+          set -euo pipefail
+          # Existence check also scans the release list: a DRAFT is invisible to the
+          # lookup-by-tag endpoint on some gh versions. Captured first, not piped into
+          # grep -q, because pipefail + an early-closing grep reads as failure.
+          exists=false
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            exists=true
+          else
+            tags=$(gh release list --limit 100 --json tagName --jq '.[].tagName' || true)
+            if grep -qxF "$TAG" <<<"$tags"; then exists=true; fi
+          fi
+
+          if [ "$exists" = true ]; then
+            # Title and notes are probably hand-edited by now; only touch the assets.
+            gh release upload "$TAG" dist/* --clobber
+            echo "Release $TAG already existed: assets uploaded (--clobber), title and notes untouched." | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            # --verify-tag: refuse to invent a tag; the tag push is what got us here.
+            url=$(gh release create "$TAG" dist/* \
+              --draft --verify-tag \
+              --title "TrontSnap ${VERSION}" \
+              --notes-file notes/release-notes.md)
+            echo "Draft release created: $url" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "Add the headline to the title ('TrontSnap ${VERSION}: ...') before publishing." | tee -a "$GITHUB_STEP_SUMMARY"
+          fi

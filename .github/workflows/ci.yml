@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+    branches: [main, linux-port]
+  pull_request:
+    branches: [main, linux-port]
+
+# A newer push to the same ref supersedes the older run. (release.yml never cancels.)
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Incremental artifacts are dead weight in a cache that only ever restores clean.
+  CARGO_INCREMENTAL: "0"
+  # No debuginfo: halves the Windows link step and the cache size; backtraces still
+  # carry symbol names.
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  RUST_BACKTRACE: "1"
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      # One OS going red must not hide the other one's result.
+      fail-fast: false
+      matrix:
+        # 22.04, not latest: same glibc floor as the release AppImage build.
+        os: [ubuntu-22.04, windows-latest]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+          rustc --version
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Evidence for this list (see target/release/build on a real build):
+      #  - libdbus-sys compiles its own libdbus (opener's default `dbus-vendored`),
+      #    so no libdbus-1-dev / pkg-config, just the C compiler the runner has.
+      #  - xcb 1.x links plain -lxcb (randr rides on it): libxcb1-dev.
+      #  - wayland / xkbcommon / x11 / EGL / GLX are all dlopen'd at runtime.
+      #  - No GTK: tray-icon is Windows-only in Cargo.toml.
+      # xvfb + xauth: xvfb-run refuses to start without xauth, and --no-install-recommends
+      # would otherwise skip it.
+      - name: Linux build deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libxcb1-dev xvfb xauth
+
+      # --workspace pulls in the hotkeyd broker. On Linux it is an empty main(), so
+      # that is free; on Windows it is the only place a broker break gets caught.
+      - name: Build
+        run: cargo build --locked --workspace
+
+      # The offscreen GPU capture test is #[ignore]d, so this should not need a display;
+      # xvfb-run is cheap insurance against a test that opens an X connection.
+      - name: Test (Linux, under Xvfb)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a cargo test --locked --workspace
+
+      - name: Test (Windows)
+        if: runner.os == 'Windows'
+        run: cargo test --locked --workspace
