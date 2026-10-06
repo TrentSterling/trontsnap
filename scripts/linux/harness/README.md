@@ -162,6 +162,37 @@ Reveal does not freeze the window while a slow file manager answers (`fm1_mock.p
   `gui_env.sh stop` now also kills strays that inherited the rig's exact bus address.
 - Tile centres assume the default window (x = 129 + 182 col, y = 134 + 182 row); seeded order is deterministic.
 
+## 3d. Parity test (`parity_test.sh`, ~6 min)
+
+```
+scripts/linux/harness/parity_test.sh                 # X half (Xvfb :94 / 48794) then W half (private GNOME Shell)
+scripts/linux/harness/parity_test.sh --only X        # or --only W / --no-wayland
+TRONTSNAP_BIN=/path/to/older/trontsnap scripts/linux/harness/parity_test.sh    # negative control
+```
+
+The 2026-10-05 parity audit (PAR-02..13), asserted. **X** (Xvfb, no WM): `--startup` leaves the window
+*unmapped* and a second launch maps it; the title-bar X exits the process and frees the port; WM_CLASS is
+`trontsnap`; stored hotkeys (settings.conf seeded by a `RIG_SEED_HOOK`) become the right GNOME accelerators
+in the rig's PRIVATE dconf (`<Ctrl>F12`, `<Super>Print`, record-region disabled when Record has Alt...); the
+PrintScreen opt-out survives a launch (`PrintKeyOptOut=1` -> GNOME's `show-screenshot-ui` untouched, our
+bare-Print slot blank); a counting `gsettings` shim sees <= 2 spawns for 20 pointer moves on the Settings tab
+(36 before); the region picker paints a 136 px loupe box beside the pointer and nowhere else; `full` with
+"Capture cursor" on differs from off by the XFixes pointer image. **W** (`wl_env.sh`, real native Wayland):
+`--startup` sends `set_app_id("trontsnap")` + `set_minimized` and the desktop is empty; a second launch with the
+window buried sends an xdg-activation token request; the X button quits; `full` with the pointer on differs from
+off by exactly the sprite; the wheel grows the loupe 132 -> 180 (box measured 182 px), clamps at 96 and 528 and
+persists `LoupeSize`.
+
+- Against the pre-fix binary (`negctl/`, copied out of the running live app) it FAILS 14 of the X checks and 11 of
+  the W checks (logs `parity_negctl_X.log` / `parity_negctl_W.log`); the Settings spawn count reads `delta=36`.
+- Needs the app's binary rebuilt first (the rig never builds). Screenshots: `harness_out/<date>/parity_test/`
+  (`x6_loupe.png`, `x7_cursor_*.png`, `w1_startup.png`, `w5_loupe_180.png`...): LOOK at them.
+- Gotchas learned: the headless shell opens the Activities overview some seconds after its socket is up (an early
+  Escape is lost and every click then lands in the overview: `leave_overview` polls for it); pointer/wheel
+  injection needs an `abs X Y` in the SAME `wl_env.sh input` call (a fresh RemoteDesktop session has no pointer
+  focus otherwise); `shot.sh` paints the pointer unless `SHOT_MOUSE=0`; a capture adds a tile to the live gallery, so
+  pointer diffs look at an empty strip, not the whole frame.
+
 ## 4. Recorder test vs the LIVE app (`rec_test.sh`)
 
 ```
@@ -336,6 +367,7 @@ H/wl_env.sh start harness_out/<date>/homes/94   # optional seed home (Pictures +
 (setsid H/wl_env.sh run target/debug/trontsnap > app.log 2>&1 < /dev/null &)   # port 48794, TEST=1, x11 recorder
 H/wl_env.sh input key Escape                    # leave the Activities overview once
 H/wl_env.sh input abs 1342 52 wait 0.5 click    # walk the pointer to X,Y and click
+H/wl_env.sh input abs 700 400 wheel 1           # wheel notch (positive = forward/up); needs the abs in the same call
 H/wl_env.sh shot out.png ; H/wl_env.sh stop     # kill the client by its port pid first
 ```
 Safety: headless mutter opens the radeon render node (no modesetting) with `LIBGL_ALWAYS_SOFTWARE=1`; no video

@@ -85,8 +85,9 @@ windows = { version = "0.56", features = [
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus = "4"
 # Multi-target clipboard owner (`trontsnap clip-serve`). Already in the tree via
-# winit/arboard with every feature we need, so this adds no new compile.
-x11rb = "0.13"
+# winit/arboard; "xfixes" is the one extra: it reads the cursor image for "Capture cursor" on X11
+# sessions (linux/cursor.rs).
+x11rb = { version = "0.13", features = ["xfixes"] }
 
 [build-dependencies]
 # Embeds the distinct rainbow icon + a Win32 manifest (asInvoker; uiAccess only

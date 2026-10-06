@@ -36,8 +36,15 @@ Build deps beyond Rust: the usual eframe set (`libgtk-3-dev` is NOT needed;
 - `trontsnap region` / `ocr` — freeze-frame picker (drag a region, click a
   window where enumeration works, Esc cancels)
 - Live gallery splice via inotify, capture toast with Edit chip
-- Autostart via `~/.config/autostart/trontsnap.desktop`
+- Autostart via `~/.config/autostart/trontsnap.desktop` (`--startup`: no window at login, see
+  "The window" below)
 - Settings persist to `~/.config/trontsnap/settings.conf`
+- Region picker with the Windows picker's loupe: 8x magnifier + crosshair beside the pointer, mouse
+  wheel resizes it (96-528 px, remembered; Settings > Region picker). Where other windows can't be
+  enumerated (native Wayland) a plain click takes the whole screen and the hint says so
+- "Capture cursor" draws the pointer into screenshots: the grabber does it on Wayland
+  (`gnome-screenshot -p`, `spectacle -p`, `grim -c`), XFixes does it on an X11 session. Recordings
+  honour it as before (kms can't, see Recording)
 - Clipboard, all of it surviving the capturing process exiting:
   - shots: `image/png` + the saved file (`text/uri-list` + `x-special/gnome-copied-files`),
     so Firefox/file-manager-style destinations get a real named file; no text flavor
@@ -78,9 +85,13 @@ Build deps beyond Rust: the usual eframe set (`libgtk-3-dev` is NOT needed;
 
 ## Hotkeys
 
-On GNOME the app installs five custom keybindings on first app launch (and
+On GNOME the app installs five custom keybindings on every app start (and
 clears GNOME's own bare-Print screenshot UI binding, same move as freeing the
-key from Snipping Tool on Windows):
+key from Snipping Tool on Windows). These are the DEFAULTS: **Settings > Hotkeys rebinds them for
+real** (the stored Windows modifier/VK pair is translated to a GNOME accelerator; `Win` reads `Super`;
+the Record-region chord is always Record + Alt and is disabled while Record already uses Alt).
+Changes are written ~0.6 s after the last click, off the UI thread. Unticking "Use the PrintScreen key"
+gives bare Print back to GNOME, is remembered across launches, and blanks our bare-Print slot.
 
 | Keys | Runs |
 |---|---|
@@ -119,6 +130,23 @@ before; gnome-screenshot alone is ~1.6 s). The GNOME bindings run whichever bina
 app was launched from (here `target/debug/trontsnap`). A release build would be faster
 still, but the bindings deliberately don't prefer `target/release` when it exists: it would
 silently be a stale binary after every debug rebuild.
+
+## The window (close, autostart, second launch)
+
+There is no persistent tray icon on Linux, so the window lifecycle is plain:
+
+- **Close (the title-bar X) quits**, same path as Alt+F4 (live recording stopped and finalized first). With
+  a recording running, X minimizes instead so the clip isn't taken down with the window. Nothing is lost by
+  quitting: the capture keybindings are one-shot processes and `trontsnap record` starts the app on demand.
+- **`--startup`** (what the autostart entry and `record` run) starts without a visible window: on X11 it stays
+  unmapped (a vendored-eframe backport, see `vendor/eframe/VENDOR.md`); a native Wayland client cannot hide, so
+  it starts **minimized** (open it from the dock or Activities).
+- **A second `trontsnap` launch** pokes the running app. On X11 that maps/raises the window. On Wayland winit
+  can't unminimize or focus, so the app asks GNOME to raise it with an xdg-activation request: a buried window
+  gets the "TrontSnap is ready" notification (click it). A **minimized Wayland window cannot be raised this
+  way**: it gets no frame callbacks, so its event loop never runs the request. Click its dock icon instead.
+- Every window sends `app_id = trontsnap` (X11: WM_CLASS) so GNOME ties it to `trontsnap.desktop` /
+  `StartupWMClass=trontsnap` (dock icon, grouping, pinning).
 
 ## Recording
 
@@ -180,7 +208,9 @@ Windows' blinking REC outline and capture-excluded HUD have no Linux twin (no ca
 
 ## Test harness
 
-`scripts/linux/harness/` (see its README): isolated Xvfb GUI rig + XTest input
+`scripts/linux/harness/` (see its README; `parity_test.sh` = window lifecycle, hotkey rebinding, PrintScreen
+opt-out, gsettings spawn count, picker loupe, pointer in screenshots on BOTH an Xvfb rig and a real native-Wayland
+private GNOME Shell): isolated Xvfb GUI rig + XTest input
 driver + screenshot/clipboard tools (`gui_env.sh`, `xinput.py`, `shot.sh`,
 `clip.sh`, `selftest.sh`), `paste_test.sh` (what lands on the clipboard, asserted:
 file set, URI escaping, Ctrl+C, INCR, fallback, OCR notice) `rec_test.sh`, an
@@ -193,15 +223,15 @@ state trace + Trash/file facts). `TRONTSNAP_PORT` overrides the command port (de
 
 ## Known gaps vs Windows (telling the truth here, in rough priority order)
 
-1. No persistent tray icon (needs a gtk loop beside winit; the recording dot above is a bare D-Bus StatusNotifierItem) — the window stays open; Close quits
+1. No persistent tray icon (the recording dot above is a bare D-Bus StatusNotifierItem that exists only while recording; a resident one with a menu needs dbusmenu) — so Close quits and `--startup` leaves a minimized window on Wayland
 2. No drag-out from gallery/toast (no XDND backend yet) — paste covers most of it. A press-and-move
    over ~6 px on a tile therefore does nothing (egui's own click rule, independent of the tile's Sense)
    and a plain double-click still Copies on its first click before it Opens
 3. Recording: the pointer is missing from kms recordings and a kms clip starts ~2-3 s after the press (see Recording);
    the gnome fallback draws the pointer but is slow under motion. No capture-excluded REC HUD like Windows
-4. No loupe in the region picker yet, and no per-key rebinding (the Settings hotkey UI edits Windows VK codes)
-5. Multi-monitor untested (same primary-monitor scope as Windows)
+4. The picker has no "click for a window" on native Wayland (no window enumeration), and no faint window-rect map on any backend
+5. Multi-monitor untested and unverifiable on this one-output laptop (same primary-monitor scope as Windows; static review worry: the CLI grabber's multi-monitor PNG is cropped with xcap's scaled geometry, and the picker is fullscreen on whichever output the compositor picks)
 6. The toast docks bottom-right via XWayland (measured 340x188+1002+532, exactly the intended spot); GNOME's own
    banners (OCR/recorder notices) stay top-centre, which the app can't move
-7. A second `trontsnap` launch surfaces the window if it's open, but can't un-minimize it on Wayland (no xdg-shell unminimize) — restore it from the dock
+7. A second `trontsnap` launch can't un-minimize a minimized Wayland window (no xdg-shell unminimize, and a minimized surface gets no redraw to act on the request) — restore it from the dock. A buried but mapped window is raised through GNOME's notification
 

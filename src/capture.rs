@@ -24,11 +24,12 @@ pub fn grab_primary() -> anyhow::Result<RgbaImage> {
 }
 
 /// `grab_primary`, drawing the pointer when "Capture cursor" is on. Windows composites it afterwards
-/// (cursor::maybe_overlay); here the CLI grabber does it, so with the pointer wanted it goes FIRST
-/// (xcap can't draw it) and xcap is only the fallback.
+/// (cursor::maybe_overlay), and so does an X11 session (XFixes). On Wayland nothing but the
+/// compositor's own grabber can see the pointer, so there the CLI grabber goes FIRST (xcap can't
+/// draw it) and xcap is only the fallback.
 #[cfg(not(windows))]
 fn grab_primary_pointer() -> anyhow::Result<RgbaImage> {
-    if crate::settings::capture_cursor() {
+    if crate::settings::capture_cursor() && crate::cursor::wayland_session() {
         if let Ok(img) = grab_linux_fallback(None, true) {
             return Ok(img);
         }
@@ -131,20 +132,25 @@ fn png_dims(b: &[u8]) -> Option<(u32, u32)> {
 /// go to the clipboard and disk untouched; the old decode -> overlay -> re-encode
 /// round trip was ~3 s of a ~4.8 s capture in the debug build the hotkeys run,
 /// and the clipboard is only set at the end, so a quick paste got the previous
-/// one. Skipping the overlay is safe because cursor::maybe_overlay is a no-op on
-/// Linux (the grabber draws the pointer itself when "Capture cursor" is on).
+/// one. A grabber's own PNG already has the pointer when it was asked for it; only the xcap path
+/// (X11) needs the XFixes overlay, and that image is encoded here anyway.
 #[cfg(not(windows))]
 fn grab_png_linux() -> anyhow::Result<Vec<u8>> {
-    let pointer = crate::settings::capture_cursor();
-    // xcap can't draw the pointer: with it wanted, the CLI grabber goes first.
+    // On Wayland xcap can't draw the pointer: with it wanted, the CLI grabber goes first.
+    let pointer = crate::settings::capture_cursor() && crate::cursor::wayland_session();
     let xcap_err = if pointer {
         None
     } else {
         match grab_xcap() {
-            Ok(img) => return encode_png(&img),
+            Ok(mut img) => {
+                crate::cursor::maybe_overlay(&mut img, (0, 0));
+                return encode_png(&img);
+            }
             Err(e) => Some(e),
         }
     };
+    // (CLI-grabbed shots on an X11 session, e.g. xcap failing: the pointer flag is passed only on
+    // Wayland, see `pointer`; there the grabber's output is used as is.)
     let bytes = match run_cli_grabber(xcap_err.as_ref(), pointer) {
         Ok(b) => b,
         // Pointer wanted but no grabber ran: a pointer-less shot beats none.
