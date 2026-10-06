@@ -52,6 +52,19 @@ pub fn capture_region() {
     }
 }
 
+/// Picker for the recorder: the chosen rectangle in physical pixels, clamped to the
+/// frozen frame (same clamp as a still's crop). `None` = Esc / right-click / empty drag.
+/// Needs the main thread, so only `trontsnap record region` calls it.
+pub fn pick_rect() -> Option<crate::recorder::Region> {
+    let (img, sel) = run_picker()?;
+    let x = sel.left.clamp(0, img.width() as i32);
+    let y = sel.top.clamp(0, img.height() as i32);
+    let w = (sel.right.clamp(0, img.width() as i32) - x).max(0);
+    let h = (sel.bottom.clamp(0, img.height() as i32) - y).max(0);
+    // Below the recorder's minimum a "region" is a mis-click, not a recording.
+    (w >= 16 && h >= 16).then_some(crate::recorder::Region { x, y, w: w as u32, h: h as u32 })
+}
+
 /// Same picker, OCR delivery: the crop's TEXT lands on the clipboard. Nothing
 /// is saved to disk; this is a read, not a capture.
 pub fn capture_region_ocr() {

@@ -6,6 +6,8 @@
 //   "region"        -> one-shot freeze-frame region picker, deliver, exit
 //   "full"          -> one-shot fullscreen grab, deliver, exit
 //   "ocr"           -> one-shot region picker, TEXT to clipboard (Windows OCR), exit
+//   "record" [region] -> Linux only: toggle the running app's recorder (starts the app if
+//                       it isn't running); "region" picks a rectangle first
 //   "edit <path>"   -> annotation editor (arrow/box/redact/pixelate/text/crop); save overwrites
 //
 // Hotkeys owned by the app: PrintScreen = fullscreen, Ctrl+PrintScreen = region.
@@ -52,6 +54,11 @@ mod clipboard;
 #[cfg(not(windows))]
 #[path = "linux/clipserve.rs"]
 mod clipserve;
+
+// Linux-only: `trontsnap record [region]`, what the GNOME record keybindings run.
+#[cfg(not(windows))]
+#[path = "linux/recordcli.rs"]
+mod recordcli;
 
 #[cfg(windows)]
 mod cursor;
@@ -130,6 +137,18 @@ fn main() {
         return;
     }
 
+    // The record keybinding: a plain toggle needs none of the setup below (it hands one
+    // command to the running app, or starts the app), and its latency is the hotkey's.
+    #[cfg(not(windows))]
+    if std::env::args().nth(1).as_deref() == Some("record") {
+        let rest: Vec<String> = std::env::args().skip(2).collect();
+        if let Err(e) = recordcli::run(&rest) {
+            eprintln!("trontsnap record: {e:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
     // Load persisted settings before any capture path can read them (all modes capture).
     settings::load();
 
@@ -165,7 +184,9 @@ fn main() {
             None => Ok(()),
         },
         other => {
-            eprintln!("trontsnap: unknown mode '{other}' (use app / region / full)");
+            eprintln!(
+                "trontsnap: unknown mode '{other}' (use app / region / full / ocr / record / edit <png> / toast <png>)"
+            );
             std::process::exit(2);
         }
     };

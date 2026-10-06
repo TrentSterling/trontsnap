@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Harness stand-in for /usr/local/bin/capkit-kms: same contract (args FPS QP; ffmpeg -stats on
+# stderr; a process whose argv carries the word `kmsgrab`; the first second trimmed from clips
+# of 3 s or more; `SAVED:<path>` on stdout) but CPU-only, no root, no GPU. The app runs it
+# directly (not via pkexec) when TRONTSNAP_TEST is set and TRONTSNAP_KMS_HELPER points here.
+# Knobs live in $FAKE_KMS_DIR/cfg (sourced per run, so a test can change them between runs):
+#   INIT=1.4        seconds from start until the first frame (pkexec + VAAPI init analogue)
+#   MODE=normal     normal | empty (leave a 0-byte file, like a stop that beat the encoder)
+#   SIZE=640x360
+set -u
+D=${FAKE_KMS_DIR:?FAKE_KMS_DIR not set}
+INIT=1.4 MODE=normal SIZE=640x360
+[ -f "$D/cfg" ] && . "$D/cfg"
+log() { printf '%s %s\n' "$(date +%s.%N)" "$*" >> "$D/log"; }
+OUTDIR="$HOME/Videos/captures"; mkdir -p "$OUTDIR"
+OUT="$OUTDIR/rec_$(date +%Y%m%d_%H%M%S).mp4"
+RAW="$D/raw_$$.mp4"
+log "helper_start init=$INIT mode=$MODE"
+cd "$D"   # the consumer ffmpeg's last argv word must be exactly `kmsgrab` (the app's /proc scan)
+# Frames only start flowing after INIT: the consumer sits on an empty pipe meanwhile, exactly
+# like ffmpeg waiting on VAAPI init (process alive, no frames, no -stats lines).
+ffmpeg -hide_banner -loglevel warning -stats -y -f rawvideo -video_size "$SIZE" -framerate 30 -pix_fmt yuv420p \
+  -i <( sleep "$INIT"; log first_frame_source; exec python3 "$(dirname "$0")/gen_frames.py" "$SIZE" 30 ) \
+  -c:v libx264 -preset ultrafast -g 30 -bf 0 -pix_fmt yuv420p -f mp4 kmsgrab &
+FF=$!
+echo "$FF" > "$D/ffmpeg.pid"
+log "ffmpeg_started pid=$FF"
+wait "$FF"
+log "ffmpeg_exited"
+rm -f "$D/ffmpeg.pid"
+mv -f "$D/kmsgrab" "$RAW" 2>/dev/null || : > "$RAW"
+[ "$MODE" = empty ] && : > "$RAW"
+DS="$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$RAW" 2>/dev/null | cut -d. -f1)"
+if [ "${DS:-0}" -ge 3 ]; then
+  ffmpeg -hide_banner -loglevel error -y -ss 1 -i "$RAW" -c copy -movflags +faststart "$OUT" 2>/dev/null \
+    && rm -f "$RAW" || mv -f "$RAW" "$OUT"
+else
+  mv -f "$RAW" "$OUT"
+fi
+log "saved $OUT"
+echo "SAVED:$OUT"

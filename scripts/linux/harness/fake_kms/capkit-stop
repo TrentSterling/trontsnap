@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Harness stand-in for /usr/local/bin/capkit-stop: SIGINT the fake kmsgrab ffmpeg, but only
+# after FAKE_STOP_DELAY (pkexec's polkit round trip is ~0.8-1.3 s on the real box and kmsgrab
+# keeps capturing meanwhile: the whole point of the A/V end-alignment fix).
+D=${FAKE_KMS_DIR:?FAKE_KMS_DIR not set}
+STOP_DELAY=0.8
+[ -f "$D/cfg" ] && . "$D/cfg"
+log() { printf '%s %s\n' "$(date +%s.%N)" "$*" >> "$D/log"; }
+log stop_called
+sleep "$STOP_DELAY"
+if [ -s "$D/ffmpeg.pid" ]; then kill -INT "$(cat "$D/ffmpeg.pid")" 2>/dev/null && log stop_sigint_sent; else log stop_nothing_running; fi
+exit 0

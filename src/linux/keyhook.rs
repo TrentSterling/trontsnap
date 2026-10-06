@@ -5,7 +5,7 @@
 // (48761 by default, TRONTSNAP_PORT overrides — the same vocabulary
 // trontsnap-hotkeys.exe uses on Windows).
 //
-// install() therefore (best-effort, GNOME only) writes four custom keybindings
+// install() therefore (best-effort, GNOME only) writes five custom keybindings
 // via gsettings, then returns a receiver that never fires — the real events
 // arrive as processes/port writes, not channel messages. On other desktops the
 // user binds the same commands in their DE's keyboard settings; SETUP.md lists
@@ -55,7 +55,7 @@ fn write_bind(slot: &str, name: &str, command: &str, binding: &str) {
     gset(&schema_path, "binding", &format!("'{binding}'"));
 }
 
-/// Install the four TrontSnap keybindings into GNOME (idempotent — slots are
+/// Install the five TrontSnap keybindings into GNOME (idempotent — slots are
 /// keyed by name, re-running just rewrites the same values). Quietly does
 /// nothing on desktops without gsettings/GNOME.
 fn install_gnome_binds() {
@@ -67,23 +67,21 @@ fn install_gnome_binds() {
     let Ok(exe) = std::env::current_exe() else { return };
     let exe = exe.display().to_string();
     let Some(current) = gget(MEDIA_KEYS, "custom-keybindings") else { return };
+    let port_env = match crate::app::port() {
+        p if p == crate::app::DEFAULT_PORT => String::new(),
+        p => format!("env TRONTSNAP_PORT={p} "),
+    };
 
     let slots = [
         ("trontsnap-full", format!("{exe} full"), "Print"),
         ("trontsnap-region", format!("{exe} region"), "<Ctrl>Print"),
-        // Record must reach the RUNNING app (the toggle state lives there), so it
-        // goes over the loopback command port instead of a one-shot process.
-        // DOUBLE quotes inside: the whole command gets wrapped in single quotes
-        // for GVariant below, and nested single quotes made `gsettings set`
-        // reject the value — silently, leaving the bind with no command at all.
-        (
-            "trontsnap-record",
-            format!(
-                "bash -c \"echo -n record > /dev/tcp/127.0.0.1/{}\"",
-                crate::app::port()
-            ),
-            "<Ctrl><Shift>Print",
-        ),
+        // Record must reach the RUNNING app (the toggle state lives there): `record`
+        // hands it one command over the loopback port, and STARTS the app when it is
+        // not running (the old bare /dev/tcp echo failed silently in that case).
+        // HARD-WON: a keybinding command doesn't inherit our environment, so a
+        // non-default port (the harness) has to be spelled out in the command.
+        ("trontsnap-record", format!("{port_env}{exe} record"), "<Ctrl><Shift>Print"),
+        ("trontsnap-record-region", format!("{port_env}{exe} record region"), "<Ctrl><Shift><Alt>Print"),
         ("trontsnap-ocr", format!("{exe} ocr"), "<Ctrl><Alt>Print"),
     ];
 
@@ -113,7 +111,9 @@ fn install_gnome_binds() {
     for (slot, command, binding) in &slots {
         write_bind(slot, slot, command, binding);
     }
-    eprintln!("trontsnap: GNOME keybindings installed (Print / Ctrl+Print / Ctrl+Shift+Print / Ctrl+Alt+Print)");
+    eprintln!(
+        "trontsnap: GNOME keybindings installed (Print / Ctrl+Print / Ctrl+Shift+Print / Ctrl+Shift+Alt+Print / Ctrl+Alt+Print)"
+    );
 }
 
 impl KeyboardHook {

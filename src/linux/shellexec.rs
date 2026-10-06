@@ -24,6 +24,23 @@ pub fn spawn_detached(mut cmd: Command) -> bool {
 /// drops the Child, so every Open left a zombie for the life of the app; this one is
 /// reaped. Returns false if xdg-open could not be spawned (caller may try opener).
 pub fn open(path: &Path) -> bool {
+    // HARD-WON: on this box's radeon (Mullins) hardware video decode (VLC/mpv's default
+    // VA-API, the UVD block) while kmsgrab encodes on the VCE hung the GPU ("UVD not
+    // responding", then the power-state change deadlocked) and took the desktop with it.
+    // Opening a clip from the gallery/toast mid-recording is exactly that overlap, so wait.
+    if crate::index::is_video(path)
+        && std::env::var_os("TRONTSNAP_OPEN_WHILE_RECORDING").is_none()
+        && crate::recorder::gpu_encoding()
+    {
+        let mut n = Command::new("notify-send");
+        n.args(["-a", "TrontSnap", "-t", "6000", "Not opening the video yet",
+            "A hardware recording is running; playing a video now can hang this GPU. Stop the recording first."])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        spawn_detached(n);
+        return true;
+    }
     let mut cmd = Command::new("xdg-open");
     cmd.arg(path).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
     spawn_detached(cmd)

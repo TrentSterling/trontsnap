@@ -51,7 +51,7 @@ use crate::region_win32;
 #[path = "app/chrome_input_tests.rs"]
 mod chrome_input_tests;
 
-const DEFAULT_PORT: u16 = 48761;
+pub(crate) const DEFAULT_PORT: u16 = 48761;
 
 /// Loopback command/single-instance port. TRONTSNAP_PORT overrides it so the
 /// test harness can run isolated instances beside the live app (and so the Linux
@@ -477,6 +477,14 @@ impl App {
         (tray, auto_i, cursor_i, audio_i, menu_rx)
         }; // end #[cfg(windows)] tray block
 
+        // Linux: the recorder works on its own threads; wake the UI on every state change so the
+        // title-bar indicator is current even when nothing else is happening.
+        #[cfg(not(windows))]
+        {
+            let ctx = cc.egui_ctx.clone();
+            crate::recorder::on_change(move || ctx.request_repaint());
+        }
+
         // Loopback command channel. Originally just single-instance handling (a
         // second launch pokes us to surface), now also how trontsnap-hotkeys.exe
         // delivers hotkeys it registered from a uiAccess process, since ours
@@ -496,7 +504,7 @@ impl App {
             std::thread::spawn(move || {
                 for stream in listener.incoming() {
                     let Ok(mut s) = stream else { continue };
-                    let mut buf = [0u8; 16];
+                    let mut buf = [0u8; 64];
                     let _ = s.set_read_timeout(Some(Duration::from_millis(250)));
                     let n = std::io::Read::read(&mut s, &mut buf).unwrap_or(0);
                     match std::str::from_utf8(&buf[..n]).unwrap_or("").trim() {
@@ -504,6 +512,9 @@ impl App {
                         "full" => dispatch_hotkey(HotkeyEvent::Full),
                         "region" => dispatch_hotkey(HotkeyEvent::Region),
                         "record" => dispatch_hotkey(HotkeyEvent::Record),
+                        // `trontsnap record region` picked a rectangle: "record x,y,w,h".
+                        #[cfg(not(windows))]
+                        cmd if cmd.starts_with("record ") => dispatch_record_region(&cmd[7..]),
                         "ocr" => dispatch_hotkey(HotkeyEvent::Ocr),
                         _ => {
                             request_window_show(&ctx, &cell, &flag);
@@ -707,9 +718,28 @@ impl App {
                                 std::thread::spawn(region_win32::capture_region);
                                 ui.close_menu();
                             }
-                            if ui.button("Record   (Ctrl+Shift+PrtSc)").clicked() {
-                                crate::recorder::toggle();
+                            #[cfg(windows)]
+                            let rec_label = "Record   (Ctrl+Shift+PrtSc)";
+                            #[cfg(not(windows))]
+                            let rec_label = if crate::recorder::status() == crate::recorder::Status::Idle {
+                                "Record   (Ctrl+Shift+PrtSc)"
+                            } else {
+                                "Stop recording   (Ctrl+Shift+PrtSc)"
+                            };
+                            if ui.button(rec_label).clicked() {
+                                // Off the UI thread: a restart right after a stop waits for the
+                                // previous recording to wind down.
+                                std::thread::spawn(crate::recorder::toggle);
                                 ui.close_menu();
+                            }
+                            #[cfg(not(windows))]
+                            {
+                                if crate::recorder::status() == crate::recorder::Status::Idle
+                                    && ui.button("Record region   (Ctrl+Shift+Alt+PrtSc)").clicked()
+                                {
+                                    crate::recordcli::spawn_region();
+                                    ui.close_menu();
+                                }
                             }
                             if ui.button("Copy text   (Ctrl+Alt+PrtSc)").clicked() {
                                 std::thread::spawn(region_win32::capture_region_ocr);
@@ -721,6 +751,8 @@ impl App {
                     ui.selectable_value(&mut self.tab, Tab::Gallery, "Gallery");
                     ui.selectable_value(&mut self.tab, Tab::Settings, "Settings");
                     ui.selectable_value(&mut self.tab, Tab::About, "About");
+                    #[cfg(not(windows))]
+                    rec_pill(ui, ctx);
 
                     // Filter chips + count + legend, inline in the same row (Gallery only).
                     // May clip on very narrow windows — acceptable, the window buttons
@@ -1072,6 +1104,18 @@ impl App {
 /// tray menu and this tab read/write the same state, so either one stays in sync
 /// with the other. Scrollable because the Hotkeys section makes it taller than
 /// the window on smaller sizes.
+#[cfg(windows)]
+const CURSOR_HINT: &str = "Include the mouse pointer in screenshots and recordings.";
+// HARD-WON: the Linux hardware recorder (kmsgrab) reads the primary plane; the pointer is
+// on the hardware cursor plane, so a recording made with it never shows the cursor.
+#[cfg(not(windows))]
+const CURSOR_HINT: &str = "Include the mouse pointer in screenshots. The fast hardware recorder \
+     (kms) cannot capture it; the GNOME fallback recorder can (see LINUX.md).";
+#[cfg(windows)]
+const AUDIO_HINT: &str = "Recordings include a WASAPI loopback track of what you hear.";
+#[cfg(not(windows))]
+const AUDIO_HINT: &str = "Recordings include a track of what you hear (system audio).";
+
 fn settings_tab_ui(ui: &mut egui::Ui) {
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         egui::Frame::none().inner_margin(egui::Margin::symmetric(24.0, 16.0)).show(ui, |ui| {
@@ -1086,7 +1130,7 @@ fn settings_tab_ui(ui: &mut egui::Ui) {
                 settings_toggle(
                     ui,
                     "Capture cursor",
-                    "Include the mouse pointer in screenshots and recordings.",
+                    CURSOR_HINT,
                     crate::settings::capture_cursor(),
                     crate::settings::set_capture_cursor,
                 );
@@ -1105,7 +1149,7 @@ fn settings_tab_ui(ui: &mut egui::Ui) {
                 settings_toggle(
                     ui,
                     "Record audio",
-                    "Recordings include a WASAPI loopback track of what you hear.",
+                    AUDIO_HINT,
                     crate::settings::record_audio(),
                     crate::settings::set_record_audio,
                 );
@@ -1827,6 +1871,44 @@ impl App {
     }
 }
 
+/// Linux recording indicator in the title bar: a red dot + mm:ss while a clip is
+/// being captured ("Starting..." in the ~3 s before a kms clip begins, "Saving..." after
+/// the stop). Click = stop. Windows has its own REC outline; Linux has no tray, so this
+/// is the one place a recording is visible while the window is open.
+#[cfg(not(windows))]
+fn rec_pill(ui: &mut egui::Ui, ctx: &egui::Context) {
+    use crate::recorder::Status;
+    let st = crate::recorder::status();
+    if st == Status::Idle {
+        return;
+    }
+    let red = egui::Color32::from_rgb(236, 72, 72);
+    let (text, color) = match st {
+        Status::Starting => ("Starting...".to_string(), crate::theme::t().text_muted),
+        Status::Saving => ("Saving...".to_string(), crate::theme::t().text_muted),
+        Status::Recording(d) => {
+            let s = d.as_secs();
+            (format!("REC {:02}:{:02}", s / 60, s % 60), red)
+        }
+        Status::Idle => return,
+    };
+    ui.add_space(10.0);
+    let resp = ui.add(
+        egui::Label::new(egui::RichText::new(text).color(color).strong().size(13.0))
+            .sense(egui::Sense::click()),
+    );
+    if let Status::Recording(d) = st {
+        // Steady dot (a blink would need a 2-4 Hz repaint, a real cost on this box's CPU).
+        let c = egui::pos2(resp.rect.left() - 8.0, resp.rect.center().y);
+        ui.painter().circle_filled(c, 4.0, red);
+        // The window repaints only on events: wake once per displayed second.
+        ctx.request_repaint_after(Duration::from_millis(1020 - d.subsec_millis() as u64));
+    }
+    if st != Status::Saving && resp.on_hover_text("Click to stop").clicked() {
+        std::thread::spawn(crate::recorder::toggle);
+    }
+}
+
 /// Register the RegisterHotKey-based hotkeys and start the consumer thread. PrintScreen
 /// runs do_full(); Ctrl+PrintScreen spawns the dedicated Win32 region overlay on its own
 /// thread (it blocks in a modal message loop until you pick or cancel).
@@ -1859,12 +1941,31 @@ fn dispatch_hotkey(ev: HotkeyEvent) {
             std::thread::spawn(region_win32::capture_region);
         }
         // Toggle: first press picks a region + starts recording, second stops.
+        // Linux: off the caller's thread (a quick restart waits out the previous
+        // recording's winding down, up to ~4 s, and the loopback listener must not stall).
+        #[cfg(windows)]
         HotkeyEvent::Record => crate::recorder::toggle(),
+        #[cfg(not(windows))]
+        HotkeyEvent::Record => {
+            std::thread::spawn(crate::recorder::toggle);
+        }
         // Same picker as Region; the crop goes to Windows OCR and its TEXT
         // lands on the clipboard instead of pixels.
         HotkeyEvent::Ocr => {
             std::thread::spawn(region_win32::capture_region_ocr);
         }
+    }
+}
+
+/// `record x,y,w,h` over the command port: start a region recording (a press while one
+/// is running is a plain stop, the rectangle is ignored).
+#[cfg(not(windows))]
+fn dispatch_record_region(arg: &str) {
+    match crate::recorder::Region::parse(arg) {
+        Some(r) => {
+            std::thread::spawn(move || crate::recorder::toggle_region(Some(r)));
+        }
+        None => eprintln!("trontsnap: ignoring bad record region {arg:?}"),
     }
 }
 

@@ -14,3 +14,6 @@ scripts/marketing/node_modules/
 
 # test-harness artifacts (screenshots, logs, clips, temp homes)
 harness_out/
+
+# python bytecode from the harness scripts
+__pycache__/
