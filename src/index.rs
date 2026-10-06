@@ -32,17 +32,23 @@ impl Shot {
 /// Videos ride the same timeline as stills but are never sent to the image
 /// decoder — the gallery draws them as a film tile instead.
 pub fn is_video(path: &std::path::Path) -> bool {
-    matches!(
-        path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref(),
-        Some("mp4")
-    )
+    let ext = path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase());
+    match ext.as_deref() {
+        Some("mp4") => true,
+        // GNOME Shell's screencast (the Linux recorder's no-root fallback) writes
+        // VP8 webm. Linux-only: Windows thumbs go through Media Foundation, which
+        // can't decode VP8, and ShareX archives there may hold webm.
+        Some("webm") => cfg!(not(windows)),
+        _ => false,
+    }
 }
 
 fn is_media(path: &std::path::Path) -> bool {
-    matches!(
-        path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref(),
-        Some("png" | "jpg" | "jpeg" | "bmp" | "webp" | "gif" | "mp4")
-    )
+    is_video(path)
+        || matches!(
+            path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref(),
+            Some("png" | "jpg" | "jpeg" | "bmp" | "webp" | "gif")
+        )
 }
 
 /// Walk one root and collect its media files (stills + recordings) with

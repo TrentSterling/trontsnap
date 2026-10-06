@@ -87,10 +87,11 @@ impl CaptureWatcher {
 }
 
 fn is_image(path: &Path) -> bool {
-    matches!(
-        path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref(),
-        // mp4: a finished (or still-recording) capture — the gallery draws videos as
-        // film tiles without decoding, so surfacing them early is safe.
-        Some("png" | "jpg" | "jpeg" | "bmp" | "webp" | "gif" | "mp4")
-    )
+    // Videos (mp4, + webm on Linux): a finished (or still-recording) capture — the
+    // gallery draws videos as film tiles without decoding, so surfacing them early is safe.
+    crate::index::is_video(path)
+        || matches!(
+            path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref(),
+            Some("png" | "jpg" | "jpeg" | "bmp" | "webp" | "gif")
+        )
 }
