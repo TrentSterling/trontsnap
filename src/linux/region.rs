@@ -145,6 +145,7 @@ fn run_picker() -> Option<(RgbaImage, RawRect)> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("TrontSnap Region")
+            .with_app_id("trontsnap")
             .with_decorations(false)
             .with_fullscreen(true)
             .with_always_on_top(),

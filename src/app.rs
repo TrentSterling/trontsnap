@@ -119,6 +119,10 @@ pub fn run(start_hidden: bool) -> anyhow::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("TrontSnap")
+            // HARD-WON: without an app_id the Wayland toplevel is anonymous, so GNOME can't
+            // tie it to the .desktop entry (generic dock icon, no grouping, StartupWMClass
+            // moot). Matches packaging/linux/trontsnap.desktop; a no-op on Windows.
+            .with_app_id("trontsnap")
             .with_inner_size([1180.0, 760.0])
             .with_min_inner_size([680.0, 420.0])
             .with_visible(!start_hidden)
@@ -132,7 +136,7 @@ pub fn run(start_hidden: bool) -> anyhow::Result<()> {
     eframe::run_native(
         "TrontSnap",
         options,
-        Box::new(move |cc| match App::new(cc, listener) {
+        Box::new(move |cc| match App::new(cc, listener, start_hidden) {
             Ok(app) => Ok(Box::new(app) as Box<dyn eframe::App>),
             Err(e) => Err(Box::<dyn std::error::Error + Send + Sync>::from(e.to_string())),
         }),
@@ -262,10 +266,18 @@ pub struct App {
     // appearance_ui, two callers), toggled by the title-bar swatch. Not
     // persisted; always starts closed, same as TrontEQ's.
     show_theme_window: bool,
+    // Linux `--startup`: the window is born unmapped on X11 (vendor/eframe skips its first-frame
+    // set_visible(true)); a Wayland client can't hide, so update() minimizes it once instead.
+    #[cfg(not(windows))]
+    start_hidden: bool,
 }
 
 impl App {
-    fn new(cc: &eframe::CreationContext<'_>, listener: TcpListener) -> anyhow::Result<Self> {
+    fn new(
+        cc: &eframe::CreationContext<'_>,
+        listener: TcpListener,
+        #[cfg_attr(windows, allow(unused_variables))] start_hidden: bool,
+    ) -> anyhow::Result<Self> {
         crate::theme::apply(&cc.egui_ctx);
         // Chrome text (wordmark, tabs, labels) shouldn't show an I-beam or highlight
         // like an edit field — this is a native app chrome, not a document.
@@ -570,6 +582,8 @@ impl App {
             good_size: egui::vec2(1180.0, 760.0),
             small_frames: 0,
             show_theme_window: false,
+            #[cfg(not(windows))]
+            start_hidden,
         })
     }
 
@@ -584,10 +598,21 @@ impl App {
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
         ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        // HARD-WON: winit-wayland ignores all three (set_visible is a no-op, "Unminimizing is
+        // ignored on Wayland", focus_window is empty), so a second launch did nothing to a
+        // minimized or buried window. xdg-activation is the one request a Wayland client has:
+        // GNOME answers with a "TrontSnap is ready" notification that raises + unminimizes it.
+        #[cfg(not(windows))]
+        if !ctx.input(|i| i.viewport().focused.unwrap_or(false)) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
+                egui::UserAttentionType::Informational,
+            ));
+        }
         // No rescan here: the live capture watcher keeps the gallery current, so
         // opening the window no longer flashes/reloads. Manual Refresh still exists.
     }
 
+    #[cfg(windows)]
     fn hide(&mut self, ctx: &egui::Context) {
         // Mirror show(): raw Win32 is the reliable path for the ROOT viewport.
         // `ViewportCommand::Visible(false)` on its own does not dependably hide
@@ -843,10 +868,23 @@ impl App {
                                 ));
                             }
                             if window_button(ui, WinBtn::Close)
-                                .on_hover_text("Close to tray")
+                                .on_hover_text(CLOSE_HINT)
                                 .clicked()
                             {
+                                #[cfg(windows)]
                                 self.hide(ctx);
+                                // HARD-WON: there is no tray to hide to here, and a Wayland client
+                                // can't hide at all (set_visible is a no-op), so the old hide() left a
+                                // window that never went away on Wayland and an unrecoverable one on
+                                // X11. Close quits (same path as Alt+F4); the keybindings are one-shot
+                                // processes and `record` starts the app on demand. A live recording
+                                // is not taken down with the window: minimize instead.
+                                #[cfg(not(windows))]
+                                if crate::recorder::status() == crate::recorder::Status::Idle {
+                                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                                } else {
+                                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                                }
                             }
                         });
                     });
@@ -1039,6 +1077,11 @@ impl eframe::App for App {
             self.show(ctx);
         }
 
+        #[cfg(not(windows))]
+        if std::mem::take(&mut self.start_hidden) && std::env::var_os("WAYLAND_DISPLAY").is_some() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+        }
+
         // Closing the window hides to tray instead of quitting (Quit is in the
         // menu). Linux has no tray yet, so Close means quit — the hotkey
         // keybindings run one-shot processes and keep working without the app.
@@ -1104,6 +1147,10 @@ impl App {
 /// tray menu and this tab read/write the same state, so either one stays in sync
 /// with the other. Scrollable because the Hotkeys section makes it taller than
 /// the window on smaller sizes.
+#[cfg(windows)]
+const CLOSE_HINT: &str = "Close to tray";
+#[cfg(not(windows))]
+const CLOSE_HINT: &str = "Close (quits)";
 #[cfg(windows)]
 const CURSOR_HINT: &str = "Include the mouse pointer in screenshots and recordings.";
 // HARD-WON: the Linux hardware recorder (kmsgrab) reads the primary plane; the pointer is

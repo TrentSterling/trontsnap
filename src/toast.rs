@@ -96,6 +96,7 @@ pub fn show(path: PathBuf, clipboard_ok: bool) -> anyhow::Result<()> {
     };
 
     let viewport = egui::ViewportBuilder::default()
+        .with_app_id("trontsnap")
         .with_inner_size([W, H])
         .with_decorations(false)
         .with_always_on_top()

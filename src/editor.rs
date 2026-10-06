@@ -58,6 +58,7 @@ pub fn run(path: PathBuf) -> anyhow::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("TrontSnap Edit")
+            .with_app_id("trontsnap")
             .with_inner_size([w, h])
             .with_min_inner_size([760.0, 480.0]),
         ..Default::default()

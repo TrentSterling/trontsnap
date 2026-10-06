@@ -50,6 +50,8 @@ impl App {
             menu_rx,
             hwnd_cell: Arc::new(AtomicIsize::new(0)),
             show_theme_window: false,
+            #[cfg(not(windows))]
+            start_hidden: false,
         }
     }
 
