@@ -466,7 +466,7 @@ def case_capkit_first(backend):
     quiet_system("B")
 
 
-def case_trontsnap_first(backend, want_audio):
+def case_trontsnap_first(backend, want_audio, parts=("C1", "C2")):
     header("C. TrontSnap recording, capkit toggle stops it, next press starts fresh")
     if backend != "kms":
         skip("C: capkit stops TrontSnap's recording", f"backend is {backend}")
@@ -497,6 +497,8 @@ def case_trontsnap_first(backend, want_audio):
     check("C1: capkit's rec_*.mp4 for our session moved out of ~/Videos/captures",
           not (cap_files() - cap_before), str(sorted(cap_files() - cap_before)))
     quiet_system("C1")
+    if "C2" not in parts:
+        return
 
     # Next press must START (session slot cleared), not try to stop a ghost.
     pic_before = media(PIC)
@@ -610,8 +612,8 @@ def main():
             case_region(backend)
         if "B" in only:
             case_capkit_first(backend)
-        if "C" in only:
-            case_trontsnap_first(backend, want_audio)
+        if "C" in only or "C1" in only:
+            case_trontsnap_first(backend, want_audio, ("C1", "C2") if "C" in only else ("C1",))
         if "D" in only:
             case_crash_salvage(backend, want_audio)
     finally:

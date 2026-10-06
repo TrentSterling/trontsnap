@@ -136,8 +136,9 @@ reference + shutter + toast, same contract as Windows. The backend is picked per
 What the `kms` path costs you, honestly:
 
 - **The clip begins ~2-3 s after the press** (pkexec + VAAPI init, then the helper trims the first second of
-  warmup). A low tick sounds at the press, a "Starting recording" banner shows during the dead time, and the
-  banner closes with a second tick the moment frames flow. Hit record a beat before the action.
+  warmup). A low tick sounds at the press and a "Starting recording" banner shows during the dead time; the banner
+  closes and the tray dot appears the moment frames flow (no sound then: it would be recorded into the clip). Hit
+  record a beat before the action.
 - **No mouse pointer**: kmsgrab reads the primary plane and the cursor lives on the hardware cursor plane
   (Settings > Capture cursor does nothing for kms; screenshots and the gnome backend do draw it). User-level
   option, NOT applied here: `MUTTER_DEBUG_DISABLE_HW_CURSORS=1` in `~/.config/environment.d/` (needs a re-login;
@@ -152,15 +153,19 @@ What the `kms` path costs you, honestly:
 END-aligned and both streams are cut at the same instant (the audio when the stop helper returns, the video by its
 own SIGINT), which measured **audio-minus-video 0.105 s on the real kms path** (the beep player's own spawn latency
 is 0.12-0.16 s; the old behaviour was +1.53 s late). External stops (capkit's own hotkey) cut the audio at kmsgrab's
-exit minus an estimated 0.3 s flush.
+exit minus an estimated 0.2 s flush.
 
 **Region recording** (`trontsnap record region`, Ctrl+Shift+Alt+Print, Capture menu): the picker's rectangle goes
 to the app as `record x,y,w,h`. x11 passes it to x11grab, gnome calls `ScreencastArea`, kms records the whole
 screen and crops afterwards with one libx264 pass (about 0.2x realtime here, so a minute costs ~12 s of "Saving"
 and the audio is still copied).
 
-**Feedback while it runs:** the title bar shows `Starting...` / `REC mm:ss` (click = stop) / `Saving...` when the
-window is open (there is still no tray icon), and the Capture menu item reads "Stop recording".
+**Feedback while it runs:** a red dot in the tray (a StatusNotifierItem: GNOME's AppIndicator extension, KDE and most
+trays; click = stop) exists from the moment frames flow to the stop press, and the title bar shows `Starting...` /
+`REC mm:ss` (click = stop) / `Saving...` when the window is open; the Capture menu item reads "Stop recording". The dot
+is in the top bar, so a full-screen recording shows it too, and a `hidetopbar`-style extension (enabled on this box) hides
+the bar, dot included, until the pointer touches the top edge. Verified: the item registers with the real shell watcher
+during a recording and goes away at the stop; not verified: how the extension draws it on this box.
 
 **Safety:** a stub or unreadable output (the helper `mv`s a 0-byte file when the stop beats the first frame) is a
 failed recording ("Recording cancelled" / "too short"), never a clip. Pressing record again within ~1.5 s of a
@@ -188,7 +193,7 @@ state trace + Trash/file facts). `TRONTSNAP_PORT` overrides the command port (de
 
 ## Known gaps vs Windows (telling the truth here, in rough priority order)
 
-1. No tray icon (needs a gtk loop beside winit) — the window stays open; Close quits
+1. No persistent tray icon (needs a gtk loop beside winit; the recording dot above is a bare D-Bus StatusNotifierItem) — the window stays open; Close quits
 2. No drag-out from gallery/toast (no XDND backend yet) — paste covers most of it. A press-and-move
    over ~6 px on a tile therefore does nothing (egui's own click rule, independent of the tile's Sense)
    and a plain double-click still Copies on its first click before it Opens

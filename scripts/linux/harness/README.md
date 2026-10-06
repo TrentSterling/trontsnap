@@ -169,6 +169,7 @@ scripts/linux/harness/rec_test.sh                 # everything (~3 min): A B C D
 scripts/linux/harness/rec_test.sh --only A --secs 8
 scripts/linux/harness/rec_test.sh --no-crash      # skip D (D kill -9s + relaunches the live app)
 scripts/linux/harness/rec_test.sh --only A --secs 8 [--no-sync]   # --no-sync: no fullscreen beacon window / beep
+scripts/linux/harness/rec_test.sh --only C1                       # ONE real recording: stopped by capkit's hotkey, A/V sync
 ```
 
 Drives the live app over port 48761 exactly like the keybinding
@@ -217,8 +218,18 @@ epoch time, honours `replaces_id`). The app runs the fakes directly only when `T
 | S6 | `trontsnap record` with NO app running starts it and the recording; a second call stops it |
 | S7 | `trontsnap record region` picker, `drag` -> a 320x180 clip |
 | S8 | no recorder helper thread above 0.02 core while recording (the 20 Hz /proc poll was 0.16 core) |
+| S10 | tray dot: no dot in the dead time, registers when frames flow (`sni_mock.py` = a watcher on the rig bus, logs the properties a host reads), red-dot ARGB pixmaps, Activate (a click) stops the recording, the dot vanishes at the stop |
+| X1 | x11 backend (ffmpeg x11grab of the rig's Xvfb): full screen 1366x768 with audio as long as the video, and a region clip whose pixels equal that rectangle of the screen |
 
 S1 screenshots (`harness_out/<date>/fake/shots/`): `1_recording.png` (title-bar `REC 00:00`), `2_saving.png`. READ them.
+
+## 4d. GNOME screencast backend on the real session (`rec_gnome_test.py`, ~1 min, CPU only)
+
+A throwaway TrontSnap instance (own Xvfb :93 for its window/toast/clipboard, temp HOME, `TRONTSNAP_TEST=1`,
+`GSETTINGS_BACKEND=memory`, silent fake players, port 48792) that talks to the REAL session bus, so the shell really
+records the real screen (VP8 on the CPU; no kmsgrab, no VCE, no video decode). G1: webm/vp8 + opus, audio as long as the
+video, flash+beep content sync within 0.14 +- 0.15 s; G2: `record x,y,w,h` through `ScreencastArea` is exactly that
+size. The beacon beeps once per run and the shell burns 1-2 cores while it records: run it sparingly.
 
 ## 4c. GIF export (`gif_test.py`, ~1.5 min)
 

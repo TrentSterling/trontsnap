@@ -55,6 +55,11 @@ mod clipboard;
 #[path = "linux/clipserve.rs"]
 mod clipserve;
 
+// Linux-only: the recording indicator in the desktop tray (StatusNotifierItem over D-Bus).
+#[cfg(not(windows))]
+#[path = "linux/sni.rs"]
+mod sni;
+
 // Linux-only: `trontsnap record [region]`, what the GNOME record keybindings run.
 #[cfg(not(windows))]
 #[path = "linux/recordcli.rs"]

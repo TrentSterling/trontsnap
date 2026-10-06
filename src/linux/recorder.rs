@@ -26,9 +26,11 @@
 // capturing, so the audio sidecar is cut when the stop helper RETURNS, not when the key
 // is pressed; cutting it at the press left the sound ~1.4 s late against the picture.
 //
-// Cues: a kms clip starts ~2-3 s after the press, so "Recording" is announced when the
-// helper's first ffmpeg stats line says frames are flowing (about when the clip begins:
-// the helper trims the first second), not at the press. The post-press tail (the stop helper's latency) is cut from the finished
+// Cues: a kms clip starts ~2-3 s after the press. A tick sounds at the press (it falls in
+// the audio that end-alignment trims away) and a "Starting recording" banner shows during
+// the dead time; when the helper's first ffmpeg stats line says frames are flowing (about
+// when the clip begins: the helper trims the first second) the banner closes and the tray
+// dot appears. No sound at that instant: it would be recorded into the clip. The post-press tail (the stop helper's latency) is cut from the finished
 // clip so the stop cue/banner never ends up in the video.
 //
 // Collision rules with capkit's own Super+Alt+R recorder (same kmsgrab helper):
@@ -60,9 +62,10 @@ const FPS: u32 = 30;
 /// A "recording" smaller / shorter than this is a failed one, not a clip.
 const MIN_CLIP_BYTES: u64 = 4096;
 const MIN_CLIP_SECS: f64 = 0.4;
-/// kmsgrab's exit trails its SIGINT by about this much (encoder flush): only used when
+/// kmsgrab's exit trails its SIGINT by about this much (encoder flush; measured on the real
+/// helper: it exits 0.14 s after the stop helper returns, which is itself ~0.05 s after pkill): only used when
 /// the stop came from OUTSIDE (capkit's hotkey) and the audio had to be cut at the exit.
-const EXT_FLUSH_SECS: f64 = 0.3;
+const EXT_FLUSH_SECS: f64 = 0.2;
 /// Post-press footage kept at the end of a kms clip (the stop helper's own latency is
 /// cut off; this is the margin so jitter never clips the moment of the press itself, and
 /// small enough that the stop banner/tick, which arrive just after the press, stay out).
@@ -150,6 +153,8 @@ struct Ctl {
     overrun_ms: AtomicU64,
     /// When the stop helper returned (diagnostics: how long kmsgrab lingered after it).
     stop_returned: Mutex<Option<Instant>>,
+    /// The tray dot: lives from a successful start to the stop press (or the capture's end).
+    tray: Mutex<Option<crate::sni::TrayGuard>>,
 }
 
 impl Ctl {
@@ -167,11 +172,17 @@ impl Ctl {
             tail_ms: AtomicU64::new(0),
             overrun_ms: AtomicU64::new(0),
             stop_returned: Mutex::new(None),
+            tray: Mutex::new(None),
         })
     }
 
     fn is_live(&self) -> bool {
         lk(&self.live).is_some()
+    }
+
+    /// Capture is over (stop pressed, or the helper exited): the tray dot goes.
+    fn drop_tray(&self) {
+        lk(&self.tray).take();
     }
 
     /// True the first time only.
@@ -182,6 +193,11 @@ impl Ctl {
         }
         *l = Some(Instant::now());
         drop(l);
+        // The tray dot is the persistent "recording" cue: it appears when frames really flow
+        // and vanishes at the stop press (kms: ~2-3 s after the key; the others: at once).
+        if !self.stopping.load(Ordering::SeqCst) {
+            *lk(&self.tray) = Some(crate::sni::TrayGuard::new());
+        }
         changed();
         true
     }
@@ -376,6 +392,7 @@ pub fn gpu_encoding() -> bool {
 // === Stop ===
 
 fn run_stop(job: &StopJob) {
+    job.ctl.drop_tray();
     let live = job.ctl.is_live();
     if !live {
         job.ctl.cancel.store(true, Ordering::SeqCst);
@@ -562,7 +579,8 @@ fn start(region: Option<Region>) -> anyhow::Result<Session> {
         // The clip begins ~2-3 s from now. HARD-WON: no banner once it has begun: GNOME pins
         // banners top-centre INSIDE the picture (one lingered in every frame of a clip). So
         // this one is visible only during the dead time and closes the instant frames flow
-        // (kms_watch), where a soft tick marks "now".
+        // (kms_watch), where the tray dot and title-bar REC take over. This tick is trimmed
+        // away with the head of the audio; a tick at the live instant would not be.
         crate::sound::play_tick(false);
         let mut body = String::from("Capture begins in about 3 seconds.");
         if crate::settings::capture_cursor() && !CURSOR_NOTE_SHOWN.swap(true, Ordering::SeqCst) {
@@ -577,10 +595,12 @@ fn start(region: Option<Region>) -> anyhow::Result<Session> {
     Ok(Session { id, stop, watcher, ctl })
 }
 
-/// Capture is live (kms): the "Starting" banner goes away and a tick marks the instant.
+/// Capture is live (kms): the "Starting" banner goes away and the tray dot appears (mark_live).
+/// HARD-WON: no tick here. The first version played one at this instant; the clip's audio
+/// starts at about the same moment, so it was recorded 0.4 s into every clip (rec_test R, real
+/// kms run: a 520 Hz blip at 0.39 s, before the actual beacon beep at 4.23 s).
 fn announce_live() {
     banner_close();
-    crate::sound::play_tick(false);
 }
 
 type Audio = Option<(Child, PathBuf)>;
@@ -979,6 +999,7 @@ fn finish(id: u64, raw: Option<PathBuf>, audio: Audio, ctl: Arc<Ctl>) {
         }
     }
     clear_marker(id);
+    ctl.drop_tray();
     // Idempotent: normally the stop path already cut it. If the video recorder died on
     // its own nobody did, and waiting for a live sidecar would hang forever.
     ctl.cut_audio();

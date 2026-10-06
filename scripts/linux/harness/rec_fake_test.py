@@ -19,6 +19,8 @@ What it proves (each check prints PASS/FAIL; exit 1 on any FAIL):
   S7  `trontsnap record region` picker (drag) -> region recording
   S8  CPU: no app thread burns CPU while a recording runs (kms_watch used to poll /proc at 20 Hz)
   S9  UI: title-bar "Starting.../REC mm:ss/Saving..." (screenshots in $OUT/fake/shots, LOOK at them)
+  S10 tray dot (StatusNotifierItem): registers when frames flow with a red-dot pixmap, vanishes at the stop,
+      a click (Activate) stops the recording (mock watcher on the rig bus)
   X1  x11 backend (ffmpeg x11grab of the rig's Xvfb): full screen + a region, audio kept and as long as the video
 
   rec_fake_test.py [--only S1,S3] [--no-audio] [--keep]
@@ -215,10 +217,15 @@ def rig_start(audio, recorder="kms"):
                          stdout=open(FD / "mock.out", "w"), stderr=subprocess.STDOUT, start_new_session=True,
                          env=dict(os.environ, HARNESS_OUT=str(OUT)))
         wait(lambda: "ready" in (FD / "mock.out").read_text(), 8)
+        (FD / "sni.jsonl").unlink(missing_ok=True)
+        subprocess.Popen([str(HERE / "gui_env.sh"), "run", str(N), "python3", str(HERE / "sni_mock.py")],
+                         stdout=open(FD / "sni_mock.out", "w"), stderr=subprocess.STDOUT, start_new_session=True,
+                         env=dict(os.environ, HARNESS_OUT=str(OUT), SNI_LOG=str(FD / "sni.jsonl")))
+        wait(lambda: "ready" in (FD / "sni_mock.out").read_text(), 8)
 
 
 def rig_stop():
-    for pid in procs(lambda a: a[-1:] == [str(HERE / "notify_mock.py")] or str(HERE / "notify_mock.py") in a):
+    for pid in procs(lambda a: str(HERE / "notify_mock.py") in a or str(HERE / "sni_mock.py") in a):
         try:
             os.kill(pid, signal.SIGTERM)
         except OSError:
@@ -541,6 +548,51 @@ def x1(audio):
         got.save(SHOTS / "x1_clip_frame.png")
 
 
+def sni_log(after=0.0):
+    out = []
+    try:
+        for ln in (FD / "sni.jsonl").read_text().splitlines():
+            d = json.loads(ln)
+            if d["t"] >= after:
+                out.append(d)
+    except OSError:
+        pass
+    return out
+
+
+def s10():
+    header("S10 tray indicator (StatusNotifierItem) against a mock watcher")
+    cfg(INIT="1.0", STOP_DELAY="0.8", MODE="normal")
+    before = media()
+    t0 = time.time()
+    lc0 = live_count()
+    send("record")
+    time.sleep(0.8)
+    check("S10: no dot yet during the dead time (kms clip not started)", not sni_log(t0), str(sni_log(t0)))
+    wait(lambda: live_count() > lc0, 15)
+    reg = wait(lambda: [d for d in sni_log(t0) if d["op"] == "item"], 15)
+    check("S10: the item registers with the watcher when frames flow", bool(reg), str(sni_log(t0)))
+    if reg:
+        it = reg[0]
+        check("S10: Id / Category / Status as a tray host expects",
+              (it["id"], it["category"], it["status"]) == ("trontsnap-recording", "ApplicationStatus", "Active"), str(it))
+        check("S10: red-dot pixmaps 16/22/32 px with the full ARGB payload",
+              [p[:2] for p in it["pixmaps"]] == [[16, 16], [22, 22], [32, 32]] and all(p[2] == p[0] * p[1] * 4 for p in it["pixmaps"]), str(it["pixmaps"]))
+        check("S10: tooltip says it is recording", it["tooltip"] and "recording" in it["tooltip"][0].lower(), str(it["tooltip"]))
+    time.sleep(2.0)
+    # a left click on the dot = stop (SIGUSR1 makes the mock call Activate on it)
+    pid = procs(lambda a: str(HERE / "sni_mock.py") in a)
+    t_click = time.time()
+    for p in pid:
+        os.kill(p, signal.SIGUSR1)
+    clip = deliver_wait(before)
+    check("S10: clicking the dot (Activate) stopped the recording and a clip was delivered", clip is not None)
+    gone = wait(lambda: [d for d in sni_log(t0) if d["op"] == "gone"], 10)
+    check("S10: the dot is gone from the tray after the stop (bus name released)", bool(gone))
+    if gone:
+        say(f"    dot vanished {gone[0]['t'] - t_click:.2f}s after the click")
+
+
 def s9_note():
     header("S9 title-bar indicator")
     say(f"    screenshots: {SHOTS}/1_recording.png (REC pill), 2_saving.png (Saving...). READ THEM.")
@@ -558,7 +610,7 @@ def main():
     rig_start(audio) if (not only or only - {"X1"}) else None
     try:
         for key, fn in (("S1", lambda: s1(audio)), ("S2", s2), ("S3", s3), ("S4", s4), ("S5", lambda: s5(audio)),
-                        ("S8", s8), ("S6", lambda: s6(audio)), ("S7", s7)):
+                        ("S8", s8), ("S6", lambda: s6(audio)), ("S7", s7), ("S10", s10)):
             if want(key):
                 pause_between_scenarios()
                 fn()
