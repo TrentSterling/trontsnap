@@ -12,6 +12,24 @@ cargo build --release
 ./packaging/linux/appimage.sh        # -> target/TrontSnap-vX.Y.Z-x86_64.AppImage
 ```
 
+### Stable install on this box (`~/.local/bin/trontsnap`)
+
+The GNOME keybindings and the autostart entry run whichever binary the app was started from, and every
+`cargo build` replaces `target/debug/trontsnap` under them. So the live app runs from a fixed path:
+
+```
+cargo build --release                  # fat LTO on the 4-core A6: ~13 min, nothing else building
+scripts/linux/install_local.sh         # copy, timestamped .bak of the old one, fix autostart, restart live app
+```
+
+`install_local.sh` stops the live app by the pid that owns the command port (never a pattern kill), refuses while
+a recording is in progress, relaunches `~/.local/bin/trontsnap --startup` detached (log `~/.cache/trontsnap/app.log`),
+and the relaunch rewrites the five GNOME bindings from `current_exe`. The **autostart entry is NOT rewritten by the
+app** (it is written once, `AutostartInit`), so the script edits its `Exec=` line itself. `--no-restart` only copies.
+Installed 2026-10-06 (release, 14 MB, stripped); bindings and `~/.config/autostart/trontsnap.desktop` checked to
+point at it. Heads-up: starting ANY other build (`cargo run`, `target/debug/trontsnap`) as the app repoints the
+bindings at that binary until the installed one is relaunched.
+
 Build deps beyond Rust: the usual eframe set (`libgtk-3-dev` is NOT needed;
 `libxcb`/`libxkbcommon`/`libssl-dev` usually already present on a dev box).
 
@@ -132,9 +150,9 @@ about 0.1 s over the grabber itself; it no longer forks `gsettings` on every pre
 The grabber is the floor, and on this box it varies with what is on screen: 1.6 s measured once, 4.3 s (2.7 s of CPU) on
 2026-10-06 with the shader-heavy terminal animating (`full` 4.45 s vs `gnome-screenshot -f` 4.33 s, same minute). A grabber
 that hangs is killed after 20 s and the hotkey says "Screenshot failed" (the one-shots notify; stderr goes nowhere from a
-keybinding). The GNOME bindings run whichever binary the app was launched from (here `target/debug/trontsnap`). A release
-build would be faster still, but the bindings deliberately don't prefer `target/release` when it exists: it would
-silently be a stale binary after every debug rebuild.
+keybinding). The GNOME bindings run whichever binary the app was launched from: `~/.local/bin/trontsnap` since 2026-10-06 (see
+"Stable install"). They deliberately don't prefer `target/release` when it exists: it would silently be a stale binary
+after every rebuild. Release `full` through the installed binary: 4.4 s wall (the grabber is the floor, see above).
 
 ## The tray icon and the window (close, autostart, second launch)
 
@@ -203,8 +221,8 @@ reference + shutter + toast, same contract as Windows. The backend is picked per
 
 What the `kms` path costs you, honestly:
 
-- **The clip begins ~2-3 s after the press** (pkexec + VAAPI init, then the helper trims the first second of
-  warmup). A low tick sounds at the press and a "Starting recording" banner shows during the dead time; the banner
+- **The clip begins ~2-4 s after the press** (pkexec + VAAPI init, then the helper trims the first second of
+  warmup; the first record after an app restart measured 4.2 s to frames). A low tick sounds at the press and a "Starting recording" banner shows during the dead time; the banner
   closes and the tray dot appears the moment frames flow (no sound then: it would be recorded into the clip). Hit
   record a beat before the action.
 - **No mouse pointer**: kmsgrab reads the primary plane and the cursor lives on the hardware cursor plane
@@ -284,15 +302,34 @@ guards the FIFO; the old thread-per-copy race needs two clicks inside ~100 ms, w
 the pre-fix binary passes it too). Rigs started with
 `RIG_KEEP_BUS=1` survive `kill -9` of the app (the crash tests).
 
+**Last full run, 2026-10-06** (`run_all.sh` on the debug build of `6c7e851`, 18 min, kernel log clean afterwards;
+checks counted from the suite logs): selftest 5, paste 43, gallery 38, parity 28, tray 36, notice 4, hotkey 9,
+recfake 91 = all PASS, 0 FAIL. Real session on the kms/VCE path through `rec_test.sh`: case A 18/18 (8 s clip,
+29.8 fps, A/V content sync +0.090 s, ends at the stop press) and case D 17/17 (kill -9 mid-recording, relaunch,
+6.7 s clip salvaged). Cases B, C1, C2 (capkit collision, external stop) were NOT re-run that night: see the budget below.
+
+**Machine safety, learned the hard way (2026-10-05, the desktop froze and needed a hard reset).** Never DECODE video
+on the GPU while kmsgrab encodes on the VCE: UVD hung ("UVD not responding"), then
+`radeon_dpm_change_power_state_locked` took the compositor with it. The harness motion sources are generated
+(`ffplay -f lavfi -i testsrc2`, which `rec_perf.py` uses; `mpv --hwdec=no`, a terminal animation), never a played clip with
+hardware decode; ffmpeg/ffprobe software decode for analysis is fine. Budget for real kms clips: <= 3 per session,
+<= 15 s each, >= 60 s apart, never while anything else records. `rec_test.sh` with no arguments makes FIVE real clips
+(A, B, C1, C2, D), so run it by case (`--only A`, `--only D`, `--only B,C`). After any GPU-touching test:
+`journalctl -k -b --since "-5 min" | grep -i -E "uvd|vce|radeon.*error|hung"` must print nothing. Rigs pin
+`TRONTSNAP_RECORDER=x11` so a rig instance can never start the real kms helper.
+
 ## Verified only in rigs, still owed a physical run
 
 Everything above was driven in Xvfb rigs, a fake root helper, private headless GNOME Shells and (for the recorder, at
-most three short clips) the real session. What a private shell DOES cover (`hotkey_wl_test.sh`, `notice_wl_test.sh`):
+most three short clips) the real session. On 2026-10-06 the INSTALLED release binary was also run on the real session:
+`~/.local/bin/trontsnap full` (1366x768 PNG on disk + `image/png`/uri-list on the clipboard, 4.4 s wall) and
+`~/.local/bin/trontsnap record` twice, 9 s apart, i.e. the exact commands the bindings run (1366x768 h264 + aac,
+video 6.54 s / audio 6.52 s, a real frame of the desktop, kernel log clean). Those were typed commands, not physical key presses. What a private shell DOES cover (`hotkey_wl_test.sh`, `notice_wl_test.sh`):
 the five bindings pressed as real GNOME custom keybindings (a private `gsd-media-keys` + real key events), and a
 banner disappearing by itself. What it cannot, and what was NOT done with real keys on the real desktop; do this once
 and record the result here:
 
-- press each of the five bindings on the real session, double-tap Ctrl+Shift+Print, record 10 s then restart within
+- press each of the five bindings with the physical keys on the real session, double-tap Ctrl+Shift+Print, record 10 s then restart within
   2 s (the real kms helper, not the fake one: only sync, region+crop and external stop ran against it);
 - Esc in the region picker on the real session (the private shell gives no freshly mapped window keyboard focus, so
   only the right-click cancel is proven);
@@ -312,11 +349,14 @@ Not verifiable on this one-output laptop: multi-monitor (PAR-14), Windows runtim
 2. No drag-out from gallery/toast (no XDND backend yet) — paste covers most of it. A press-and-move
    over ~6 px on a tile therefore does nothing (egui's own click rule, independent of the tile's Sense)
    and a plain double-click still Copies on its first click before it Opens
-3. Recording: the pointer is missing from kms recordings and a kms clip starts ~2-3 s after the press (see Recording);
+3. Recording: the pointer is missing from kms recordings and a kms clip starts ~2-4 s after the press (see Recording);
    the gnome fallback draws the pointer but is slow under motion. No capture-excluded REC HUD like Windows
 4. The picker has no "click for a window" on native Wayland (no window enumeration), and no faint window-rect map on any backend
 5. Multi-monitor untested and unverifiable on this one-output laptop (same primary-monitor scope as Windows; static review worry: the CLI grabber's multi-monitor PNG is cropped with xcap's scaled geometry, and the picker is fullscreen on whichever output the compositor picks)
 6. The toast docks bottom-right via XWayland (measured 340x188+1002+532, exactly the intended spot); GNOME's own
    banners (OCR/recorder notices) stay top-centre, which the app can't move
 7. Without a tray (native Wayland window), a second `trontsnap` launch can't un-minimize a minimized Wayland window (no xdg-shell unminimize, and a minimized surface gets no redraw to act on the request) — restore it from the dock. A buried but mapped window is raised through GNOME's notification
-
+8. Bindings follow whichever binary was started last: `cargo run` or `target/debug/trontsnap` as the app repoints the five
+   GNOME bindings at itself (the installed copy fixes that on its next launch; `install_local.sh` relaunches it). Autostart is
+   written once, so only `install_local.sh` (or one click on Start at login in the tray: a stale entry reads as unticked, ticking rewrites it) repoints it
+9. No `--version` flag (`trontsnap --version` prints the usage line); the build stamp is the exe's mtime, shown in Settings > About
