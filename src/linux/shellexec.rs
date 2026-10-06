@@ -32,13 +32,11 @@ pub fn open(path: &Path) -> bool {
         && std::env::var_os("TRONTSNAP_OPEN_WHILE_RECORDING").is_none()
         && crate::recorder::gpu_encoding()
     {
-        let mut n = Command::new("notify-send");
-        n.args(["-a", "TrontSnap", "-t", "6000", "Not opening the video yet",
-            "A hardware recording is running; playing a video now can hang this GPU. Stop the recording first."])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        spawn_detached(n);
+        crate::notice::show_async(
+            "Not opening the video yet",
+            "A hardware recording is running; playing a video now can hang this GPU. Stop the recording first.",
+            8,
+        );
         return true;
     }
     let mut cmd = Command::new("xdg-open");

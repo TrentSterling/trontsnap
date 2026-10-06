@@ -71,6 +71,11 @@ mod x11win;
 #[path = "linux/recordcli.rs"]
 mod recordcli;
 
+// Linux-only: one-shot desktop notices that really expire (GNOME ignores notify-send -t).
+#[cfg(not(windows))]
+#[path = "linux/notice.rs"]
+mod notice;
+
 #[cfg(windows)]
 mod cursor;
 #[cfg(not(windows))]
@@ -148,6 +153,13 @@ fn main() {
         return;
     }
 
+    // The detached half of notice::show: sleeps, then closes one banner. No setup needed either.
+    #[cfg(not(windows))]
+    if std::env::args().nth(1).as_deref() == Some("notice-close") {
+        notice::run_closer();
+        return;
+    }
+
     // The record keybinding: a plain toggle needs none of the setup below (it hands one
     // command to the running app, or starts the app), and its latency is the hotkey's.
     #[cfg(not(windows))]
@@ -168,11 +180,17 @@ fn main() {
     // hotkeys runs. Idempotent + best-effort: never blocks startup.
     // Unless the user opted out in Settings (PrintKeyOptOut): that choice used to be undone here on
     // every launch, including the one-shot modes.
-    if !settings::print_key_opt_out() && printscreen::free_printscreen_key() {
+    let mode = std::env::args().nth(1).unwrap_or_default();
+    // Linux: only the app frees the key (it also installs the bindings). A one-shot (`full`, `region`)
+    // forked `gsettings get` on every hotkey press for nothing, in the latency path.
+    #[cfg(not(windows))]
+    let frees_key = matches!(mode.as_str(), "" | "app" | "--startup" | "tray");
+    #[cfg(windows)]
+    let frees_key = true;
+    if frees_key && !settings::print_key_opt_out() && printscreen::free_printscreen_key() {
         eprintln!("trontsnap: freed PrintScreen key from Windows' Snipping Tool binding");
     }
 
-    let mode = std::env::args().nth(1).unwrap_or_default();
     let result = match mode.as_str() {
         "" | "app" => app::run(false),
         "--startup" | "tray" => app::run(true),
@@ -207,6 +225,11 @@ fn main() {
     };
     if let Err(e) = result {
         eprintln!("trontsnap: {e:#}");
+        // A hotkey-spawned one-shot has no terminal: stderr goes nowhere, so a failed grab was silent.
+        #[cfg(not(windows))]
+        if matches!(mode.as_str(), "full" | "region" | "ocr") {
+            notice::show("Screenshot failed", &format!("{e:#}"), 10);
+        }
         std::process::exit(1);
     }
 }

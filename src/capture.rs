@@ -51,6 +51,29 @@ fn grab_xcap() -> anyhow::Result<RgbaImage> {
     Ok(monitor.capture_image()?)
 }
 
+/// A grab takes 1.5-8 s here depending on load; past this the grabber is stuck (portal activation
+/// sat for over a minute on a broken bus, and the hotkey just hung with no sign of why).
+#[cfg(not(windows))]
+const GRAB_TIMEOUT_SECS: u64 = 20;
+
+/// Run `cmd` to completion and say whether it succeeded; kill it when it outlives `secs`.
+#[cfg(not(windows))]
+fn run_with_timeout(cmd: &mut std::process::Command, secs: u64) -> bool {
+    let Ok(mut child) = cmd.spawn() else { return false };
+    let t0 = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(st)) => return st.success(),
+            Ok(None) if t0.elapsed().as_secs() < secs => std::thread::sleep(std::time::Duration::from_millis(20)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
+        }
+    }
+}
+
 /// Run the first CLI grabber that works and return its PNG bytes. gnome-screenshot
 /// covers GNOME Wayland (portal path, no prompt), spectacle covers KDE, grim
 /// covers wlroots. Each writes a PNG to a temp path we read back.
@@ -76,13 +99,9 @@ fn run_cli_grabber(xcap_err: Option<&anyhow::Error>, pointer: bool) -> anyhow::R
         ]
     };
     for (cmd, args) in attempts {
-        let ok = std::process::Command::new(cmd)
-            .args(&args)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
+        let mut c = std::process::Command::new(cmd);
+        c.args(&args).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+        let ok = run_with_timeout(&mut c, GRAB_TIMEOUT_SECS);
         if ok && tmp.exists() {
             let bytes = std::fs::read(&tmp);
             let _ = std::fs::remove_file(&tmp);
@@ -90,7 +109,7 @@ fn run_cli_grabber(xcap_err: Option<&anyhow::Error>, pointer: bool) -> anyhow::R
         }
     }
     let xcap = xcap_err.map_or_else(|| "not tried".to_string(), |e| format!("{e:#}"));
-    anyhow::bail!("no screen grabber worked (xcap: {xcap}; also tried gnome-screenshot/spectacle/grim)")
+    anyhow::bail!("no screen grabber worked (xcap: {xcap}); install gnome-screenshot, spectacle or grim")
 }
 
 /// The primary monitor's rect inside a multi-monitor grab, or None when the grab

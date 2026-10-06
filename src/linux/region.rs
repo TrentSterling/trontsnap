@@ -57,7 +57,10 @@ pub fn capture_region() {
     let (rw, rh) = (cropped.width(), cropped.height());
     match capture::deliver(&cropped) {
         Ok(path) => println!("captured {rw}x{rh} -> clipboard + {}", path.display()),
-        Err(e) => eprintln!("trontsnap: region deliver failed: {e:#}"),
+        Err(e) => {
+            eprintln!("trontsnap: region deliver failed: {e:#}");
+            notify("Screenshot not saved", &format!("{e:#}"));
+        }
     }
 }
 
@@ -112,15 +115,10 @@ pub fn capture_region_ocr() {
     }
 }
 
-/// Desktop notification for the one-shot picker modes (nothing else is visible
-/// when they fail). Transient so it doesn't pile up in the tray.
+/// Desktop notification for the one-shot picker modes (nothing else is visible when they fail).
+/// Closed explicitly after a few seconds: GNOME would hold a plain one until the next keystroke.
 fn notify(summary: &str, body: &str) {
-    let mut cmd = std::process::Command::new("notify-send");
-    cmd.args(["-a", "TrontSnap", "-t", "5000", "-h", "int:transient:1", summary, body])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    let _ = crate::shellexec::spawn_detached(cmd);
+    crate::notice::show(summary, body, 6);
 }
 
 /// Run the picker and return the cropped selection, clamped to the frame.
@@ -144,6 +142,7 @@ fn run_picker() -> Option<(RgbaImage, RawRect)> {
         Ok(f) => f,
         Err(e) => {
             eprintln!("trontsnap: screen grab failed: {e:#}");
+            notify("Screenshot failed", &format!("{e:#}"));
             return None;
         }
     };
@@ -169,6 +168,7 @@ fn run_picker() -> Option<(RgbaImage, RawRect)> {
     );
     if let Err(e) = run {
         eprintln!("trontsnap: picker failed: {e}");
+        notify("Region picker failed", &e.to_string());
         return None;
     }
     let sel = result.lock().ok()?.take()?;
