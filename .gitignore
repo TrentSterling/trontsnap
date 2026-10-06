@@ -11,3 +11,6 @@ dist/
 verify_shots/
 
 scripts/marketing/node_modules/
+
+# test-harness artifacts (screenshots, logs, clips, temp homes)
+harness_out/

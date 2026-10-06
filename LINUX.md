@@ -61,6 +61,14 @@ audio when "Record audio" is on). Wayland: not wired yet — drop a
 `~/.config/trontsnap/record-start.sh` that records to `$1` (and optionally a
 `record-stop.sh`); TrontSnap handles start/stop/clipboard/toast around it.
 
+## Test harness
+
+`scripts/linux/harness/` (see its README): isolated Xvfb GUI rig + XTest input
+driver + screenshot/clipboard tools (`gui_env.sh`, `xinput.py`, `shot.sh`,
+`clip.sh`, `selftest.sh`) and `rec_test.sh`, an end-to-end recorder test against
+the live app. `TRONTSNAP_PORT` overrides the command port (default 48761);
+`TRONTSNAP_TEST=1` stops an instance from installing keybindings/autostart.
+
 ## Known gaps vs Windows (telling the truth here, in rough priority order)
 
 1. No tray icon (needs a gtk loop beside winit) — the window stays open; Close quits
