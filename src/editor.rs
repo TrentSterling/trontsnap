@@ -224,10 +224,11 @@ impl Editor {
             self.set_status(format!("Save failed: {e}"));
             return;
         }
-        // Best-effort: the file is safe on disk; the writer thread retries.
-        let _ = crate::clipboard::set_all(&img, &png, &self.path);
+        // Best-effort: the file is safe on disk. Windows retries on a writer thread;
+        // Linux has no retry (the owner daemon either took the selection or it didn't).
+        let copied = crate::clipboard::set_all(&img, &png, &self.path).is_ok();
         self.dirty = false;
-        self.set_status("Saved + copied to clipboard");
+        self.set_status(if copied { "Saved + copied to clipboard" } else { "Saved (clipboard failed, see log)" });
     }
 }
 

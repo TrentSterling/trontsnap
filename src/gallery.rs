@@ -56,6 +56,10 @@ enum Action {
     ToggleSelect(PathBuf),
     RangeSelect(PathBuf),
     CopySelectedPaths,
+    // Multi-select as FILES (uri-list + gnome-copied-files), Linux only: the
+    // Windows clipboard writer takes one path at a time.
+    #[cfg(not(windows))]
+    CopySelectedFiles,
     DeleteSelected,
 }
 
@@ -421,6 +425,10 @@ impl Gallery {
         // box's focus doesn't also nuke a selection). Held while the confirm
         // dialog is up; that has its own Esc handling below.
         if !ctx.wants_keyboard_input() && self.confirm_delete.is_none() {
+            // HARD-WON: egui-winit turns Ctrl+C into Event::Copy and returns BEFORE
+            // pushing the Key event, so key_pressed(Key::C) is never true. The
+            // wants_keyboard_input gate above keeps Ctrl+C inside the search box.
+            let copy = ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Copy)));
             let (del, all, esc) = ctx.input(|i| {
                 (
                     i.key_pressed(egui::Key::Delete),
@@ -428,6 +436,17 @@ impl Gallery {
                     i.key_pressed(egui::Key::Escape),
                 )
             });
+            if copy {
+                let mut vis = self.visible_selected();
+                match vis.len() {
+                    0 => {}
+                    1 => self.apply(Action::Copy(vis.remove(0)), hwnd, ctx),
+                    #[cfg(not(windows))]
+                    _ => self.apply(Action::CopySelectedFiles, hwnd, ctx),
+                    #[cfg(windows)]
+                    _ => self.apply(Action::CopySelectedPaths, hwnd, ctx),
+                }
+            }
             if all {
                 for &i in &self.filtered {
                     self.selected.insert(self.shots[i].path.clone());
@@ -551,10 +570,32 @@ impl Gallery {
         }
     }
 
+    /// Text -> system clipboard. HARD-WON: on Linux egui's copy_text ties the
+    /// selection to the app WINDOW (X11 owner / Wayland serial), so the text
+    /// vanished when the app closed (Close quits there) and could be refused
+    /// without a fresh input serial. The daemon-owned path (the one OCR uses)
+    /// outlives the app. Windows keeps egui's, which is a real OS clipboard.
+    fn copy_text(&self, ctx: &egui::Context, text: String) {
+        #[cfg(windows)]
+        ctx.copy_text(text);
+        #[cfg(not(windows))]
+        {
+            let _ = ctx;
+            let tx = self.notice_tx.clone();
+            std::thread::spawn(move || {
+                if let Err(e) = crate::clipboard::set_text(&text) {
+                    eprintln!("trontsnap: copy text failed: {e:#}");
+                    let _ = tx.send("Copy failed (see log)".into());
+                }
+            });
+        }
+    }
+
     fn apply(&mut self, action: Action, hwnd: Option<isize>, ctx: &egui::Context) {
         match action {
             Action::Copy(path) => {
                 let p = path.clone();
+                let tx = self.notice_tx.clone();
                 std::thread::spawn(move || {
                     // Videos can't be pixel formats — copy the FILE (CF_HDROP), which
                     // still pastes into Discord/Explorer/terminals.
@@ -569,12 +610,13 @@ impl Gallery {
                             "gallery copy failed for {}: {e:#}",
                             p.display()
                         ));
+                        let _ = tx.send("Copy failed (see log)".into());
                     }
                 });
                 self.set_status("Copied");
             }
             Action::CopyPath(path) => {
-                ctx.copy_text(path.display().to_string());
+                self.copy_text(ctx, path.display().to_string());
                 self.set_status("Path copied");
             }
             Action::Open(path) => {
@@ -671,10 +713,24 @@ impl Gallery {
             Action::CopySelectedPaths => {
                 let vis = self.visible_selected();
                 let n = vis.len();
-                ctx.copy_text(
+                self.copy_text(
+                    ctx,
                     vis.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join("\n"),
                 );
                 self.set_status(format!("Copied {n} paths"));
+            }
+            #[cfg(not(windows))]
+            Action::CopySelectedFiles => {
+                let vis = self.visible_selected();
+                let n = vis.len();
+                let tx = self.notice_tx.clone();
+                std::thread::spawn(move || {
+                    if let Err(e) = crate::clipboard::set_files(&vis) {
+                        eprintln!("trontsnap: copy files failed: {e:#}");
+                        let _ = tx.send("Copy failed (see log)".into());
+                    }
+                });
+                self.set_status(format!("Copied {n} files"));
             }
             Action::DeleteSelected => {
                 let vis = self.visible_selected();
@@ -847,6 +903,11 @@ fn draw_cell(
         // live visible selection inside apply().
         if selected && sel_count > 1 {
             ui.separator();
+            #[cfg(not(windows))]
+            if ui.button(format!("Copy {sel_count} files")).clicked() {
+                *action = Some(Action::CopySelectedFiles);
+                ui.close_menu();
+            }
             if ui.button(format!("Copy {sel_count} paths")).clicked() {
                 *action = Some(Action::CopySelectedPaths);
                 ui.close_menu();
