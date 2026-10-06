@@ -51,7 +51,17 @@ use crate::region_win32;
 #[path = "app/chrome_input_tests.rs"]
 mod chrome_input_tests;
 
-const PORT: u16 = 48761;
+const DEFAULT_PORT: u16 = 48761;
+
+/// Loopback command/single-instance port. TRONTSNAP_PORT overrides it so the
+/// test harness can run isolated instances beside the live app (and so the Linux
+/// record keybinding can follow a non-default port). Unparseable = default.
+pub fn port() -> u16 {
+    std::env::var("TRONTSNAP_PORT")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(DEFAULT_PORT)
+}
 
 /// How long a tray left-click waits to see whether it is really the first half
 /// of a double-click before it fires the region capture.
@@ -93,10 +103,11 @@ fn tray_click_decision(now_ms: u64, last_double_ms: u64, previous_up_ms: u64) ->
 pub fn run(start_hidden: bool) -> anyhow::Result<()> {
     // Single instance: bind a loopback port. If it's taken, another TrontSnap is
     // running — poke it to surface its window and exit quietly.
-    let listener = match TcpListener::bind((Ipv4Addr::LOCALHOST, PORT)) {
+    let port = port();
+    let listener = match TcpListener::bind((Ipv4Addr::LOCALHOST, port)) {
         Ok(l) => l,
         Err(_) => {
-            if let Ok(mut s) = TcpStream::connect((Ipv4Addr::LOCALHOST, PORT)) {
+            if let Ok(mut s) = TcpStream::connect((Ipv4Addr::LOCALHOST, port)) {
                 let _ = s.write_all(b"open");
             }
             return Ok(());

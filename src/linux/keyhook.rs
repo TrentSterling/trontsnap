@@ -2,7 +2,8 @@
 // Wayland, so TrontSnap doesn't try: the desktop's own keybinding system runs
 // the one-shot CLI modes instead (`trontsnap full` / `region` / `ocr`), and the
 // record toggle pokes the running app over the existing loopback command port
-// (48761 — the same vocabulary trontsnap-hotkeys.exe uses on Windows).
+// (48761 by default, TRONTSNAP_PORT overrides — the same vocabulary
+// trontsnap-hotkeys.exe uses on Windows).
 //
 // install() therefore (best-effort, GNOME only) writes four custom keybindings
 // via gsettings, then returns a receiver that never fires — the real events
@@ -58,6 +59,11 @@ fn write_bind(slot: &str, name: &str, command: &str, binding: &str) {
 /// keyed by name, re-running just rewrites the same values). Quietly does
 /// nothing on desktops without gsettings/GNOME.
 fn install_gnome_binds() {
+    // HARD-WON: harness/test instances must never touch a real session's
+    // keybindings (dbus-run-session isolates gsettings, this is the backstop).
+    if std::env::var_os("TRONTSNAP_TEST").is_some() {
+        return;
+    }
     let Ok(exe) = std::env::current_exe() else { return };
     let exe = exe.display().to_string();
     let Some(current) = gget(MEDIA_KEYS, "custom-keybindings") else { return };
@@ -72,7 +78,10 @@ fn install_gnome_binds() {
         // reject the value — silently, leaving the bind with no command at all.
         (
             "trontsnap-record",
-            "bash -c \"echo -n record > /dev/tcp/127.0.0.1/48761\"".to_string(),
+            format!(
+                "bash -c \"echo -n record > /dev/tcp/127.0.0.1/{}\"",
+                crate::app::port()
+            ),
             "<Ctrl><Shift>Print",
         ),
         ("trontsnap-ocr", format!("{exe} ocr"), "<Ctrl><Alt>Print"),

@@ -47,6 +47,10 @@ pub fn disable() -> anyhow::Result<()> {
 /// Turn autostart on exactly once — the first time TrontSnap ever runs. After
 /// that we never touch it automatically, so a user's "off" sticks across restarts.
 pub fn ensure_first_run() {
+    // Harness instances (TRONTSNAP_TEST) never self-install into a session.
+    if std::env::var_os("TRONTSNAP_TEST").is_some() {
+        return;
+    }
     if crate::kvstore::get_u32("AutostartInit").is_some() {
         return;
     }
