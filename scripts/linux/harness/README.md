@@ -136,6 +136,32 @@ tiles are 182 px apart from x=128,y=134; the F/G captures become tiles 1-2, whic
 works on those; a still's context menu puts "Copy N files" at pointer+(45,285), "Copy N paths"
 at +(49,319) (a video's menu has two fewer rows, so offsets shift).
 
+## 3c. Gallery test (`gallery_test.sh`, ~2 min)
+
+```
+scripts/linux/harness/gallery_test.sh              # own rig :91 / 48791, stops it after
+TRONTSNAP_BIN=/path/to/older/trontsnap HARNESS_OUT=/elsewhere scripts/linux/harness/gallery_test.sh
+```
+
+Seeds the rig with `seed_gallery.sh` (ShareX archive, a webm, a name with `#` and `%`, a truncated PNG: 25 files),
+then asserts: Esc in the search box keeps the selection; plain click toggles once something is selected; Shift+click
+replaces the range; a fast Ctrl+click x2 never Opens; Open reaps its `xdg-open` (no zombie child); Edit (annotate)
+opens the editor; the status pill paints bottom-centre, leaves the title bar alone and expires on an idle window;
+Reveal does not freeze the window while a slow file manager answers (`fm1_mock.py`); a Delete leaves no ghost tile
+(key, context menu, external `rm`, and Ctrl+A + Delete + confirm with a file vanishing under the dialog); a
+1500-file bulk delete reports chunked progress.
+
+- State comes from `TRONTSNAP_TEST=1`: the app prints `trontsnap-test: gallery shots= shown= selected= status=`
+  to stderr whenever one changes (`rigs/N/app.log`). A binary without that trace (an older build) runs the
+  file-system / xdg-open / window checks and SKIPs the rest: that is how the pre-fix binary was shown to FAIL
+  (2026-10-05: G6, G9 zombie, G2, G5, G4, G1 bulk delete).
+- `fake_bin/xdg-open` logs to `$FAKE_OPEN_LOG` instead of launching anything (the test puts `fake_bin` on PATH).
+- `fm1_mock.py` owns `org.freedesktop.FileManager1` + `org.freedesktop.portal.Desktop` on the rig's PRIVATE bus and
+  answers ShowItems after `--delay`. Use it for ANY test that clicks Reveal: without it dbus activates the real
+  Nautilus, which the rig's bus hands to the real `systemd --user` (tracker, portals, gvfs, all running with the rig HOME).
+  `gui_env.sh stop` now also kills strays that inherited the rig's exact bus address.
+- Tile centres assume the default window (x = 129 + 182 col, y = 134 + 182 row); seeded order is deterministic.
+
 ## 4. Recorder test vs the LIVE app (`rec_test.sh`)
 
 ```

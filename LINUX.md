@@ -46,7 +46,33 @@ Build deps beyond Rust: the usual eframe set (`libgtk-3-dev` is NOT needed;
   - OCR text and "Copy path(s)": plain text via xclip
   - URIs are RFC 3986 percent-encoded (a `#` or `%20` in a name used to break paste)
 - Gallery: click = copy, Ctrl+click / Shift+click = select, Ctrl+A, Delete, and
-  **Ctrl+C copies the selection** (1 = the image, N = the files)
+  **Ctrl+C copies the selection** (1 = the image, N = the files). Details below.
+
+### Gallery behaviour worth knowing
+
+- **Selection.** Ctrl+click toggles, Shift+click REPLACES the selection with the range from the
+  anchor (Ctrl+Shift+click adds it), Ctrl+A selects what is shown, Esc clears. While something is
+  selected a plain click toggles instead of copying (no way to select with the mouse alone
+  otherwise). Selections hidden by a search/filter stay selected and show as `+K hidden`.
+  Esc in the search box only leaves the box. Ctrl+click twice quickly toggles back off; it no
+  longer Opens the file.
+- **Deleting** moves files to the XDG Trash ("Recycle Bin" on Windows) on a worker thread, 200 per
+  call, with `Moving to the Trash: 400/1500` progress. A tile leaves only once its file is really gone;
+  a path that vanished meanwhile is dropped silently, a file that cannot be trashed is retried alone and
+  counted in `N failed (see log)`. The folder watcher forwards deletes/moves-out as `Gone`, so a file
+  removed or trashed outside the app leaves the grid too (it used to come back as a blank "ghost"
+  tile that broke Ctrl+A + Delete).
+- **Status messages** are a pill at the bottom-centre of the window (they used to draw under the
+  window buttons), 4 s by wall clock, and expire by themselves on an idle window.
+- **Reveal** ("Show in file manager") runs on a worker: with a cold Nautilus the D-Bus calls can take
+  up to ~10 s before the folder-open fallback. It still ends in the parent folder when no file manager
+  implements `FileManager1.ShowItems`.
+- **Edit (annotate)**, **Open**: real argv / a reaped `xdg-open` (no quoted-path or zombie bugs).
+- **Copy text (OCR)** is greyed out with a hint when `tesseract` is not installed (restart the app after
+  installing it: the probe is cached).
+- Tiles say `MP4` / `WEBM` for what they are; the ShareX chip and legend entry only exist if
+  `~/Documents/ShareX/Screenshots` does; the legend drops to bare dots (tooltips) when the title bar is
+  too narrow for the words.
 
 ## Hotkeys
 
@@ -98,13 +124,17 @@ audio when "Record audio" is on). Wayland: not wired yet — drop a
 driver + screenshot/clipboard tools (`gui_env.sh`, `xinput.py`, `shot.sh`,
 `clip.sh`, `selftest.sh`), `paste_test.sh` (what lands on the clipboard, asserted:
 file set, URI escaping, Ctrl+C, INCR, fallback, OCR notice) and `rec_test.sh`, an
-end-to-end recorder test against the live app. `TRONTSNAP_PORT` overrides the command port (default 48761);
+end-to-end recorder test against the live app, and `gallery_test.sh` (deletes/ghost tiles, selection
+gestures, Edit/Open/Reveal, the status pill, bulk-delete progress; asserts the app's `TRONTSNAP_TEST`
+state trace + Trash/file facts). `TRONTSNAP_PORT` overrides the command port (default 48761);
 `TRONTSNAP_TEST=1` stops an instance from installing keybindings/autostart.
 
 ## Known gaps vs Windows (telling the truth here, in rough priority order)
 
 1. No tray icon (needs a gtk loop beside winit) — the window stays open; Close quits
-2. No drag-out from gallery/toast (no XDND backend yet) — paste covers most of it
+2. No drag-out from gallery/toast (no XDND backend yet) — paste covers most of it. A press-and-move
+   over ~6 px on a tile therefore does nothing (egui's own click rule, independent of the tile's Sense)
+   and a plain double-click still Copies on its first click before it Opens
 3. Recording is full-screen only, and Wayland needs the script hook (portal/PipeWire is the real fix)
 4. No loupe in the region picker yet, and no per-key rebinding (the Settings hotkey UI edits Windows VK codes)
 5. Multi-monitor untested (same primary-monitor scope as Windows)

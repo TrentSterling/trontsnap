@@ -151,6 +151,21 @@ cmd_start() {
   echo "READY display=:$n port=$port app_pid=$(cat "$r/app.pid") home=$h log=$r/app.log"
 }
 
+# HARD-WON: a rig whose app asks its private dbus to activate a service (Reveal -> Nautilus,
+# a11y, portals) gets it started by the REAL `systemd --user`, outside the rig's process group,
+# carrying the rig's HOME/DISPLAY/bus address (tracker even indexed a rig HOME). `stop` can't
+# reach them by pgid, so sweep by the one thing they all inherited: the rig's exact bus address.
+sweep_bus_strays() {
+  local bus d p; bus=$(cat "$1/dbus.addr" 2>/dev/null) || return 0
+  [[ -n $bus ]] || return 0
+  for d in /proc/[0-9]*; do
+    p=${d#/proc/}; [[ $p == $$ ]] && continue
+    grep -qaF "DBUS_SESSION_BUS_ADDRESS=$bus" "$d/environ" 2>/dev/null || continue
+    echo "gui_env: sweeping stray pid $p ($(tr '\0' ' ' < "$d/cmdline" 2>/dev/null | cut -c1-60)) that inherited the rig's bus" >&2
+    kill "$p" 2>/dev/null
+  done
+}
+
 cmd_stop() {
   check_n "${1:-}"
   local n=$1 r; r=$(rdir "$n")
@@ -168,6 +183,7 @@ cmd_stop() {
   alive "$xv" && kill -KILL "$xv" 2>/dev/null
   rm -f "/tmp/.X11-unix/X$n" "/tmp/.X$n-lock"
   rm -f "$r"/*.pid
+  sweep_bus_strays "$r"
   echo "stopped :$n"
 }
 

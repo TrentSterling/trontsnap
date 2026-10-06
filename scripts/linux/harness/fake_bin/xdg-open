@@ -1,0 +1,4 @@
+#!/bin/sh
+# Harness stand-in: log the open instead of launching a viewer/file manager on any display.
+# Log path: $FAKE_OPEN_LOG (default: /dev/null).
+printf '%s xdg-open %s\n' "$(date +%T.%N)" "$*" >> "${FAKE_OPEN_LOG:-/dev/null}"
