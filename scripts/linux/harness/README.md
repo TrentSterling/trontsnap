@@ -247,3 +247,32 @@ decode is involved, but check `journalctl -k -b --since "-2 min" | grep -i -E "u
 `start` and stop at the first hit. XWayland clients do not work in it (no systemd --user on the private bus), so the
 toast (which strips WAYLAND_DISPLAY to dock on XWayland) cannot be tested there. Never pin the pointer top-left (hot corner).
 
+
+## Recorder probes on the REAL session (2026-10-05 recording audit)
+
+`rec_test.sh` proves the plumbing; these measure what the user gets. All talk to the
+live app on 48761 (or to `org.gnome.Shell.Screencast`), so they record the real screen.
+
+```
+rec_lat.py  --secs 12 --out DIR [--restart-probe 0.4] [--move-pointer X Y AT]
+                                  press -> first frame in the clip, stop -> file/toast, A/V sync
+                                  (flash + 1 kHz beep vs the clip), notifications, cursor-in-clip
+rec_perf.py --backend kms|gnome --secs 10 --out DIR [--noise 0]
+                                  CPU per process / per app thread + fps + lost source frames under
+                                  generated full-screen motion (frame counter read back out of the clip)
+rec_race.py --gap 0.2 --out DIR   press record twice 0.2 s apart; what is left running / delivered
+gnome_area_probe.py X Y W H --out DIR   ScreencastArea region recording (CPU-only VP8) + cursor check
+rec_clock.py                      fullscreen wall-clock beacon (ms digits + 40-bit binary strip) used by rec_lat
+```
+
+MACHINE SAFETY (learned the hard way, this box hard-reset once):
+- Never play video with hardware decode while kmsgrab encodes: on this radeon (Mullins)
+  mpv `--hwdec=vaapi` hung the UVD ("UVD not responding"), then
+  `radeon_dpm_change_power_state_locked` deadlocked and the desktop froze. The motion source
+  here is `ffplay -f lavfi` (generated, nothing decoded). Do not add a media player.
+- Real kms recordings: at most 3 per agent, <= 15 s each, >= 60 s apart, never while
+  anything else records. After GPU work: `journalctl -k -b --since "-5 min" | grep -i -E "uvd|vce|radeon.*error|hung"`.
+- The gnome backend is CPU-only VP8 here (no gst-plugins-bad, so no VA encoder), so
+  `--backend gnome` never touches the VCE.
+- A relative template path makes GNOME Shell write under `~/Videos/`; pass absolute paths
+  (`rec_perf.py` and `gnome_area_probe.py` get away with it by moving the result).
