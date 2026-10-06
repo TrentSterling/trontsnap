@@ -370,4 +370,4 @@ Not verifiable on this one-output laptop: multi-monitor (PAR-14), Windows runtim
 8. Bindings follow whichever binary was started last: `cargo run` or `target/debug/trontsnap` as the app repoints the five
    GNOME bindings at itself (the installed copy fixes that on its next launch; `install_local.sh` relaunches it). Autostart is
    written once, so only `install_local.sh` (or one click on Start at login in the tray: a stale entry reads as unticked, ticking rewrites it) repoints it
-9. No `--version` flag (`trontsnap --version` prints the usage line); the build stamp is the exe's mtime, shown in Settings > About
+9. `trontsnap --version` (or `-V`) prints the version; the build stamp is the exe's mtime, shown in Settings > About
