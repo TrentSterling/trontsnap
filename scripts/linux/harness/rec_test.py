@@ -516,6 +516,12 @@ def case_crash_salvage(backend, want_audio):
     pid = live_app_pid()
     if not check("D: live app found", pid is not None):
         return
+    # HARD-WON: relaunch the SAME binary the live app runs from (the installed ~/.local/bin one since
+    # 2026-10-06); relaunching target/debug would swap the live app and repoint the GNOME bindings at it.
+    try:
+        exe = os.readlink(f"/proc/{pid}/exe").removesuffix(" (deleted)")
+    except OSError:
+        exe = str(REPO / "target" / "debug" / "trontsnap")
     pic_before, cap_before = media(PIC), cap_files()
     mark, up = start_recording(backend)
     if not check("D: recording started", up):
@@ -529,7 +535,7 @@ def case_crash_salvage(backend, want_audio):
     say(f"    orphans right after kill -9: kmsgrab={kms_pids()} audio={audio_pids()} stage={stage_entries()}")
     # Relaunch exactly as the lab does: detached, from the repo, log truncated.
     logf = open(LOG, "wb")
-    subprocess.Popen(["target/debug/trontsnap", "--startup"], cwd=REPO, stdout=logf, stderr=subprocess.STDOUT,
+    subprocess.Popen([exe, "--startup"], cwd=REPO, stdout=logf, stderr=subprocess.STDOUT,
                      stdin=subprocess.DEVNULL, start_new_session=True)
     check("D: relaunched app binds the port", bool(wait_until(port_up, 60, 0.5)))
     path, info = collect(pic_before, 90)

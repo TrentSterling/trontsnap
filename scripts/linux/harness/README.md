@@ -227,7 +227,8 @@ on that pill ends the session ("Object does not exist ... Session/uN").
 ## 4. Recorder test vs the LIVE app (`rec_test.sh`)
 
 ```
-scripts/linux/harness/rec_test.sh                 # everything (~3 min): A B C D
+scripts/linux/harness/rec_test.sh                 # everything (~3 min): A B C D = FIVE real kmsgrab clips; the
+                                                  # per-session cap is 3 (<= 15 s, >= 60 s apart), so run by case
 scripts/linux/harness/rec_test.sh --only A --secs 8
 scripts/linux/harness/rec_test.sh --no-crash      # skip D (D kill -9s + relaunches the live app)
 scripts/linux/harness/rec_test.sh --only A --secs 8 [--no-sync]   # --no-sync: no fullscreen beacon window / beep
@@ -333,8 +334,10 @@ bottom-right dock (`screen - 340x188 - (24, 48)`). Rig mode also screenshots.
   trusting a shot. Pixel-diff only against shots taken with `--settle`.
 - The cyan chip at the top-right of the title bar (~x 1027,y 20) is always there, even
   idle; it is not part of any harness state.
-- Rig and live app are both `target/debug/trontsnap`; `rec_test.sh` finds the live
-  one by excluding processes with `TRONTSNAP_TEST`/`TRONTSNAP_PORT` in their env.
+- Rigs run `target/debug/trontsnap`; the live app is whatever binary it was started from (the installed
+  `~/.local/bin/trontsnap` since 2026-10-06). `rec_test.sh` finds the live one by excluding processes with
+  `TRONTSNAP_TEST`/`TRONTSNAP_PORT` in their env, and case D relaunches the exe the live app was running.
+  Rebuilding debug no longer touches the live app; run `scripts/linux/install_local.sh` to ship a release build.
 
 ## Findings so far (2026-10-05, from building this)
 
@@ -439,7 +442,7 @@ MACHINE SAFETY (learned the hard way, this box hard-reset once):
 ## Everything at once, and the crash/notice additions (2026-10-06)
 
 ```
-run_all.sh [--only selftest,paste,gallery,parity,tray,notice,recfake] [--skip ...]   # RIG_N=95 RIG_PORT=48795
+run_all.sh [--only selftest,paste,gallery,parity,tray,notice,hotkey,recfake] [--skip ...]   # RIG_N=95 RIG_PORT=48795
 ```
 
 Runs the suites above sequentially (ONE rig at a time: 6 GB RAM), logs each to `$HARNESS_OUT/run_all/<suite>.log`,
