@@ -1,3 +1,21 @@
+## v0.26.0
+
+- Select two still images in Gallery and choose Compare. Review Before / After,
+  swap their order and create a labeled side-by-side PNG in the annotation editor.
+  The source images remain unchanged. New files use exclusive creation and retain
+  image proportions; decoding and composition run off the UI thread.
+- Includes the faint idle / bright hovered caption outlines from v0.25.1.
+- Validation: 51 tests passed, seven optional tests skipped; explicitly invoked
+  comparison and eight-state caption GPU reviews passed. Release build passed and
+  the staged executable has a valid timestamped signature.
+
+## v0.25.1
+
+- Give minimize, maximize/restore, and close buttons thin rounded borders:
+  faint at rest and white on hover, alongside their existing hover fills.
+- Validation: 49 normal tests passed. Offscreen GPU review rendered idle and all
+  three hovered buttons in both themes without desktop input.
+
 ## v0.25.0
 
 - The whole title strip supports window dragging, including navigation, filters,

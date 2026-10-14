@@ -16,6 +16,11 @@ If you have an existing ShareX screenshot folder, TrontSnap merges it into the s
 
 ### Key features
 
+- **Before / after comparisons**: Ctrl+click two still images, choose Compare,
+  verify or swap their order, then create a new labeled PNG in the annotation
+  editor. Add arrows, boxes or text and Save to copy the result. The two source
+  screenshots stay unchanged. Each image fits within 1280 by 1440 without stretching.
+
 - **Global hotkeys that work even over elevated windows**: PrintScreen = fullscreen grab, Ctrl+PrintScreen = freeze-frame region picker, Ctrl+Shift+PrintScreen = record, Ctrl+Alt+PrintScreen = copy a region's TEXT. All four rebindable in Settings. TrontSnap uses `RegisterHotKey` (the same approach ShareX takes), and the installed build adds a tiny signed broker so even bare PrtSc keeps firing while Task Manager has focus. Bare PrintScreen is contested by Windows' own Snipping Tool binding since Win10 1809, so on first run TrontSnap frees it via the per-user `PrintScreenKeyForSnippingEnabled` registry flag, exactly like ShareX.
 - **Dedicated GDI region picker**: a separate Win32/GDI overlay window, born already fullscreen with the frozen frame painted in, window detection, and a scroll-resizable zoom loupe. No GL context to warm, no flash, no borrowing the main window.
 - **Region OCR**: drag a region and its text lands on the clipboard, via the OCR engine Windows already ships. Offline, no cloud, no model download. Also available as "Copy text (OCR)" on any screenshot in the gallery.

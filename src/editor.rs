@@ -838,7 +838,7 @@ fn box_outline_px(img: &mut RgbaImage, a: egui::Pos2, b: egui::Pos2, width: f32,
 
 /// Rasterize text with the bundled Rajdhani (the same face egui shows), one
 /// glyph at a time via ab_glyph coverage. Supports newlines; no wrapping.
-fn draw_text_px(img: &mut RgbaImage, anchor: egui::Pos2, text: &str, px: f32, color: egui::Color32) {
+pub(crate) fn draw_text_px(img: &mut RgbaImage, anchor: egui::Pos2, text: &str, px: f32, color: egui::Color32) {
     use ab_glyph::{Font, ScaleFont};
     static FONT: std::sync::OnceLock<ab_glyph::FontRef<'static>> = std::sync::OnceLock::new();
     let font = FONT.get_or_init(|| {

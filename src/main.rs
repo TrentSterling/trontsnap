@@ -18,6 +18,7 @@ mod autostart;
 mod capture;
 mod clipboard;
 mod color;
+mod comparison;
 mod cursor;
 mod editor;
 mod gallery;

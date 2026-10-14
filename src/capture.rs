@@ -77,7 +77,7 @@ pub fn copy_path(path: &Path) -> anyhow::Result<()> {
     crate::clipboard::set_all(&img, &png_bytes, path)
 }
 
-fn encode_png(img: &RgbaImage) -> anyhow::Result<Vec<u8>> {
+pub(crate) fn encode_png(img: &RgbaImage) -> anyhow::Result<Vec<u8>> {
     use image::ImageEncoder;
     let mut buf = Vec::new();
     image::codecs::png::PngEncoder::new(&mut buf).write_image(

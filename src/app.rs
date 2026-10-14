@@ -160,6 +160,9 @@ fn window_button(ui: &mut egui::Ui, kind: WinBtn) -> egui::Response {
         painter.rect_filled(rect, 4.0, fill);
     }
 
+    let edge = if resp.hovered() { egui::Color32::WHITE } else { crate::theme::t().text_primary.gamma_multiply(0.24) };
+    painter.rect_stroke(rect.shrink(1.0), 4.0, egui::Stroke::new(1.0, edge));
+
     let stroke = egui::Stroke::new(1.3, crate::theme::t().text_primary);
     let c = rect.center();
     match kind {

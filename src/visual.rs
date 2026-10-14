@@ -144,6 +144,12 @@ fn capture(
                     egui::vec2(size[0] as f32, size[1] as f32),
                 )),
                 time: Some(frame as f64 / 60.0),
+                events: match path.file_stem().and_then(|n| n.to_str()).unwrap_or("").rsplit('-').next() {
+                    Some("minimize") => vec![egui::Event::PointerMoved(egui::pos2(size[0] as f32 - 104., 20.))],
+                    Some("maximize") => vec![egui::Event::PointerMoved(egui::pos2(size[0] as f32 - 64., 20.))],
+                    Some("close") => vec![egui::Event::PointerMoved(egui::pos2(size[0] as f32 - 24., 20.))],
+                    _ => vec![],
+                },
                 ..Default::default()
             },
             |ctx| draw(ctx),
@@ -155,6 +161,50 @@ fn capture(
         }
     }
     renderer.save(ctx, combined.unwrap(), size, path);
+}
+
+#[test]
+#[ignore = "Explicit offscreen caption review; no desktop input or capture"]
+fn capture_caption_states() {
+    let out = Path::new("target/caption-review");
+    std::fs::create_dir_all(out).unwrap();
+    let mut renderer = Renderer::new();
+    for dark in [true, false] {
+        for state in ["idle", "minimize", "maximize", "close"] {
+            let ctx = egui::Context::default();
+            let mut app = crate::app::App::preview(&ctx, &[]);
+            crate::theme::preview_theme(&ctx, [150, 30, 230], dark);
+            let name = format!("{}-{state}.png", if dark { "dark" } else { "light" });
+            capture(&mut renderer, &ctx, |ctx| app.preview_draw(ctx, "gallery"), [1400, 820], &out.join(name));
+        }
+    }
+    println!("CAPTION REVIEW PASS: idle and all three hover states in both themes at {}", out.display());
+}
+
+#[test]
+#[ignore = "Offscreen comparison dialog and annotated output review"]
+fn capture_comparison_review() {
+    let out = Path::new("target/comparison-review");
+    std::fs::create_dir_all(out).unwrap();
+    let mut renderer = Renderer::new();
+    let before = image::RgbaImage::from_fn(500, 320, |x, y| image::Rgba([(x / 3) as u8, (y / 2) as u8, 90, 255]));
+    let after = image::RgbaImage::from_fn(500, 320, |x, y| image::Rgba([90, (x / 3) as u8, (y / 2) as u8, 255]));
+    let composed = crate::comparison::compose(&before, &after);
+    let path = out.join("comparison.png");
+    composed.save(&path).unwrap();
+    for dark in [true, false] {
+        let ctx = egui::Context::default();
+        crate::theme::preview_theme(&ctx, [150, 30, 230], dark);
+        let mut pair = crate::comparison::Pair { before: "TrontSnap_before.png".into(), after: "TrontSnap_after.png".into() };
+        capture(&mut renderer, &ctx, |ctx| {
+            egui::CentralPanel::default().show(ctx, |_| {});
+            assert!(crate::comparison::dialog(ctx, &mut pair).is_none());
+        }, [680, 480], &out.join(if dark { "dialog-dark.png" } else { "dialog-light.png" }));
+    }
+    let ctx = egui::Context::default();
+    crate::theme::preview_theme(&ctx, [150, 30, 230], true);
+    capture(&mut renderer, &ctx, crate::editor::preview_drawer(path), [1200, 760], &out.join("annotate.png"));
+    println!("COMPARISON REVIEW PASS: both themes, composed PNG and production annotation editor");
 }
 
 #[test]

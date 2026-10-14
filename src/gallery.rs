@@ -57,6 +57,7 @@ enum Action {
     RangeSelect(PathBuf),
     CopySelectedPaths,
     DeleteSelected,
+    CompareSelected,
 }
 
 /// Bulk deletes larger than this get a confirm dialog first. Recycle Bin makes
@@ -81,6 +82,8 @@ pub struct Gallery {
     sel_anchor: Option<PathBuf>,
     // Bulk delete parked while its confirm dialog is up.
     confirm_delete: Option<Vec<PathBuf>>,
+    comparison: Option<crate::comparison::Pair>,
+    comparison_rx: Option<Receiver<Result<PathBuf, String>>>,
     scan_rx: Option<Receiver<(u64, Vec<Shot>)>>,
     scan_gen: u64,
     displayed_gen: u64,
@@ -104,6 +107,8 @@ impl Gallery {
             selected: HashSet::new(),
             sel_anchor: None,
             confirm_delete: None,
+            comparison: None,
+            comparison_rx: None,
             scan_rx: None,
             scan_gen: 0,
             displayed_gen: 0,
@@ -148,7 +153,9 @@ impl Gallery {
     }
 
     fn poll_scan(&mut self) {
-        let Some(rx) = self.scan_rx.clone() else { return };
+        let Some(rx) = self.scan_rx.clone() else {
+            return;
+        };
         let mut changed = false;
         let mut disconnected = false;
         loop {
@@ -213,7 +220,11 @@ impl Gallery {
             }
             return;
         }
-        self.shots.push(Shot { path, taken, source: Source::TrontSnap });
+        self.shots.push(Shot {
+            path,
+            taken,
+            source: Source::TrontSnap,
+        });
         index::sort_newest_first(&mut self.shots);
     }
 
@@ -307,15 +318,24 @@ impl Gallery {
     /// separate header strip inside the gallery body — see `App::title_bar`.
     pub fn filter_bar_ui(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_centered(|ui| {
-            if ui.selectable_label(self.filter == Filter::All, "All").clicked() {
+            if ui
+                .selectable_label(self.filter == Filter::All, "All")
+                .clicked()
+            {
                 self.filter = Filter::All;
                 self.rebuild_filtered();
             }
-            if ui.selectable_label(self.filter == Filter::TrontSnap, "New").clicked() {
+            if ui
+                .selectable_label(self.filter == Filter::TrontSnap, "New")
+                .clicked()
+            {
                 self.filter = Filter::TrontSnap;
                 self.rebuild_filtered();
             }
-            if ui.selectable_label(self.filter == Filter::ShareX, "ShareX").clicked() {
+            if ui
+                .selectable_label(self.filter == Filter::ShareX, "ShareX")
+                .clicked()
+            {
                 self.filter = Filter::ShareX;
                 self.rebuild_filtered();
             }
@@ -343,16 +363,23 @@ impl Gallery {
                 let (crect, cresp) =
                     ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::click());
                 if cresp.hovered() {
-                    ui.painter().rect_filled(crect, 3.0, crate::theme::t().widget_hover);
+                    ui.painter()
+                        .rect_filled(crect, 3.0, crate::theme::t().widget_hover);
                 }
                 let s = Stroke::new(1.2, crate::theme::t().text_muted);
                 let c = crect.center();
                 ui.painter().line_segment(
-                    [egui::pos2(c.x - 3.5, c.y - 3.5), egui::pos2(c.x + 3.5, c.y + 3.5)],
+                    [
+                        egui::pos2(c.x - 3.5, c.y - 3.5),
+                        egui::pos2(c.x + 3.5, c.y + 3.5),
+                    ],
                     s,
                 );
                 ui.painter().line_segment(
-                    [egui::pos2(c.x - 3.5, c.y + 3.5), egui::pos2(c.x + 3.5, c.y - 3.5)],
+                    [
+                        egui::pos2(c.x - 3.5, c.y + 3.5),
+                        egui::pos2(c.x + 3.5, c.y - 3.5),
+                    ],
                     s,
                 );
                 if cresp.on_hover_text("Clear search").clicked() {
@@ -374,10 +401,19 @@ impl Gallery {
                 .count();
             if sel_n > 0 {
                 ui.separator();
-                ui.colored_label(accent(), format!("{sel_n} selected")).on_hover_text(
-                    "Ctrl+click toggles, Shift+click extends, Ctrl+A selects all shown, \
+                ui.colored_label(accent(), format!("{sel_n} selected"))
+                    .on_hover_text(
+                        "Ctrl+click toggles, Shift+click extends, Ctrl+A selects all shown, \
                      Delete removes (Recycle Bin), Esc clears.",
-                );
+                    );
+                if sel_n == 2
+                    && ui
+                        .add_enabled(self.comparison_rx.is_none(), egui::Button::new("Compare"))
+                        .on_hover_text("Create and annotate a before / after image")
+                        .clicked()
+                {
+                    self.prepare_comparison();
+                }
             }
             ui.separator();
             // Legend: explains the little source dot on the corner of every
@@ -386,7 +422,11 @@ impl Gallery {
                 let (rect, _) =
                     ui.allocate_exact_size(egui::vec2(11.0, 11.0), egui::Sense::hover());
                 ui.painter().circle_filled(rect.center(), 3.5, color);
-                ui.label(egui::RichText::new(label).small().color(Color32::from_gray(170)));
+                ui.label(
+                    egui::RichText::new(label)
+                        .small()
+                        .color(Color32::from_gray(170)),
+                );
             };
             dot(ui, accent(), "TrontSnap");
             dot(ui, amber(), "ShareX");
@@ -405,6 +445,46 @@ impl Gallery {
         self.poll_scan();
         self.poll_watch();
         self.thumbs.poll(ctx);
+        if let Some(result) = self
+            .comparison_rx
+            .as_ref()
+            .and_then(|rx| rx.try_recv().ok())
+        {
+            self.comparison_rx = None;
+            match result {
+                Ok(path) => {
+                    self.insert_shot(path.clone());
+                    self.rebuild_filtered();
+                    self.set_status("Comparison saved; opening annotation editor");
+                    crate::editor::launch(&path);
+                }
+                Err(error) => self.set_status(format!("Comparison failed: {error}")),
+            }
+        }
+        let comparison_open = self.comparison.is_some();
+        if let Some(pair) = &mut self.comparison {
+            match crate::comparison::dialog(ctx, pair) {
+                Some(true) => {
+                    let pair = self.comparison.take().unwrap();
+                    let (tx, rx) = crossbeam_channel::bounded(1);
+                    self.comparison_rx = Some(rx);
+                    self.set_status("Creating comparison...");
+                    let ctx = ctx.clone();
+                    std::thread::spawn(move || {
+                        let result = capture::trontsnap_dir()
+                            .and_then(|dir| {
+                                std::fs::create_dir_all(&dir)?;
+                                crate::comparison::create(&pair, &dir)
+                            })
+                            .map_err(|e| format!("{e:#}"));
+                        let _ = tx.send(result);
+                        ctx.request_repaint();
+                    });
+                }
+                Some(false) => self.comparison = None,
+                None => {}
+            }
+        }
         while let Ok(msg) = self.notice_rx.try_recv() {
             self.set_status(msg);
         }
@@ -420,7 +500,7 @@ impl Gallery {
         // box selects text there, not 18k shots (and the Esc that drops the
         // box's focus doesn't also nuke a selection). Held while the confirm
         // dialog is up; that has its own Esc handling below.
-        if !ctx.wants_keyboard_input() && self.confirm_delete.is_none() {
+        if !ctx.wants_keyboard_input() && self.confirm_delete.is_none() && !comparison_open {
             let (del, all, esc) = ctx.input(|i| {
                 (
                     i.key_pressed(egui::Key::Delete),
@@ -613,6 +693,7 @@ impl Gallery {
             Action::Edit(path) => {
                 crate::editor::launch(&path);
             }
+            Action::CompareSelected => self.prepare_comparison(),
             Action::CopyText(path) => {
                 // Decode + OCR off-thread (a full-res PNG decode is tens of
                 // ms and RecognizeAsync more); the result comes back through
@@ -653,8 +734,14 @@ impl Gallery {
                 // out (or there never was one), Shift+click degrades to a
                 // plain select-and-anchor instead of guessing a range.
                 let anchor = self.sel_anchor.clone().unwrap_or_else(|| path.clone());
-                let a = self.filtered.iter().position(|&i| self.shots[i].path == anchor);
-                let b = self.filtered.iter().position(|&i| self.shots[i].path == path);
+                let a = self
+                    .filtered
+                    .iter()
+                    .position(|&i| self.shots[i].path == anchor);
+                let b = self
+                    .filtered
+                    .iter()
+                    .position(|&i| self.shots[i].path == path);
                 match (a, b) {
                     (Some(a), Some(b)) => {
                         let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
@@ -672,7 +759,10 @@ impl Gallery {
                 let vis = self.visible_selected();
                 let n = vis.len();
                 ctx.copy_text(
-                    vis.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join("\n"),
+                    vis.iter()
+                        .map(|p| p.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join("\n"),
                 );
                 self.set_status(format!("Copied {n} paths"));
             }
@@ -681,6 +771,26 @@ impl Gallery {
                 self.request_delete(vis);
             }
         }
+    }
+    fn prepare_comparison(&mut self) {
+        if self.comparison_rx.is_some() {
+            return;
+        }
+        let selected = self.visible_selected();
+        if selected.len() != 2
+            || self
+                .shots
+                .iter()
+                .any(|shot| selected.contains(&shot.path) && shot.is_video())
+        {
+            self.set_status("Select exactly two still images to compare");
+            return;
+        }
+        // The gallery is newest first. The dialog offers an explicit Swap.
+        self.comparison = Some(crate::comparison::Pair {
+            before: selected[1].clone(),
+            after: selected[0].clone(),
+        });
     }
 }
 
@@ -760,7 +870,11 @@ fn draw_cell(
     }
 
     // Source dot: accent = new TrontSnap shot, amber = ShareX archive.
-    let color = if shot.source == Source::TrontSnap { accent() } else { amber() };
+    let color = if shot.source == Source::TrontSnap {
+        accent()
+    } else {
+        amber()
+    };
     painter.circle_filled(rect.left_bottom() + egui::vec2(10.0, -10.0), 3.5, color);
 
     // Selected: the hover treatment, held, in the live accent (a wash plus a
@@ -788,7 +902,11 @@ fn draw_cell(
         painter.rect_stroke(rect, 6.0, Stroke::new(1.5, accent()));
     }
 
-    let name = shot.path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let name = shot
+        .path
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
     let resp = resp.on_hover_ui(|ui| hover_tooltip(ui, shot, &name));
 
     if resp.drag_started() {
@@ -847,11 +965,18 @@ fn draw_cell(
         // live visible selection inside apply().
         if selected && sel_count > 1 {
             ui.separator();
+            if sel_count == 2 && ui.button("Compare and annotate").clicked() {
+                *action = Some(Action::CompareSelected);
+                ui.close_menu();
+            }
             if ui.button(format!("Copy {sel_count} paths")).clicked() {
                 *action = Some(Action::CopySelectedPaths);
                 ui.close_menu();
             }
-            if ui.button(format!("Delete {sel_count} (Recycle Bin)")).clicked() {
+            if ui
+                .button(format!("Delete {sel_count} (Recycle Bin)"))
+                .clicked()
+            {
                 *action = Some(Action::DeleteSelected);
                 ui.close_menu();
             }
@@ -891,12 +1016,14 @@ fn hover_tooltip(ui: &mut egui::Ui, shot: &Shot, name: &str) {
     // when hovering a cell near it.
     ui.set_max_width(320.0);
     ui.label(egui::RichText::new(name).strong());
-    ui.add(egui::Label::new(
-        egui::RichText::new(shot.path.display().to_string())
-            .small()
-            .color(Color32::from_gray(150)),
-    )
-    .wrap());
+    ui.add(
+        egui::Label::new(
+            egui::RichText::new(shot.path.display().to_string())
+                .small()
+                .color(Color32::from_gray(150)),
+        )
+        .wrap(),
+    );
     ui.add_space(3.0);
 
     if let Ok(meta) = std::fs::metadata(&shot.path) {
