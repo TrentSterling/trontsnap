@@ -70,6 +70,11 @@ fn main() {
         "full" => capture::capture_full(),
         "all" => capture::capture_with(capture::FullTarget::All),
         "each" => capture::capture_with(capture::FullTarget::Each),
+        "record-test" => {
+            let n = std::env::args().nth(2).and_then(|v| v.parse().ok()).unwrap_or(1);
+            let secs = std::env::args().nth(3).and_then(|v| v.parse().ok()).unwrap_or(4);
+            recorder::record_test(n, secs)
+        }
         "monitors" => capture::print_monitors(),
         "region" => {
             region_win32::capture_region();

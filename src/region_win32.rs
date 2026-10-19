@@ -116,7 +116,7 @@ pub fn capture_region_ocr() {
 /// Shared by the image and OCR delivery paths; None on cancel or a degenerate
 /// (zero-area) selection.
 fn picked_crop() -> Option<image::RgbaImage> {
-    let (img, sel) = run_picker(true)?;
+    let (img, sel, _origin) = run_picker(true)?;
     let w = img.width() as i32;
     let x = sel.left.clamp(0, w) as u32;
     let y = sel.top.clamp(0, img.height() as i32) as u32;
@@ -132,13 +132,19 @@ fn picked_crop() -> Option<image::RgbaImage> {
 /// the same modal picker, return the chosen rect in physical primary-monitor px.
 /// Nothing is saved or copied. Blocks; run on a dedicated thread.
 pub fn pick_rect() -> Option<RECT> {
-    run_picker(false).map(|(_, sel)| sel)
+    run_picker(false).map(|(_, sel, _)| sel)
+}
+
+/// Like `pick_rect`, but on the monitor under the mouse. Returns the selection in that
+/// monitor's own pixels plus the monitor's top-left in virtual-desktop coordinates.
+pub fn pick_rect_on_cursor_monitor() -> Option<(RECT, (i32, i32))> {
+    run_picker(true).map(|(_, sel, origin)| (sel, origin))
 }
 
 /// Shared picker session: one at a time (rapid repeat hotkey presses while an overlay
 /// is already up are ignored), grab the frozen frame, enumerate targets, run the modal
 /// overlay. Returns the frame and the raw (unclamped) selection.
-fn run_picker(on_cursor_monitor: bool) -> Option<(RgbaImage, RECT)> {
+fn run_picker(on_cursor_monitor: bool) -> Option<(RgbaImage, RECT, (i32, i32))> {
     static ACTIVE: AtomicBool = AtomicBool::new(false);
     if ACTIVE.swap(true, Ordering::SeqCst) {
         return None;
@@ -176,7 +182,7 @@ fn run_picker(on_cursor_monitor: bool) -> Option<(RgbaImage, RECT)> {
     let h = img.height() as i32;
     let targets = rect_map(&enumerate_windows_raw(), w, h, origin);
     let sel = pick(&img, w, h, &targets, origin)?;
-    Some((img, sel))
+    Some((img, sel, origin))
 }
 
 /// Build the smart-capture rect map: every enumerated window clamped to the frame, plus

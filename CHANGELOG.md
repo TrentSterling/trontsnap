@@ -8,11 +8,12 @@
 - The region picker opens on the monitor under the mouse, including monitors left of,
   above or below the primary (negative coordinates), with smart-capture window rects
   offset correctly.
+- Recording (Ctrl+Shift+PrtSc) picks and records on the monitor under the mouse, with the REC outline and cursor placed on that monitor. `trontsnap record-test <monitor> <secs>` records a fixed corner region for checking.
 - One-shot launches now declare per-monitor DPI awareness so physical pixels are used
   on every monitor.
 - Validation: 55 tests passed (new layout tests for monitors above, below and left),
-  all/each capture checked on the real two 4K monitors. The interactive region picker
-  on the second monitor was not exercised hands-on.
+  all/each capture checked on the real two 4K monitors. Hands-on: a region click on the left monitor and 4 s recordings of each monitor
+  (different content, correct size).
 
 ## v0.26.0
 

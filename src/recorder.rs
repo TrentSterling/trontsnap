@@ -104,7 +104,9 @@ fn record_session() {
     STOP.store(false, Ordering::SeqCst);
 
     // Same frozen-frame picker as screenshots: click a window for its rect, or drag.
-    let Some(sel) = region_win32::pick_rect() else {
+    // The picker opens on the monitor under the mouse; the selection is in that
+    // monitor's own pixels and `origin` places it on the virtual desktop.
+    let Some((sel, origin)) = region_win32::pick_rect_on_cursor_monitor() else {
         return; // cancelled
     };
     // H.264 wants even dimensions; also clamp away degenerate picks.
@@ -120,10 +122,15 @@ fn record_session() {
     // The recording HUD (blinking red outline + REC tab) lives on its own thread with
     // its own message loop; it watches RECORDING to know when to close, and clicking
     // its red parts sets STOP.
-    let region = RECT { left: x, top: y, right: x + w as i32, bottom: y + h as i32 };
+    let region = RECT {
+        left: origin.0 + x,
+        top: origin.1 + y,
+        right: origin.0 + x + w as i32,
+        bottom: origin.1 + y + h as i32,
+    };
     std::thread::spawn(move || hud_thread(region));
 
-    match capture_encode(x, y, w, h) {
+    match capture_encode(origin, x, y, w, h) {
         Ok(path) => {
             // Best-effort: the finished MP4 goes on the clipboard as a file (CF_HDROP),
             // so it pastes straight into Discord — same spirit as screenshots.
@@ -142,8 +149,27 @@ fn record_session() {
     }
 }
 
+/// Debug aid (`trontsnap record-test <monitor#> <secs>`): record a fixed 1280x720 region
+/// at the top-left of that monitor for a few seconds, no picker, to verify multi-monitor
+/// duplication without interactive input.
+pub fn record_test(monitor: usize, secs: u64) -> anyhow::Result<()> {
+    let mons = capture::monitors()?;
+    let m = mons.get(monitor.saturating_sub(1)).ok_or_else(|| anyhow::anyhow!("no such monitor"))?;
+    let (w, h) = (1280u32.min(m.w & !1), 720u32.min(m.h & !1));
+    STOP.store(false, Ordering::SeqCst);
+    RECORDING.store(true, Ordering::SeqCst);
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(secs));
+        STOP.store(true, Ordering::SeqCst);
+    });
+    let path = capture_encode((m.x, m.y), 0, 0, w, h)?;
+    RECORDING.store(false, Ordering::SeqCst);
+    println!("recorded {w}x{h} from monitor {monitor} -> {}", path.display());
+    Ok(())
+}
+
 /// The capture + encode loop. Blocks until STOP; returns the finished file.
-fn capture_encode(rx: i32, ry: i32, w: u32, h: u32) -> anyhow::Result<PathBuf> {
+fn capture_encode(origin: (i32, i32), rx: i32, ry: i32, w: u32, h: u32) -> anyhow::Result<PathBuf> {
     unsafe {
         // COM + MF for this thread/session. RPC_E_CHANGED_MODE just means the thread
         // already had COM in another mode — fine for everything we use.
@@ -179,7 +205,7 @@ fn capture_encode(rx: i32, ry: i32, w: u32, h: u32) -> anyhow::Result<PathBuf> {
 
         let dxgi_dev: IDXGIDevice = device.cast()?;
         let adapter: IDXGIAdapter = dxgi_dev.GetAdapter()?;
-        let output = primary_output(&adapter)?;
+        let output = output_at(&adapter, origin)?;
         let output1: IDXGIOutput1 = output.cast()?;
         let dup: IDXGIOutputDuplication = output1.DuplicateOutput(&device)?;
 
@@ -380,7 +406,7 @@ fn capture_encode(rx: i32, ry: i32, w: u32, h: u32) -> anyhow::Result<PathBuf> {
 
             // Cursor: duplication frames never include it; composite like cursor.rs.
             if settings::capture_cursor() {
-                cursor_cache.draw(dib_dc, rx as i32, ry as i32);
+                cursor_cache.draw(dib_dc, origin.0 + rx as i32, origin.1 + ry as i32);
             }
 
             // DIB bits -> MF sample
@@ -435,6 +461,23 @@ unsafe fn write_sample(
     sample.SetSampleDuration(dur100ns)?;
     writer.WriteSample(stream, &sample)?;
     Ok(())
+}
+
+/// The DXGI output whose desktop rect starts at `origin` (the monitor the picker ran
+/// on); falls back to the primary, then output 0.
+unsafe fn output_at(adapter: &IDXGIAdapter, origin: (i32, i32)) -> anyhow::Result<IDXGIOutput> {
+    let mut i = 0u32;
+    while let Ok(out) = adapter.EnumOutputs(i) {
+        let mut desc = DXGI_OUTPUT_DESC::default();
+        if out.GetDesc(&mut desc).is_ok() {
+            let r = desc.DesktopCoordinates;
+            if r.left == origin.0 && r.top == origin.1 {
+                return Ok(out);
+            }
+        }
+        i += 1;
+    }
+    primary_output(adapter)
 }
 
 /// The DXGI output whose desktop rect contains (0,0) — the primary monitor, the same
