@@ -116,7 +116,7 @@ pub fn capture_region_ocr() {
 /// Shared by the image and OCR delivery paths; None on cancel or a degenerate
 /// (zero-area) selection.
 fn picked_crop() -> Option<image::RgbaImage> {
-    let (img, sel) = run_picker()?;
+    let (img, sel) = run_picker(true)?;
     let w = img.width() as i32;
     let x = sel.left.clamp(0, w) as u32;
     let y = sel.top.clamp(0, img.height() as i32) as u32;
@@ -132,13 +132,13 @@ fn picked_crop() -> Option<image::RgbaImage> {
 /// the same modal picker, return the chosen rect in physical primary-monitor px.
 /// Nothing is saved or copied. Blocks; run on a dedicated thread.
 pub fn pick_rect() -> Option<RECT> {
-    run_picker().map(|(_, sel)| sel)
+    run_picker(false).map(|(_, sel)| sel)
 }
 
 /// Shared picker session: one at a time (rapid repeat hotkey presses while an overlay
 /// is already up are ignored), grab the frozen frame, enumerate targets, run the modal
 /// overlay. Returns the frame and the raw (unclamped) selection.
-fn run_picker() -> Option<(RgbaImage, RECT)> {
+fn run_picker(on_cursor_monitor: bool) -> Option<(RgbaImage, RECT)> {
     static ACTIVE: AtomicBool = AtomicBool::new(false);
     if ACTIVE.swap(true, Ordering::SeqCst) {
         return None;
@@ -153,8 +153,20 @@ fn run_picker() -> Option<(RgbaImage, RECT)> {
 
     // Freeze the frame WITH the cursor composited in (if enabled), so the pointer is
     // frozen where it was at Ctrl+PrtSc time and lands in the crop — ShareX behaviour.
-    let img = match capture::grab_for_shot() {
-        Ok(i) => i,
+    // The picker covers ONE monitor. Screenshots use the monitor under the mouse (so a
+    // second monitor, left/right/above/below, just works); the video recorder duplicates
+    // the primary output, so its picker stays on the primary. `origin` is that monitor's
+    // top-left in virtual-desktop coordinates (negative for monitors left of / above it).
+    let grabbed = if on_cursor_monitor {
+        capture::grab_cursor_monitor()
+    } else {
+        capture::grab_primary().map(|mut i| {
+            crate::cursor::maybe_overlay(&mut i, (0, 0));
+            (i, (0, 0))
+        })
+    };
+    let (img, origin) = match grabbed {
+        Ok(v) => v,
         Err(e) => {
             eprintln!("trontsnap: region grab failed: {e:#}");
             return None;
@@ -162,21 +174,22 @@ fn run_picker() -> Option<(RgbaImage, RECT)> {
     };
     let w = img.width() as i32;
     let h = img.height() as i32;
-    let targets = rect_map(&enumerate_windows_raw(), w, h);
-    let sel = pick(&img, w, h, &targets)?;
+    let targets = rect_map(&enumerate_windows_raw(), w, h, origin);
+    let sel = pick(&img, w, h, &targets, origin)?;
     Some((img, sel))
 }
 
 /// Build the smart-capture rect map: every enumerated window clamped to the frame, plus
 /// a full-screen fallback appended last. Selection picks the SMALLEST rect under the
 /// cursor, so the full-screen rect only wins on empty desktop.
-fn rect_map(raw: &[RECT], w: i32, h: i32) -> Vec<RECT> {
+fn rect_map(raw: &[RECT], w: i32, h: i32, origin: (i32, i32)) -> Vec<RECT> {
     let mut out = Vec::with_capacity(raw.len() + 1);
     for r in raw {
-        let l = r.left.max(0);
-        let t = r.top.max(0);
-        let rr = r.right.min(w);
-        let bb = r.bottom.min(h);
+        // Window rects are in screen space; the frame is monitor-local.
+        let l = (r.left - origin.0).max(0);
+        let t = (r.top - origin.1).max(0);
+        let rr = (r.right - origin.0).min(w);
+        let bb = (r.bottom - origin.1).min(h);
         if rr - l >= 8 && bb - t >= 8 {
             out.push(RECT { left: l, top: t, right: rr, bottom: bb });
         }
@@ -206,7 +219,7 @@ struct Picker {
 }
 
 /// Run the modal picker. Returns the chosen rect in physical screen px, or None on cancel.
-fn pick(img: &RgbaImage, w: i32, h: i32, targets: &[RECT]) -> Option<RECT> {
+fn pick(img: &RgbaImage, w: i32, h: i32, targets: &[RECT], origin: (i32, i32)) -> Option<RECT> {
     unsafe {
         let screen = GetDC(HWND(0));
         let (bright_dc, bright_bmp) = make_frame_dc(screen, img, w, h, false);
@@ -262,8 +275,8 @@ fn pick(img: &RgbaImage, w: i32, h: i32, targets: &[RECT]) -> Option<RECT> {
             PCWSTR(class_name.as_ptr()),
             PCWSTR::null(),
             WS_POPUP | WS_VISIBLE,
-            0,
-            0,
+            origin.0,
+            origin.1,
             w,
             h,
             HWND(0),
@@ -627,13 +640,21 @@ mod tests {
     fn rect_map_clamps_drops_slivers_and_appends_fullscreen() {
         // One rect overshoots the frame (clamped), one is a sliver (dropped).
         let raw = [r(-50, -50, 400, 400), r(10, 10, 12, 12)];
-        let map = rect_map(&raw, 1920, 1080);
+        let map = rect_map(&raw, 1920, 1080, (0, 0));
         // clamped rect + fullscreen fallback == 2; the 2x2 sliver is gone.
         assert_eq!(map.len(), 2);
         let clamped = map[0];
         assert_eq!((clamped.left, clamped.top), (0, 0));
         let full = *map.last().unwrap();
         assert_eq!((full.left, full.top, full.right, full.bottom), (0, 0, 1920, 1080));
+    }
+
+    #[test]
+    fn rect_map_offsets_windows_on_a_non_primary_monitor() {
+        // Monitor 1920x1080 sitting above the primary at (0, -1080): a window at screen
+        // (100, -900)-(500, -600) is (100, 180)-(500, 480) in the monitor-local frame.
+        let map = rect_map(&[r(100, -900, 500, -600)], 1920, 1080, (0, -1080));
+        assert_eq!((map[0].left, map[0].top, map[0].right, map[0].bottom), (100, 180, 500, 480));
     }
 
     #[test]

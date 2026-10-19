@@ -273,6 +273,8 @@ impl App {
         let menu = Menu::new();
         let open_i = MenuItem::new("Open TrontSnap", true, None);
         let full_i = MenuItem::new("Capture Fullscreen   (PrtSc)", true, None);
+        let all_i = MenuItem::new("Capture All Monitors", true, None);
+        let each_i = MenuItem::new("Capture Each Monitor Separately", true, None);
         let region_i = MenuItem::new("Capture Region   (Ctrl+PrtSc)", true, None);
         let record_i = MenuItem::new("Record Region   (Ctrl+Shift+PrtSc)", true, None);
         let ocr_i = MenuItem::new("Copy Text from Region   (Ctrl+Alt+PrtSc)", true, None);
@@ -285,6 +287,8 @@ impl App {
         menu.append(&open_i)?;
         menu.append(&PredefinedMenuItem::separator())?;
         menu.append(&full_i)?;
+        menu.append(&all_i)?;
+        menu.append(&each_i)?;
         menu.append(&region_i)?;
         menu.append(&record_i)?;
         menu.append(&ocr_i)?;
@@ -321,6 +325,8 @@ impl App {
             let flag = show_flag.clone();
             let open = open_i.id().clone();
             let full = full_i.id().clone();
+            let all = all_i.id().clone();
+            let each = each_i.id().clone();
             let region = region_i.id().clone();
             let record = record_i.id().clone();
             let ocr = ocr_i.id().clone();
@@ -330,6 +336,17 @@ impl App {
                     request_window_show(&ctx, &cell, &flag);
                 } else if ev.id == full {
                     do_full();
+                } else if ev.id == all || ev.id == each {
+                    let t = if ev.id == all {
+                        capture::FullTarget::All
+                    } else {
+                        capture::FullTarget::Each
+                    };
+                    std::thread::spawn(move || {
+                        if let Err(e) = capture::capture_with(t) {
+                            eprintln!("trontsnap: {t:?} capture failed: {e:#}");
+                        }
+                    });
                 } else if ev.id == region {
                     std::thread::spawn(region_win32::capture_region);
                 } else if ev.id == record {
@@ -1018,6 +1035,23 @@ fn settings_tab_ui(ui: &mut egui::Ui) {
                     crate::settings::capture_cursor(),
                     crate::settings::set_capture_cursor,
                 );
+                ui.add_space(14.0);
+                {
+                    let cur = crate::settings::full_target();
+                    ui.label("Fullscreen hotkey captures");
+                    egui::ComboBox::from_id_salt("full_target")
+                        .selected_text(cur.label())
+                        .show_ui(ui, |ui| {
+                            for t in capture::FullTarget::ALL_TARGETS {
+                                if ui.selectable_label(cur == t, t.label()).clicked() {
+                                    crate::settings::set_full_target(t);
+                                }
+                            }
+                        });
+                    ui.label(
+                        "Region capture opens on the monitor under the mouse. The tray menu                          also has All Monitors and Each Monitor.",
+                    );
+                }
                 ui.add_space(14.0);
                 settings_toggle(
                     ui,

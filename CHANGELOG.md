@@ -1,3 +1,19 @@
+## Unreleased
+
+- Better multi-monitor capture. Fullscreen now grabs the monitor under the mouse by
+  default instead of always the primary; Settings > Capture has a target picker
+  (monitor under mouse, primary, all monitors in one image, each monitor as its own
+  file). The tray menu gains Capture All Monitors and Capture Each Monitor Separately,
+  and `trontsnap all`, `each` and `monitors` work from the command line.
+- The region picker opens on the monitor under the mouse, including monitors left of,
+  above or below the primary (negative coordinates), with smart-capture window rects
+  offset correctly.
+- One-shot launches now declare per-monitor DPI awareness so physical pixels are used
+  on every monitor.
+- Validation: 55 tests passed (new layout tests for monitors above, below and left),
+  all/each capture checked on the real two 4K monitors. The interactive region picker
+  on the second monitor was not exercised hands-on.
+
 ## v0.26.0
 
 - Select two still images in Gallery and choose Compare. Review Before / After,

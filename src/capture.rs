@@ -7,32 +7,271 @@ use std::path::{Path, PathBuf};
 use image::RgbaImage;
 use xcap::Monitor;
 
-/// Grab the primary monitor as an RGBA image (physical pixels).
-/// Primary-monitor only for now; multi-monitor virtual-desktop capture is next.
-pub fn grab_primary() -> anyhow::Result<RgbaImage> {
-    let monitors = Monitor::all()?;
-    let monitor = monitors
+/// One physical display in virtual-desktop coordinates (physical pixels; the process
+/// is per-monitor DPI aware, so a 150%-scaled 4K panel reports 3840x2160, and a monitor
+/// above or left of the primary has negative x/y).
+#[derive(Clone, Debug)]
+pub struct Mon {
+    pub x: i32,
+    pub y: i32,
+    pub w: u32,
+    pub h: u32,
+    pub primary: bool,
+    pub scale: f32,
+}
+
+impl Mon {
+    fn contains(&self, px: i32, py: i32) -> bool {
+        px >= self.x && px < self.x + self.w as i32 && py >= self.y && py < self.y + self.h as i32
+    }
+}
+
+/// All attached monitors, primary first, then left-to-right / top-to-bottom.
+pub fn monitors() -> anyhow::Result<Vec<Mon>> {
+    let mut v: Vec<Mon> = Monitor::all()?
         .iter()
-        .find(|m| m.is_primary())
-        .or_else(|| monitors.first())
-        .ok_or_else(|| anyhow::anyhow!("no monitors found"))?;
-    Ok(monitor.capture_image()?)
+        .map(|m| Mon {
+            x: m.x(),
+            y: m.y(),
+            w: m.width(),
+            h: m.height(),
+            primary: m.is_primary(),
+            scale: m.scale_factor(),
+        })
+        .collect();
+    if v.is_empty() {
+        anyhow::bail!("no monitors found");
+    }
+    v.sort_by_key(|m| (!m.primary, m.x, m.y));
+    Ok(v)
 }
 
-/// Grab the primary monitor for a screenshot, compositing in the mouse cursor when the
-/// "capture cursor" setting is on. Every capture path (full, region, one-shot CLI) goes
-/// through this; `grab_primary` stays pointer-free for callers that don't want it.
+fn grab_mon(mon: &Mon) -> anyhow::Result<RgbaImage> {
+    let all = Monitor::all()?;
+    let m = all
+        .iter()
+        .find(|m| m.x() == mon.x && m.y() == mon.y)
+        .ok_or_else(|| anyhow::anyhow!("monitor at ({}, {}) went away", mon.x, mon.y))?;
+    Ok(m.capture_image()?)
+}
+
+fn cursor_pos() -> (i32, i32) {
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+    let mut p = POINT::default();
+    unsafe {
+        let _ = GetCursorPos(&mut p);
+    }
+    (p.x, p.y)
+}
+
+/// The monitor holding the mouse pointer (falls back to the primary).
+pub fn cursor_monitor() -> anyhow::Result<Mon> {
+    let mons = monitors()?;
+    let (cx, cy) = cursor_pos();
+    Ok(mons
+        .iter()
+        .find(|m| m.contains(cx, cy))
+        .or_else(|| mons.first())
+        .cloned()
+        .expect("monitors() is non-empty"))
+}
+
+/// Grab the primary monitor as an RGBA image (physical pixels), pointer-free.
+pub fn grab_primary() -> anyhow::Result<RgbaImage> {
+    let mons = monitors()?;
+    grab_mon(&mons[0])
+}
+
+/// Bounding box (left, top, right, bottom) of all monitors in screen coordinates.
+fn virtual_bounds(mons: &[Mon]) -> (i32, i32, i32, i32) {
+    (
+        mons.iter().map(|m| m.x).min().unwrap(),
+        mons.iter().map(|m| m.y).min().unwrap(),
+        mons.iter().map(|m| m.x + m.w as i32).max().unwrap(),
+        mons.iter().map(|m| m.y + m.h as i32).max().unwrap(),
+    )
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+    fn mon(x: i32, y: i32, w: u32, h: u32, primary: bool) -> Mon {
+        Mon { x, y, w, h, primary, scale: 1.0 }
+    }
+    #[test]
+    fn second_monitor_above_primary() {
+        let m = [mon(0, 0, 3840, 2160, true), mon(0, -1080, 1920, 1080, false)];
+        assert_eq!(virtual_bounds(&m), (0, -1080, 3840, 2160));
+        assert!(m[1].contains(100, -50) && !m[0].contains(100, -50));
+    }
+    #[test]
+    fn second_monitor_below_and_offset() {
+        let m = [mon(0, 0, 3840, 2160, true), mon(960, 2160, 1920, 1080, false)];
+        assert_eq!(virtual_bounds(&m), (0, 0, 3840, 3240));
+        assert!(m[1].contains(1000, 2200));
+    }
+    #[test]
+    fn left_monitor_negative_x() {
+        let m = [mon(0, 0, 3840, 2160, true), mon(-3840, 0, 3840, 2160, false)];
+        assert_eq!(virtual_bounds(&m), (-3840, 0, 3840, 2160));
+    }
+}
+
+/// Stitch every monitor into one image of the whole virtual desktop. Gaps between
+/// monitors of different sizes or offsets stay black. Returns the image and its
+/// top-left in screen coordinates.
+pub fn grab_all() -> anyhow::Result<(RgbaImage, (i32, i32))> {
+    let mons = monitors()?;
+    let (x0, y0, x1, y1) = virtual_bounds(&mons);
+    let mut out = RgbaImage::from_pixel((x1 - x0) as u32, (y1 - y0) as u32, image::Rgba([0, 0, 0, 255]));
+    for m in &mons {
+        let img = grab_mon(m)?;
+        image::imageops::replace(&mut out, &img, (m.x - x0) as i64, (m.y - y0) as i64);
+    }
+    Ok((out, (x0, y0)))
+}
+
+/// What the Fullscreen hotkey grabs. Persisted in settings.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FullTarget {
+    /// The monitor the mouse is on (default: you are looking where you point).
+    Cursor,
+    Primary,
+    /// Every monitor stitched into one picture of the whole desktop.
+    All,
+    /// Every monitor as its own file; the pointer's monitor goes on the clipboard.
+    Each,
+}
+
+impl FullTarget {
+    pub const ALL_TARGETS: [FullTarget; 4] =
+        [FullTarget::Cursor, FullTarget::Primary, FullTarget::All, FullTarget::Each];
+    pub fn from_u32(v: u32) -> Self {
+        match v {
+            1 => Self::Primary,
+            2 => Self::All,
+            3 => Self::Each,
+            _ => Self::Cursor,
+        }
+    }
+    pub fn as_u32(self) -> u32 {
+        match self {
+            Self::Cursor => 0,
+            Self::Primary => 1,
+            Self::All => 2,
+            Self::Each => 3,
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Cursor => "Monitor under the mouse",
+            Self::Primary => "Primary monitor",
+            Self::All => "All monitors in one image",
+            Self::Each => "Each monitor as its own file",
+        }
+    }
+}
+
+/// Grab the monitor under the mouse with the pointer composited in. Returns the frame
+/// and its top-left in screen coordinates (the region picker needs the origin).
+pub fn grab_cursor_monitor() -> anyhow::Result<(RgbaImage, (i32, i32))> {
+    let mon = cursor_monitor()?;
+    let mut img = grab_mon(&mon)?;
+    crate::cursor::maybe_overlay(&mut img, (mon.x, mon.y));
+    Ok((img, (mon.x, mon.y)))
+}
+
+/// Grab per the "full capture target" setting. `Each` returns the pointer's monitor
+/// here (single-image callers); `capture_each` does the per-file work.
 pub fn grab_for_shot() -> anyhow::Result<RgbaImage> {
-    let mut img = grab_primary()?;
-    crate::cursor::maybe_overlay(&mut img, (0, 0));
-    Ok(img)
+    grab_target(crate::settings::full_target())
 }
 
-/// Full-screen capture path: grab primary, deliver.
+pub fn grab_target(t: FullTarget) -> anyhow::Result<RgbaImage> {
+    match t {
+        FullTarget::Primary => {
+            let mons = monitors()?;
+            let mut img = grab_mon(&mons[0])?;
+            crate::cursor::maybe_overlay(&mut img, (mons[0].x, mons[0].y));
+            Ok(img)
+        }
+        FullTarget::All => {
+            let (mut img, origin) = grab_all()?;
+            crate::cursor::maybe_overlay(&mut img, origin);
+            Ok(img)
+        }
+        FullTarget::Cursor | FullTarget::Each => Ok(grab_cursor_monitor()?.0),
+    }
+}
+
+/// Grab every monitor separately (pointer drawn on the one it is over), save each as
+/// `TrontSnap_<stamp>_monN.png`, and put the pointer's monitor on the clipboard.
+pub fn capture_each() -> anyhow::Result<Vec<PathBuf>> {
+    let mons = monitors()?;
+    let (cx, cy) = cursor_pos();
+    let stamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S");
+    let dir = trontsnap_dir()?;
+    std::fs::create_dir_all(&dir)?;
+    let mut paths = Vec::new();
+    let mut clip: Option<(RgbaImage, Vec<u8>, PathBuf)> = None;
+    for (i, m) in mons.iter().enumerate() {
+        let mut img = grab_mon(m)?;
+        let has_cursor = m.contains(cx, cy);
+        if has_cursor {
+            crate::cursor::maybe_overlay(&mut img, (m.x, m.y));
+        }
+        let bytes = encode_png(&img)?;
+        let path = dir.join(format!("TrontSnap_{stamp}_mon{}.png", i + 1));
+        std::fs::write(&path, &bytes)?;
+        if has_cursor || (clip.is_none() && i + 1 == mons.len()) {
+            clip = Some((img, bytes, path.clone()));
+        }
+        paths.push(path);
+    }
+    if let Some((img, bytes, path)) = clip {
+        if let Err(e) = crate::clipboard::set_all(&img, &bytes, &path) {
+            eprintln!("trontsnap: clipboard set failed: {e:#}");
+        }
+        crate::sound::play_shutter();
+        crate::toast::launch(&path, true);
+    }
+    Ok(paths)
+}
+
+/// Full-screen capture path: grab per the setting, deliver.
 pub fn capture_full() -> anyhow::Result<()> {
-    let img = grab_for_shot()?;
+    capture_with(crate::settings::full_target())
+}
+
+/// Capture with an explicit target (tray items and CLI modes use this).
+pub fn capture_with(t: FullTarget) -> anyhow::Result<()> {
+    if t == FullTarget::Each {
+        for p in capture_each()? {
+            println!("captured -> {}", p.display());
+        }
+        return Ok(());
+    }
+    let img = grab_target(t)?;
     let path = deliver(&img)?;
     println!("captured {}x{} -> clipboard + {}", img.width(), img.height(), path.display());
+    Ok(())
+}
+
+/// Print the monitor layout (debug aid: `trontsnap monitors`).
+pub fn print_monitors() -> anyhow::Result<()> {
+    for (i, m) in monitors()?.iter().enumerate() {
+        println!(
+            "mon{} {}x{} at ({}, {}) scale {:.2}{}",
+            i + 1,
+            m.w,
+            m.h,
+            m.x,
+            m.y,
+            m.scale,
+            if m.primary { " primary" } else { "" }
+        );
+    }
     Ok(())
 }
 

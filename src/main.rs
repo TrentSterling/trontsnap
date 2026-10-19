@@ -44,6 +44,15 @@ mod window_chrome;
 mod visual;
 
 fn main() {
+    // Per-monitor-v2 DPI awareness before anything reads a monitor rect, so one-shot
+    // launches (`trontsnap full`, `region`) see physical pixels on every monitor, mixed
+    // scale factors included. winit sets the same for the app; a repeat call just fails.
+    unsafe {
+        use windows::Win32::UI::HiDpi::{
+            SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+        };
+        let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    }
     // Load persisted settings before any capture path can read them (all modes capture).
     settings::load();
 
@@ -59,6 +68,9 @@ fn main() {
         "" | "app" => app::run(false),
         "--startup" | "tray" => app::run(true),
         "full" => capture::capture_full(),
+        "all" => capture::capture_with(capture::FullTarget::All),
+        "each" => capture::capture_with(capture::FullTarget::Each),
+        "monitors" => capture::print_monitors(),
         "region" => {
             region_win32::capture_region();
             Ok(())

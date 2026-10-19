@@ -14,6 +14,7 @@ use crate::color::{self, Rgb};
 const APP_KEY: &str = r"Software\TrontSnap";
 const CAPTURE_CURSOR_VALUE: &str = "CaptureCursor";
 const RECORD_AUDIO_VALUE: &str = "RecordAudio";
+const FULL_TARGET_VALUE: &str = "FullTarget";
 const SHOW_ABOUT_VALUE: &str = "ShowAboutOnLaunch";
 const HAS_RUN_VALUE: &str = "HasRun";
 const LOUPE_SIZE_VALUE: &str = "LoupeSize";
@@ -48,6 +49,7 @@ static LOUPE_SIZE: AtomicI32 = AtomicI32::new(132);
 // for it; the tray toggle turns it off.
 static CAPTURE_CURSOR: AtomicBool = AtomicBool::new(true);
 // Default ON: recordings include system audio (WASAPI loopback of what you hear).
+static FULL_TARGET: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 static RECORD_AUDIO: AtomicBool = AtomicBool::new(true);
 // Default OFF (opt-in): whether to open on the About tab on EVERY launch. The very first
 // run always shows About regardless (see HAS_RUN); this only governs repeat launches, via
@@ -148,6 +150,9 @@ pub fn load() {
         if let Ok(v) = key.get_value::<u32, _>(CAPTURE_CURSOR_VALUE) {
             CAPTURE_CURSOR.store(v != 0, Ordering::Relaxed);
         }
+        if let Ok(v) = key.get_value::<u32, _>(FULL_TARGET_VALUE) {
+            FULL_TARGET.store(v, Ordering::Relaxed);
+        }
         if let Ok(v) = key.get_value::<u32, _>(RECORD_AUDIO_VALUE) {
             RECORD_AUDIO.store(v != 0, Ordering::Relaxed);
         }
@@ -244,6 +249,15 @@ pub fn capture_cursor() -> bool {
 pub fn set_capture_cursor(on: bool) {
     CAPTURE_CURSOR.store(on, Ordering::Relaxed);
     persist(CAPTURE_CURSOR_VALUE, on);
+}
+
+pub fn full_target() -> crate::capture::FullTarget {
+    crate::capture::FullTarget::from_u32(FULL_TARGET.load(Ordering::Relaxed))
+}
+
+pub fn set_full_target(t: crate::capture::FullTarget) {
+    FULL_TARGET.store(t.as_u32(), Ordering::Relaxed);
+    persist_u32(FULL_TARGET_VALUE, t.as_u32());
 }
 
 pub fn record_audio() -> bool {
