@@ -116,7 +116,7 @@ pub fn capture_region_ocr() {
 /// Shared by the image and OCR delivery paths; None on cancel or a degenerate
 /// (zero-area) selection.
 fn picked_crop() -> Option<image::RgbaImage> {
-    let (img, sel, _origin) = run_picker(true)?;
+    let (img, sel, _origin) = run_picker(PickArea::for_screenshot())?;
     let w = img.width() as i32;
     let x = sel.left.clamp(0, w) as u32;
     let y = sel.top.clamp(0, img.height() as i32) as u32;
@@ -132,19 +132,56 @@ fn picked_crop() -> Option<image::RgbaImage> {
 /// the same modal picker, return the chosen rect in physical primary-monitor px.
 /// Nothing is saved or copied. Blocks; run on a dedicated thread.
 pub fn pick_rect() -> Option<RECT> {
-    run_picker(false).map(|(_, sel, _)| sel)
+    run_picker(PickArea::Primary).map(|(_, sel, _)| sel)
 }
 
 /// Like `pick_rect`, but on the monitor under the mouse. Returns the selection in that
 /// monitor's own pixels plus the monitor's top-left in virtual-desktop coordinates.
 pub fn pick_rect_on_cursor_monitor() -> Option<(RECT, (i32, i32))> {
-    run_picker(true).map(|(_, sel, origin)| (sel, origin))
+    run_picker(PickArea::CursorMonitor).map(|(_, sel, origin)| (sel, origin))
+}
+
+/// Which part of the desktop a picker session freezes and covers.
+#[derive(Clone, Copy)]
+enum PickArea {
+    CursorMonitor,
+    /// The whole virtual desktop in one overlay: drag a rectangle across monitors, or
+    /// click a window on any of them.
+    AllMonitors,
+    Primary,
+}
+
+impl PickArea {
+    fn for_screenshot() -> Self {
+        if crate::settings::region_all_monitors() {
+            Self::AllMonitors
+        } else {
+            Self::CursorMonitor
+        }
+    }
+}
+
+/// Like `capture_region`, but always spans every monitor (`trontsnap region-all`).
+pub fn capture_region_all() {
+    let Some((img, sel, _)) = run_picker(PickArea::AllMonitors) else { return };
+    let x = sel.left.clamp(0, img.width() as i32) as u32;
+    let y = sel.top.clamp(0, img.height() as i32) as u32;
+    let rw = ((sel.right - sel.left).max(0) as u32).min(img.width().saturating_sub(x));
+    let rh = ((sel.bottom - sel.top).max(0) as u32).min(img.height().saturating_sub(y));
+    if rw == 0 || rh == 0 {
+        return;
+    }
+    let cropped = image::imageops::crop_imm(&img, x, y, rw, rh).to_image();
+    match capture::deliver(&cropped) {
+        Ok(path) => println!("captured {rw}x{rh} -> clipboard + {}", path.display()),
+        Err(e) => eprintln!("trontsnap: region deliver failed: {e:#}"),
+    }
 }
 
 /// Shared picker session: one at a time (rapid repeat hotkey presses while an overlay
 /// is already up are ignored), grab the frozen frame, enumerate targets, run the modal
 /// overlay. Returns the frame and the raw (unclamped) selection.
-fn run_picker(on_cursor_monitor: bool) -> Option<(RgbaImage, RECT, (i32, i32))> {
+fn run_picker(area: PickArea) -> Option<(RgbaImage, RECT, (i32, i32))> {
     static ACTIVE: AtomicBool = AtomicBool::new(false);
     if ACTIVE.swap(true, Ordering::SeqCst) {
         return None;
@@ -163,13 +200,16 @@ fn run_picker(on_cursor_monitor: bool) -> Option<(RgbaImage, RECT, (i32, i32))> 
     // second monitor, left/right/above/below, just works); the video recorder duplicates
     // the primary output, so its picker stays on the primary. `origin` is that monitor's
     // top-left in virtual-desktop coordinates (negative for monitors left of / above it).
-    let grabbed = if on_cursor_monitor {
-        capture::grab_cursor_monitor()
-    } else {
-        capture::grab_primary().map(|mut i| {
+    let grabbed = match area {
+        PickArea::CursorMonitor => capture::grab_cursor_monitor(),
+        PickArea::AllMonitors => capture::grab_all().map(|(mut i, o)| {
+            crate::cursor::maybe_overlay(&mut i, o);
+            (i, o)
+        }),
+        PickArea::Primary => capture::grab_primary().map(|mut i| {
             crate::cursor::maybe_overlay(&mut i, (0, 0));
             (i, (0, 0))
-        })
+        }),
     };
     let (img, origin) = match grabbed {
         Ok(v) => v,

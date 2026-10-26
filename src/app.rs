@@ -1052,6 +1052,14 @@ fn settings_tab_ui(ui: &mut egui::Ui) {
                         "Region capture opens on the monitor under the mouse. The tray menu                          also has All Monitors and Each Monitor.",
                     );
                 }
+                settings_toggle(
+                    ui,
+                    "Region picker spans all monitors",
+                    "Freeze every monitor at once and drag a rectangle (or click a window) on any of \
+                     them, even across monitors. Off: the picker opens on the monitor under the mouse.",
+                    crate::settings::region_all_monitors(),
+                    crate::settings::set_region_all_monitors,
+                );
                 ui.add_space(14.0);
                 settings_toggle(
                     ui,

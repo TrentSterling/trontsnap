@@ -4,6 +4,7 @@
 //   (none) / "app"  -> persistent tray app: global hotkeys + gallery (window shown)
 //   "--startup"     -> same, but start hidden in the tray (used by the autostart entry)
 //   "region"        -> one-shot freeze-frame region picker, deliver, exit
+//   "region-all"    -> same, but the picker spans every monitor
 //   "full"          -> one-shot fullscreen grab, deliver, exit
 //   "ocr"           -> one-shot region picker, TEXT to clipboard (Windows OCR), exit
 //   "edit <path>"   -> annotation editor (arrow/box/redact/pixelate/text/crop); save overwrites
@@ -78,6 +79,10 @@ fn main() {
         "monitors" => capture::print_monitors(),
         "region" => {
             region_win32::capture_region();
+            Ok(())
+        }
+        "region-all" => {
+            region_win32::capture_region_all();
             Ok(())
         }
         "ocr" => {

@@ -15,6 +15,7 @@ const APP_KEY: &str = r"Software\TrontSnap";
 const CAPTURE_CURSOR_VALUE: &str = "CaptureCursor";
 const RECORD_AUDIO_VALUE: &str = "RecordAudio";
 const FULL_TARGET_VALUE: &str = "FullTarget";
+const REGION_ALL_VALUE: &str = "RegionAllMonitors";
 const SHOW_ABOUT_VALUE: &str = "ShowAboutOnLaunch";
 const HAS_RUN_VALUE: &str = "HasRun";
 const LOUPE_SIZE_VALUE: &str = "LoupeSize";
@@ -50,6 +51,8 @@ static LOUPE_SIZE: AtomicI32 = AtomicI32::new(132);
 static CAPTURE_CURSOR: AtomicBool = AtomicBool::new(true);
 // Default ON: recordings include system audio (WASAPI loopback of what you hear).
 static FULL_TARGET: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+// Default OFF: the region picker covers the monitor under the mouse; ON spans every monitor.
+static REGION_ALL: AtomicBool = AtomicBool::new(false);
 static RECORD_AUDIO: AtomicBool = AtomicBool::new(true);
 // Default OFF (opt-in): whether to open on the About tab on EVERY launch. The very first
 // run always shows About regardless (see HAS_RUN); this only governs repeat launches, via
@@ -153,6 +156,9 @@ pub fn load() {
         if let Ok(v) = key.get_value::<u32, _>(FULL_TARGET_VALUE) {
             FULL_TARGET.store(v, Ordering::Relaxed);
         }
+        if let Ok(v) = key.get_value::<u32, _>(REGION_ALL_VALUE) {
+            REGION_ALL.store(v != 0, Ordering::Relaxed);
+        }
         if let Ok(v) = key.get_value::<u32, _>(RECORD_AUDIO_VALUE) {
             RECORD_AUDIO.store(v != 0, Ordering::Relaxed);
         }
@@ -249,6 +255,15 @@ pub fn capture_cursor() -> bool {
 pub fn set_capture_cursor(on: bool) {
     CAPTURE_CURSOR.store(on, Ordering::Relaxed);
     persist(CAPTURE_CURSOR_VALUE, on);
+}
+
+pub fn region_all_monitors() -> bool {
+    REGION_ALL.load(Ordering::Relaxed)
+}
+
+pub fn set_region_all_monitors(on: bool) {
+    REGION_ALL.store(on, Ordering::Relaxed);
+    persist(REGION_ALL_VALUE, on);
 }
 
 pub fn full_target() -> crate::capture::FullTarget {
