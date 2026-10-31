@@ -1,4 +1,4 @@
-## Unreleased
+## v0.27.0
 
 ### TrontSnap Cam: a small GifCam-style recorder (ideas from the spicy-dev crew)
 
