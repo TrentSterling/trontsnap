@@ -266,3 +266,15 @@ fn capture_current_app() {
         out.display()
     );
 }
+
+#[test]
+#[ignore = "Offscreen About tab review (Where your stuff lives)"]
+fn capture_about() {
+    let out = Path::new("target/about-review");
+    std::fs::create_dir_all(out).unwrap();
+    let mut renderer = Renderer::new();
+    let ctx = egui::Context::default();
+    let mut app = crate::app::App::preview(&ctx, &[]);
+    crate::theme::preview_theme(&ctx, [90, 209, 255], true);
+    capture(&mut renderer, &ctx, |ctx| app.preview_draw(ctx, "about"), [900, 1700], &out.join("about.png"));
+}

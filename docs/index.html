@@ -248,7 +248,8 @@ trontsnap cam --size 800x600 --format gif</pre>
     <div class="dl glass">
       <div>
         <h2>Grab it</h2>
-        <p>One portable exe: no installer, no admin, no reboot. Run it and it lives in the tray; the About tab has a one-click setup for Desktop + Start menu shortcuts (TrontSnap and TrontSnap Cam) and start at login. Uninstall by deleting the file.</p>
+        <p>One portable exe: no installer, no admin, no reboot. Run it and it lives in the tray; the About tab has a one-click setup for Desktop + Start menu shortcuts (TrontSnap and TrontSnap Cam) and start at login.</p>
+        <p>Everything stays on your PC: captures in <code>Pictures\TrontSnap</code>, a thumbnail cache in <code>%LOCALAPPDATA%\TrontSnap</code>, settings in the registry under <code>HKCU\Software\TrontSnap</code>. No accounts, no uploads, no telemetry. To uninstall, hit About &gt; Remove TrontSnap's data (your captures stay), then delete the exe. <a href="https://github.com/TrentSterling/trontsnap#where-your-stuff-lives">Full list</a>.</p>
         <p>GIF + WEBM use <a href="https://ffmpeg.org/">ffmpeg</a> if it's on your PATH (<code>winget install ffmpeg</code>). Without it you still get MP4, plus a built-in GIF encoder.</p>
         <p>Want PrtSc to work over admin windows too? The release ZIP has an installed mode with a small signed hotkey helper; <a href="https://github.com/TrentSterling/trontsnap/blob/main/SETUP.md">the setup guide</a> walks through it.</p>
       </div>

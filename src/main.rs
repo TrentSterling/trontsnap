@@ -31,6 +31,7 @@ mod keyhook;
 mod ocr;
 mod overlay;
 mod printscreen;
+mod privacy;
 mod recorder;
 mod region_win32;
 mod replay;

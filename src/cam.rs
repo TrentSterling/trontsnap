@@ -459,6 +459,25 @@ pub fn launch() {
     }
 }
 
+/// Close a running cam window (it saves on the way out) and wait up to 3 s for it
+/// to go, so "Remove TrontSnap's data" can delete its settings afterwards.
+pub fn close_running() {
+    let class: Vec<u16> = "TrontSnapCam\0".encode_utf16().collect();
+    unsafe {
+        let h = FindWindowW(PCWSTR(class.as_ptr()), PCWSTR::null());
+        if h.0 == 0 {
+            return;
+        }
+        let _ = PostMessageW(h, WM_CLOSE, WPARAM(0), LPARAM(0));
+        for _ in 0..30 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            if FindWindowW(PCWSTR(class.as_ptr()), PCWSTR::null()).0 == 0 {
+                return;
+            }
+        }
+    }
+}
+
 pub fn run(args: &[String]) -> anyhow::Result<()> {
     let class: Vec<u16> = "TrontSnapCam\0".encode_utf16().collect();
     unsafe {

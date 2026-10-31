@@ -42,6 +42,11 @@ Ideas and asks from the spicy-dev channel on the nativepixels Discord. Thanks
 - About shows a One-click setup when it's needed: TrontSnap and TrontSnap Cam
   shortcuts on the Desktop and in Start, plus start at login. Settings > Startup has
   the same shortcuts button (click it again after moving the exe to repair them).
+- About > **Where your stuff lives** lists every place TrontSnap writes (captures,
+  cache, replay buffer, registry settings, login entry, shortcuts, the PrtSc
+  setting) with Open buttons. **Remove TrontSnap's data** clears all of it except
+  your captures, gives PrtSc back to Windows and quits, so deleting the exe really
+  is a full uninstall. The README has the same table.
 
 - Validation: 64 tests passed, including six multi-select tests that drive the real
   gallery grid with synthetic pointer input. Every recorder format was recorded

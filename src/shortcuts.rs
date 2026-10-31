@@ -33,6 +33,15 @@ pub fn present() -> bool {
     dirs::desktop_dir().is_some_and(|d| LINKS.iter().all(|(n, _, _)| d.join(n).is_file()))
 }
 
+/// Delete every launcher this module makes (missing ones are fine).
+pub fn remove_all() {
+    for dir in dirs_for_links() {
+        for (name, _, _) in LINKS {
+            let _ = std::fs::remove_file(dir.join(name));
+        }
+    }
+}
+
 /// Create (or refresh) every launcher. Returns how many were written.
 pub fn create_all() -> anyhow::Result<usize> {
     let exe = std::env::current_exe()?;

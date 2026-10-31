@@ -42,6 +42,8 @@ impl App {
     pub(crate) fn preview_draw(&mut self, ctx: &egui::Context, view: &str) {
         self.tab = if view == "settings" {
             Tab::Settings
+        } else if view == "about" {
+            Tab::About
         } else {
             Tab::Gallery
         };

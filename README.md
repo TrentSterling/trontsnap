@@ -49,6 +49,27 @@ so bare PrtSc also works while an elevated window has focus. The bundle's
 and the custom title-bar controls. `Revert to portable.cmd` undoes the install. See
 `SETUP.md` for details.
 
+## Where your stuff lives
+
+Everything stays on your PC. No accounts, no uploads, no telemetry. The About tab
+shows this same list with Open buttons.
+
+| What | Where |
+|---|---|
+| Your captures (yours, never touched by uninstall) | `Pictures\TrontSnap` |
+| Thumbnail cache + error log | `%LOCALAPPDATA%\TrontSnap` |
+| Instant replay buffer (5 s clips, pruned as it runs) | `%TEMP%\TrontSnap\replay` |
+| Settings, including the recorder frame | `HKCU\Software\TrontSnap` |
+| Start at login, only if on | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, value `TrontSnap` |
+| Shortcuts, only if you click Set me up | Desktop + Start menu: `TrontSnap.lnk`, `TrontSnap Cam.lnk` |
+| PrtSc handed to TrontSnap | `HKCU\Control Panel\Keyboard\PrintScreenKeyForSnippingEnabled` = 0 |
+
+ShareX history is only read, never moved or changed.
+
+**Uninstall:** About > Remove TrontSnap's data. It clears everything in the table
+except your captures, gives PrtSc back to Windows, and quits. Then delete the exe.
+If you used the installed mode, run `Revert to portable.cmd` from the release ZIP first.
+
 ## Build / run
 
 ```

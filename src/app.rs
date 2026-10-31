@@ -1797,6 +1797,10 @@ impl App {
                 }
                 ui.separator();
                 ui.add_space(14.0);
+                your_data_ui(ui);
+                ui.add_space(18.0);
+                ui.separator();
+                ui.add_space(14.0);
 
                 ui.label(egui::RichText::new("Trent Sterling").strong());
                 ui.add_space(2.0);
@@ -1807,7 +1811,7 @@ impl App {
                 );
                 ui.add_space(8.0);
                 ui.label(
-                    egui::RichText::new("Portable single exe. Delete to uninstall.")
+                    egui::RichText::new("Portable single exe. To uninstall: Remove TrontSnap's data above, then delete the exe.")
                         .small()
                         .color(crate::theme::t().text_muted),
                 );
@@ -1823,6 +1827,61 @@ impl App {
                 }
                 ui.add_space(20.0);
             });
+        });
+    }
+}
+
+/// About > "Where your stuff lives": every place TrontSnap writes, each folder one
+/// click from Explorer, and a two-step "Remove TrontSnap's data" that undoes it all
+/// except the captures, then quits so nothing gets written back.
+fn your_data_ui(ui: &mut egui::Ui) {
+    let muted = crate::theme::t().text_muted;
+    ui.label(egui::RichText::new("Where your stuff lives").strong().color(crate::theme::accent_ink()));
+    ui.add_space(4.0);
+    ui.label(
+        egui::RichText::new("All local. Nothing is uploaded, no accounts, no telemetry.").color(muted),
+    );
+    ui.add_space(8.0);
+    for p in crate::privacy::places() {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(egui::RichText::new(p.what).strong());
+            if let Some(dir) = &p.folder {
+                if dir.exists() && ui.small_button("Open").clicked() {
+                    crate::shellexec::run("explorer.exe", &format!("\"{}\"", dir.display()));
+                }
+            }
+        });
+        ui.label(egui::RichText::new(p.where_).small().monospace().color(muted));
+        ui.add_space(4.0);
+    }
+    ui.add_space(8.0);
+    let id = egui::Id::new("trontsnap-remove-data-armed");
+    let armed = ui.data(|d| d.get_temp::<bool>(id)).unwrap_or(false);
+    if !armed {
+        if ui.button("Remove TrontSnap's data...").clicked() {
+            ui.data_mut(|d| d.insert_temp(id, true));
+        }
+        ui.label(
+            egui::RichText::new("Then delete the exe and TrontSnap is fully gone.").small().color(muted),
+        );
+    } else {
+        ui.label(
+            egui::RichText::new(
+                "Removes settings, cache, replay buffer, login entry and shortcuts, and gives PrtSc back to Windows. Your captures stay. TrontSnap closes when it's done.",
+            )
+        );
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            if ui.button("Remove and quit").clicked() {
+                let failed = crate::privacy::remove_all();
+                for f in &failed {
+                    eprintln!("trontsnap: could not remove {f}");
+                }
+                std::process::exit(0);
+            }
+            if ui.button("Cancel").clicked() {
+                ui.data_mut(|d| d.insert_temp(id, false));
+            }
         });
     }
 }
