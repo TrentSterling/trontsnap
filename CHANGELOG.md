@@ -1,5 +1,55 @@
 ## Unreleased
 
+### TrontSnap Cam: a small GifCam-style recorder (ideas from the spicy-dev crew)
+
+Ideas and asks from the spicy-dev channel on the nativepixels Discord. Thanks
+**André** for the minimal recorder spec, and **aFoolsDuty** for instant replay and
+"careful crop and zoom".
+
+- `trontsnap cam` (tray > Recorder Frame, Capture > Recorder frame, or the
+  TrontSnap Cam shortcut) opens a see-through frame. Drag the bottom strip to move
+  it, drag the ring to resize, and arrow keys nudge it 1 px (Shift: 10 px, Ctrl:
+  resize). The inside of the frame is not part of the window, so the game under it
+  keeps getting clicks and scroll. The frame and toolbar never appear in recordings.
+- One-row toolbar: Record, fps (10 to 60), size presets (320x240 to 1920x1080, full
+  screen, or snap to any open window), format (GIF, MP4, WEBM) and output size
+  (native, 75/50/33%, 1080p/720p/480p/360p, or 2x/3x/4x pixel-perfect for pixel art).
+- Space or Enter starts and stops; **Ctrl+F9** works globally, including while the
+  cam window is minimized. Esc closes (finishing any recording first).
+- **Instant replay**: turn it on from the Replay button and the frame area is
+  buffered continuously; **Ctrl+F10** saves the last 15, 30, 60 or 120 s in the
+  chosen format. Buffering costs a few MB of temp space, not RAM.
+- Capture is still hardware H.264 through Media Foundation. GIF, WEBM and resized
+  output are an ffmpeg pass after Stop (found on PATH or next to the exe, never
+  bundled). Without ffmpeg, MP4 still works and GIF uses the built-in encoder.
+- `trontsnap rec --rect X,Y,W,H --secs S --fps N --format gif --scale 2x` records
+  with no window and prints the file, for scripts.
+- Settings and the frame position persist under HKCU\Software\TrontSnap\Cam.
+
+### Gallery multi-select fixed
+
+- Quick Ctrl+clicks on different shots no longer open files. egui counts any two
+  clicks within 0.3 s as a double-click, even on two different cells, so a fast
+  Ctrl+click run opened the second image instead of selecting it. A double-click
+  now only opens when both clicks hit the same shot, and modifier clicks never open.
+- Explorer's model: a plain click selects that one shot (and still copies it),
+  Ctrl toggles, Shift selects the range from the anchor, Ctrl+Shift adds a range.
+- Dragging any shot in a multi-selection drags all of them, and the context menu
+  gains "Copy N files" (all of them on the clipboard as files).
+
+### Easier start
+
+- About shows a One-click setup when it's needed: TrontSnap and TrontSnap Cam
+  shortcuts on the Desktop and in Start, plus start at login. Settings > Startup has
+  the same shortcuts button (click it again after moving the exe to repair them).
+
+- Validation: 64 tests passed, including six multi-select tests that drive the real
+  gallery grid with synthetic pointer input. Every recorder format was recorded
+  headless and checked with ffprobe (codec, size, fps, frame count, full decode);
+  the replay buffer saved an 8.000 s tail from 14 s of buffering.
+
+### Multi-monitor
+
 - Better multi-monitor capture. Fullscreen now grabs the monitor under the mouse by
   default instead of always the primary; Settings > Capture has a target picker
   (monitor under mouse, primary, all monitors in one image, each monitor as its own
