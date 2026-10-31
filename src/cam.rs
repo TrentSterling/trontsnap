@@ -1106,12 +1106,20 @@ mod tests {
     fn cam_paint_snapshot() {
         use windows::Win32::Graphics::Gdi::{GetDC, GetDIBits, ReleaseDC, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS};
         unsafe {
-            let hole = RECT { left: 300, top: 300, right: 940, bottom: 660 };
-            let layout = compute_layout(hole, 1.5);
+            let (hw, hh) = std::env::var("CAM_HOLE").ok().and_then(|v| parse_wh(&v)).unwrap_or((640, 360));
+            let s: f32 = std::env::var("CAM_SCALE").ok().and_then(|v| v.parse().ok()).unwrap_or(1.5);
+            let hole = RECT { left: 300, top: 300, right: 300 + hw, bottom: 300 + hh };
+            let layout = compute_layout(hole, s);
             let cam = Cam {
                 hwnd: HWND(0),
                 hole,
-                set: Settings { fps: 30, format: Format::Gif, scale: Scale::Native },
+                set: if std::env::var("CAM_REC").is_ok() {
+                    PHASE.store(1, Ordering::SeqCst);
+                    *REC_START.lock().unwrap() = Some(Instant::now() - Duration::from_secs(12));
+                    Settings { fps: 50, format: Format::Gif, scale: Scale::Pixel(2) }
+                } else {
+                    Settings { fps: 30, format: Format::Gif, scale: Scale::Native }
+                },
                 layout,
                 drag: None,
                 hover: Some(Btn::Size),
@@ -1142,15 +1150,26 @@ mod tests {
                 p.swap(0, 2);
                 p[3] = 255;
             }
-            // Punch the hole the window region would remove, so the PNG reads true.
+            // Everything the window region removes (the hole, and around a bar
+            // wider than the ring) shows what's underneath: a flat gray, or the
+            // image at CAM_BACKDROP (a public game shot, for the product page).
             let l = &cam.layout;
-            for y in l.hole.top..l.hole.bottom {
-                for x in l.hole.left..l.hole.right {
-                    let i = ((y * w + x) * 4) as usize;
-                    px[i..i + 4].copy_from_slice(&[60, 70, 80, 255]);
+            let backdrop = std::env::var("CAM_BACKDROP").ok().and_then(|p| image::open(p).ok()).map(|i| {
+                i.resize_to_fill(w as u32, h as u32, image::imageops::FilterType::Lanczos3).to_rgba8()
+            });
+            for y in 0..h {
+                for x in 0..w {
+                    let p = POINT { x, y };
+                    let in_window = (inside(&l.ring, p) && !inside(&l.hole, p)) || inside(&l.bar, p);
+                    if !in_window {
+                        let i = ((y * w + x) * 4) as usize;
+                        let c = backdrop.as_ref().map(|b| b.get_pixel(x as u32, y as u32).0).unwrap_or([60, 70, 80, 255]);
+                        px[i..i + 4].copy_from_slice(&c);
+                    }
                 }
             }
-            image::RgbaImage::from_raw(w as u32, h as u32, px).unwrap().save("target/cam-paint.png").unwrap();
+            let out = std::env::var("CAM_OUT").unwrap_or_else(|_| "target/cam-paint.png".into());
+            image::RgbaImage::from_raw(w as u32, h as u32, px).unwrap().save(out).unwrap();
         }
     }
 

@@ -3,159 +3,152 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>TrontSnap — fast screenshots + recording for Windows</title>
-<meta name="description" content="Screenshots, MP4 recording with audio, offline OCR and an annotation editor for Windows. A searchable gallery brings your TrontSnap captures and ShareX history together.">
-<meta property="og:title" content="TrontSnap — fast screenshots + recording for Windows">
-<meta property="og:description" content="Capture, annotate, record and copy text offline. One gallery for your TrontSnap captures and ShareX history.">
+<title>TrontSnap: screenshots + GIFs for people who make games</title>
+<meta name="description" content="TrontSnap is a small Windows capture tool for gamedevs: screenshots, a GifCam-style recorder frame (GIF, MP4, WEBM, 10 to 60 fps, 2x pixel output), instant replay, offline OCR, an annotation editor and a gallery of your whole capture history.">
+<meta property="og:title" content="TrontSnap: screenshots + GIFs for people who make games">
+<meta property="og:description" content="Drop a frame over your game, hit Ctrl+F9, get a GIF. Instant replay, pixel-perfect 2x output, and a gallery of everything you ever captured.">
 <link rel="canonical" href="https://tront.xyz/trontsnap/">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://tront.xyz/trontsnap/">
 <meta property="og:image" content="https://tront.xyz/trontsnap/media/og-20261002.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
-<meta property="og:image:alt" content="TrontSnap's current gallery with public game screenshots in dark and light themes">
+<meta property="og:image:alt" content="TrontSnap's gallery with public game screenshots in dark and light themes">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:image" content="https://tront.xyz/trontsnap/media/og-20261002.png">
 <meta name="theme-color" content="#07090d">
 <link rel="icon" href="assets/icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2:family=Rajdhani:wght@500;600;700&family=Chakra+Petch:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=Chakra+Petch:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <!-- TRONT design system, vendored from the hub repo (trentsterling.github.io
-     assets/, commit fe912ea). Canonical copies live there; this page carries
-     its own so the repo renders standalone and from file://. Every colour on
-     this page is written by the engine at boot (Tront.applyTheme + gradient);
-     the :root block below is only the no-JS / first-paint fallback. -->
+     assets/). Every colour on this page is written by the colormagic engine at
+     boot and again on every Theme Lab change; the :root block below is only the
+     no-JS / first-paint fallback. -->
 <link rel="stylesheet" href="assets/tront-system.css">
 <style>
   @font-face{font-family:Rajdhani;src:url("assets/Rajdhani-SemiBold.ttf") format("truetype");font-weight:500 700;font-display:swap}
   :root{
-    /* fallback tokens: the engine overwrites all of these at boot */
     --bg:#07090d; --panel:#0e131c; --elem:#141c28; --elem-hover:#1a2534;
     --line-subtle:#141d29; --line:#1b2634; --line-hover:#2b3a4e;
     --solid:#00b8d9; --solid-hover:#00cdf2; --on-solid:#04121a;
     --muted:#8793a3; --text:#eaf0f6; --accent:#00e0ff; --danger:#ff4d4d;
-    --wash:radial-gradient(80% 120% at 50% 0%,rgba(0,224,255,.07),transparent 65%);
+    --wash:linear-gradient(135deg,#0a3b4a,#1a1450 55%,#3a0d3d);
     --headline-grad:linear-gradient(90deg,#1affa7,#00e0ff,#1a71ff);
-
-    /* the page's faces override the system defaults: Rajdhani is the app's
-       display identity, Chakra Petch its body sibling, JetBrains the terminal */
     --t-display:"Rajdhani",system-ui,sans-serif;
     --t-body:"Chakra Petch",system-ui,-apple-system,sans-serif;
     --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
-
-    --spectrum:linear-gradient(90deg,#ff3b3b,#ff9e2c,#ffe83b,#42e05a,#00e0ff,#3b7bff,#a24bff,#ff4bd0);
   }
   *{box-sizing:border-box}
   html{scroll-behavior:smooth}
   body{margin:0;background:var(--bg);color:var(--text-wash,var(--text));
-    font-family:var(--t-body);font-size:16.5px;line-height:1.65;
+    font-family:var(--t-body);font-size:17px;line-height:1.65;
     -webkit-font-smoothing:antialiased;overflow-x:hidden}
   a{color:inherit;text-decoration:none}
-  .wrap{width:min(1320px,93vw);margin:0 auto}
-  .spectrum-rule{height:2px;background:var(--spectrum);border:0;opacity:.85;margin:0}
-  .caps{text-transform:uppercase;letter-spacing:.06em}
-  /* the whole page speaks in caps display type; buttons join in */
-  .t-btn{text-transform:uppercase;letter-spacing:.05em}
+  p a,li a{color:var(--accent-wash,var(--accent));text-decoration:underline;text-underline-offset:3px}
+  .wrap{width:min(1320px,92vw);margin:0 auto}
+  .glass{background:var(--panel-fill,var(--panel));backdrop-filter:blur(var(--panel-blur,0px));
+    -webkit-backdrop-filter:blur(var(--panel-blur,0px));border:1px solid var(--line-subtle);border-radius:14px}
+  .glass p,.glass li{color:var(--muted-frosted,var(--muted))}
+  .glass h2,.glass h3,.glass b{color:var(--text-frosted,var(--text))}
 
   .brand{font-family:var(--t-display);font-weight:700;font-size:21px;letter-spacing:.5px;
     display:inline-flex;align-items:center;gap:10px;margin-left:var(--t-3)}
   .brand img{width:24px;height:24px;border-radius:6px}
   .brand b{color:var(--accent)}
 
-  /* ---- hero: left words, right a recording in progress ---- */
-  header.hero{padding:58px 0 50px}
-  .hero-grid{display:grid;grid-template-columns:.7fr 1.3fr;gap:36px;align-items:center}
-  .eyebrow{font-family:var(--mono);font-size:12.5px;letter-spacing:3px;text-transform:uppercase;
-    color:var(--accent-wash,var(--accent));margin-bottom:16px}
-  .hero-title{font-family:var(--t-display);font-weight:700;margin:0;
-    font-size:clamp(38px,4.2vw,58px);line-height:.96;letter-spacing:0;text-transform:uppercase}
-  .hero-title .grad{background:var(--headline-grad);-webkit-background-clip:text;background-clip:text;color:transparent}
-  .sub{max-width:560px;margin:20px 0 0;font-size:18px}
+  h1,h2,h3{font-family:var(--t-display);font-weight:700;line-height:1.02;margin:0}
+  .grad{background:var(--headline-grad);-webkit-background-clip:text;background-clip:text;color:transparent}
+
+  /* ---- hero ---- */
+  header.hero{padding:64px 0 40px}
+  .hero-grid{display:grid;grid-template-columns:minmax(0,.8fr) minmax(0,1.2fr);gap:44px;align-items:center}
+  .hero h1{font-size:clamp(42px,5.4vw,82px);text-transform:uppercase}
+  .sub{max-width:34em;margin:22px 0 0;font-size:19px}
   .cta-row{display:flex;gap:14px;margin-top:30px;flex-wrap:wrap}
-  .hero-facts{font-family:var(--mono);font-size:12px;letter-spacing:2px;text-transform:uppercase;
-    color:var(--muted-wash,var(--muted));margin-top:30px}
+  .labline{margin-top:22px;font-size:15px;color:var(--muted-wash,var(--muted))}
+  .labline button{font:inherit;color:var(--accent-wash,var(--accent));background:none;border:0;padding:0;
+    text-decoration:underline;text-underline-offset:3px;cursor:pointer}
 
-  .product-shot{margin:0;min-width:0}
-  .product-shot a{display:block;border-radius:9px;overflow:hidden;border:1px solid var(--line);box-shadow:var(--t-shadow-lg)}
-  .product-shot img{display:block;width:100%;height:auto}
-  figcaption{font-size:12.5px;color:var(--muted-wash,var(--muted));margin-top:12px;line-height:1.5}
-  .showcase{display:grid;grid-template-columns:1.25fr 1fr;gap:36px;align-items:center;margin-top:58px}
-  .showcase h3{font-family:var(--t-display);font-size:34px;line-height:1.1;margin:0 0 16px}
-  .showcase p{max-width:48ch;color:var(--muted-wash,var(--muted))}
-  .showcase--editor{grid-template-columns:.8fr 1.2fr}
-  .key-list{display:grid;grid-template-columns:1fr 1fr;gap:14px 24px;margin:26px 0 0;padding:0;list-style:none}
-  .key-list li{display:flex;flex-direction:column;gap:6px;font-size:13px;color:var(--muted-wash,var(--muted))}
-  kbd{font-family:var(--mono);font-size:12px;color:var(--text);width:fit-content;padding:5px 9px;background:var(--elem);border:1px solid var(--line);border-radius:4px}
-  .skip{position:absolute;left:16px;top:-100px;z-index:100;background:var(--panel);padding:10px 16px}
-  .skip:focus{top:10px}
+  figure{margin:0;min-width:0}
+  .shot{display:block;border-radius:12px;overflow:hidden;border:1px solid var(--line);
+    box-shadow:0 30px 80px -30px rgba(0,0,0,.75),0 0 0 1px color-mix(in srgb,var(--accent) 18%,transparent)}
+  .shot img{display:block;width:100%;height:auto}
+  figcaption{font-size:14px;color:var(--muted-wash,var(--muted));margin-top:12px;line-height:1.5}
+  .tilt{transform:perspective(1600px) rotateY(-7deg) rotateX(2deg);transition:transform .5s cubic-bezier(.2,.7,.2,1)}
+  .tilt:hover{transform:none}
 
-  /* ---- neon tile row (the inspo's signature, in aqua) ---- */
-  section.sec{padding:78px 0}
-  .sec-head{text-align:center;max-width:640px;margin:0 auto 44px}
-  .kicker{font-family:var(--mono);font-size:12px;letter-spacing:3px;text-transform:uppercase;
-    color:var(--accent-wash,var(--accent));display:block;margin-bottom:10px}
-  h2.big{font-family:var(--t-display);font-weight:700;font-size:clamp(30px,4.2vw,46px);
-    margin:0 0 10px;letter-spacing:.02em;text-transform:uppercase}
-  .lede{color:var(--muted-wash,var(--muted));margin:0}
+  section{padding:84px 0}
+  h2.big{font-size:clamp(34px,4.4vw,58px);text-transform:uppercase;margin-bottom:16px}
+  .lede{max-width:40em;font-size:18.5px;margin:0;color:var(--muted-wash,var(--muted))}
 
-  .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(165px,1fr));gap:14px}
-  .tile{background:var(--panel-fill,var(--panel));backdrop-filter:blur(var(--panel-blur,0px));
-    -webkit-backdrop-filter:blur(var(--panel-blur,0px));
-    border:1px solid var(--line);border-radius:10px;padding:24px 16px 20px;text-align:center;
-    transition:border-color var(--t-fast),transform var(--t-fast),box-shadow var(--t-fast)}
-  .tile svg{width:30px;height:30px;color:var(--accent);margin-bottom:12px}
-  .tile h3{font-family:var(--t-display);font-weight:700;font-size:15px;letter-spacing:.1em;
-    text-transform:uppercase;margin:0 0 6px;color:var(--text)}
-  .tile p{font-size:12.5px;color:var(--muted);margin:0;line-height:1.5}
-  .tile:hover{border-color:var(--accent);transform:translateY(-2px);
-    box-shadow:var(--t-shadow-lg),0 0 22px -8px color-mix(in srgb,var(--accent) 45%,transparent)}
+  /* ---- gamedev ---- */
+  .dev-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:40px;align-items:start;margin-top:40px}
+  .feat{list-style:none;margin:0;padding:26px 28px}
+  .feat li{padding:14px 0;border-bottom:1px solid var(--line-subtle);font-size:16px}
+  .feat li:last-child{border-bottom:0}
+  .feat b{display:block;font-family:var(--t-display);font-size:21px;letter-spacing:.02em;margin-bottom:2px}
+  kbd{font-family:var(--mono);font-size:13px;color:var(--text);padding:3px 8px;background:var(--elem);
+    border:1px solid var(--line);border-bottom-width:2px;border-radius:5px;white-space:nowrap}
+  pre{font-family:var(--mono);font-size:13.5px;line-height:1.6;margin:22px 0 0;padding:18px 20px;overflow:auto;
+    background:color-mix(in srgb,var(--bg) 82%,transparent);border:1px solid var(--line);border-radius:10px;color:var(--text)}
+  pre .c{color:var(--muted)}
+  .credit{margin-top:22px;padding:18px 22px;font-size:15px}
 
-  /* the two stories keep their prose */
-  .story{background:var(--panel-fill,var(--panel));backdrop-filter:blur(var(--panel-blur,0px));
-    -webkit-backdrop-filter:blur(var(--panel-blur,0px));
-    border:1px solid var(--line-subtle);border-radius:12px;padding:30px 32px;margin-top:16px}
-  .story h3{font-family:var(--t-display);font-weight:700;font-size:23px;letter-spacing:.03em;
-    text-transform:uppercase;margin:0 0 10px}
-  .story p{color:var(--muted);margin:0;font-size:15.5px}
+  /* ---- screenshots mosaic ---- */
+  .mosaic{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:22px;margin-top:40px}
+  .mosaic figure:nth-child(1){grid-column:span 8}
+  .mosaic figure:nth-child(2){grid-column:span 4;align-self:center}
+  .mosaic figure:nth-child(3){grid-column:span 5;align-self:center}
+  .mosaic figure:nth-child(4){grid-column:span 7}
+
+  /* ---- keys ---- */
+  .keys{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 34px;padding:10px 28px;margin-top:34px}
+  .keys div{display:flex;justify-content:space-between;gap:18px;align-items:center;padding:13px 0;border-bottom:1px solid var(--line-subtle)}
+  .keys span{color:var(--muted-frosted,var(--muted));font-size:15.5px}
 
   /* ---- download ---- */
-  .steps{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin:44px 0 34px}
-  .step{background:var(--panel-fill,var(--panel));backdrop-filter:blur(var(--panel-blur,0px));
-    -webkit-backdrop-filter:blur(var(--panel-blur,0px));
-    border:1px solid var(--line-subtle);border-radius:10px;padding:22px}
-  .step .n{font-family:var(--mono);font-size:11.5px;color:var(--accent);letter-spacing:2px}
-  .step h3{font-family:var(--t-display);font-weight:600;font-size:20px;letter-spacing:.04em;
-    text-transform:uppercase;margin:8px 0 6px}
-  .step p{color:var(--muted);font-size:14.5px;margin:0}
-  .step code{font-family:var(--mono);font-size:12.5px;color:var(--text);background:var(--elem);
-    border:1px solid var(--line);border-radius:5px;padding:1px 6px}
-  .uninstall{text-align:center;color:var(--muted);font-size:14px;margin:-8px 0 34px}
-  .note{border:1px solid var(--line-subtle);background:var(--panel-fill,var(--panel));
-    backdrop-filter:blur(var(--panel-blur,0px));-webkit-backdrop-filter:blur(var(--panel-blur,0px));
-    border-radius:10px;padding:20px 22px;max-width:760px;margin:0 auto}
-  .note b{font-family:var(--t-display);font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--accent)}
-  .note p{color:var(--muted);margin:8px 0 0;font-size:15px}
-  .dl-ctas{display:flex;gap:14px;justify-content:center;margin-top:36px;flex-wrap:wrap}
+  .dl{padding:40px;display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr);gap:34px;align-items:center}
+  .dl h2{font-size:clamp(30px,3.6vw,46px);text-transform:uppercase;margin-bottom:12px}
+  .dl-ctas{display:flex;flex-direction:column;gap:12px}
 
-  footer{padding:46px 0;border-top:1px solid var(--line-subtle);margin-top:40px;color:var(--muted);font-size:14px}
-  footer .wrap{display:flex;flex-wrap:wrap;gap:16px;align-items:center;justify-content:space-between}
-  footer a:hover{color:var(--accent)}
-  footer .mono{font-family:var(--mono);font-size:11.5px;letter-spacing:2px;text-transform:uppercase}
+  footer{padding:46px 0;margin-top:30px;color:var(--muted-wash,var(--muted));font-size:14px}
+  footer .wrap{display:flex;flex-wrap:wrap;gap:16px;justify-content:space-between}
+  footer a:hover{color:var(--accent-wash,var(--accent))}
+
+  /* ---- Theme Lab ---- */
+  #lab{position:fixed;right:18px;bottom:18px;z-index:50;width:min(340px,calc(100vw - 32px));padding:18px 18px 14px;
+    max-height:calc(100vh - 100px);overflow:auto;box-shadow:0 24px 60px -20px rgba(0,0,0,.7)}
+  #lab[hidden]{display:none}
+  #lab h3{font-size:22px;text-transform:uppercase;letter-spacing:.04em;display:flex;justify-content:space-between;align-items:center}
+  #lab h3 button{font:inherit;font-size:20px;line-height:1;background:none;border:0;color:var(--muted-frosted,var(--muted));cursor:pointer}
+  #lab p{font-size:13px;margin:4px 0 12px}
+  .row{display:grid;grid-template-columns:86px minmax(0,1fr) 40px;gap:10px;align-items:center;margin:9px 0;font-size:13.5px}
+  .row label{color:var(--text-frosted,var(--text))}
+  .row output{font-family:var(--mono);font-size:12px;text-align:right;color:var(--muted-frosted,var(--muted))}
+  .row input[type=range]{width:100%;accent-color:var(--solid)}
+  .row select,.row input[type=color]{width:100%;font:inherit;font-size:13px;color:var(--text);background:var(--elem);
+    border:1px solid var(--line);border-radius:6px;padding:4px 6px;height:30px}
+  .lab-btns{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+  .lab-btns .t-btn{flex:1}
 
   :focus-visible{outline:2px solid var(--accent);outline-offset:3px;border-radius:4px}
+  .skip{position:absolute;left:16px;top:-100px;z-index:100;background:var(--panel);padding:10px 16px}
+  .skip:focus{top:10px}
   .rise{opacity:0;transform:translateY(18px);animation:rise .7s cubic-bezier(.2,.7,.2,1) forwards}
   @keyframes rise{to{opacity:1;transform:none}}
 
-  @media (max-width:940px){
-    .showcase,.showcase--editor{grid-template-columns:1fr;gap:24px}
-    .showcase--editor .product-shot{order:-1}
-    .hero-grid{grid-template-columns:1fr;gap:38px}
-    .sub{max-width:none}
+  @media (max-width:980px){
+    .hero-grid,.dev-grid,.dl{grid-template-columns:minmax(0,1fr)}
+    .tilt{transform:none}
+    .mosaic figure:nth-child(n){grid-column:span 12}
+    .keys{grid-template-columns:minmax(0,1fr)}
   }
-  @media (max-width:820px){
-    .steps{grid-template-columns:1fr}
-    .brand{display:none}
+  @media (max-width:820px){ .brand{display:none} }
+  @media (max-width:520px){
+    .dl{padding:24px}
+    .feat{padding:18px}
+    .keys div{flex-direction:column;align-items:flex-start;gap:6px}
   }
   @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto}}
 </style>
@@ -166,10 +159,9 @@
 
 <a class="skip" href="#main">Skip to content</a>
 <nav id="tnav" class="t-nav t-nav--product" aria-label="Site">
-  <!-- replaced at boot with the registry-driven version (parent mark + crosslink) -->
   <a class="brand" href="#top" style="margin-left:0"><img src="assets/icon.png" alt=""> Tront<b>Snap</b></a>
   <div class="t-nav__links">
-    <a class="t-nav__link" href="#features">Features</a>
+    <a class="t-nav__link" href="#gamedev">Recorder</a>
     <a class="t-nav__link" href="#download">Download</a>
     <a class="t-nav__link" href="https://github.com/TrentSterling/trontsnap">GitHub</a>
   </div>
@@ -179,125 +171,118 @@
 <header class="hero" id="top">
   <div class="wrap hero-grid">
     <div>
-      <div class="eyebrow rise">TrontSnap for Windows</div>
-      <h1 class="hero-title rise" style="animation-delay:.06s">Grab the screen.<br><span class="grad">All of it.</span></h1>
-      <p class="sub rise" style="animation-delay:.12s">Screenshots, recordings, offline OCR and your whole capture history. Annotate, then paste or drag straight into another app.</p>
-      <div class="cta-row rise" style="animation-delay:.18s">
-        <a class="t-btn t-btn--primary t-btn--lg" href="https://github.com/TrentSterling/trontsnap/releases/latest">Download for Windows</a>
-        <a class="t-btn t-btn--ghost t-btn--lg" href="https://github.com/TrentSterling/trontsnap">View source</a>
+      <h1 class="rise">Screenshots + GIFs for people who <span class="grad">make games.</span></h1>
+      <p class="sub rise" style="animation-delay:.08s">Drop a frame over your game, hit <kbd>Ctrl+F9</kbd>, and a GIF is on your clipboard before you've alt-tabbed to Discord. PrtSc still does what PrtSc should, and every shot you've ever taken lives in one searchable gallery.</p>
+      <div class="cta-row rise" style="animation-delay:.14s">
+        <a class="t-btn t-btn--wash t-btn--lg" href="https://github.com/TrentSterling/trontsnap/releases/latest">Download for Windows</a>
+        <a class="t-btn t-btn--ghost t-btn--lg" href="https://github.com/TrentSterling/trontsnap">Source</a>
       </div>
+      <p class="labline rise" style="animation-delay:.2s">This whole page runs on the same colormagic engine as the app's theme window. <button type="button" data-open-lab>Open the Theme Lab</button> and break it; the text stays readable.</p>
     </div>
-    <figure class="product-shot rise" style="animation-delay:.14s">
-      <a href="media/gallery-dark.png" target="_blank" rel="noopener" aria-label="Open the full-size gallery screenshot">
-        <img src="media/gallery-dark.webp" width="1400" height="820" fetchpriority="high" alt="Current TrontSnap gallery: capture menu, filters, search and a grid of public game screenshots">
+    <figure class="rise" style="animation-delay:.12s">
+      <a class="shot tilt" href="media/cam.png" target="_blank" rel="noopener" aria-label="Open the full-size recorder frame image">
+        <img src="media/cam.png" width="1136" height="689" fetchpriority="high" alt="The TrontSnap Cam recorder frame sitting over Terrain Lab, with its toolbar: Record, 30 fps, 1120 x 630, GIF, Native, Replay">
       </a>
-      <figcaption>The current app, captured from its real interface. Gallery images are public screenshots of my games.</figcaption>
+      <figcaption>TrontSnap Cam over Terrain Lab. The middle of the frame isn't part of the window, so the game keeps your mouse; the frame and toolbar never show up in the recording.</figcaption>
     </figure>
   </div>
 </header>
 
-<section class="sec" id="features">
+<section id="gamedev">
   <div class="wrap">
-    <div class="sec-head">
-
-      <h2 class="big">Four shortcuts. One place for everything.</h2>
-      <p class="lede">Built in Rust, resident in the tray, out of your way until you press a key.</p>
-    </div>
-    <div class="tiles">
-      <div class="tile">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M3 8V5a2 2 0 0 1 2-2h3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3"/><circle cx="12" cy="12" r="3" fill="currentColor" stroke="none"/></svg>
-        <h3>Screenshot</h3>
-        <p>One key, whole screen, done.</p>
+    <h2 class="big">Built for devlogs</h2>
+    <p class="lede">The recorder is its own tiny window, not a settings maze. Size it to the bit of the game worth showing, pick fps + format, record. GifCam energy with the stuff gamedevs actually ask for.</p>
+    <div class="dev-grid">
+      <ul class="feat glass">
+        <li><b>GIF, MP4 or WEBM</b>10 to 60 fps. Capture is hardware H.264; GIF and WEBM come out of an ffmpeg pass after you stop, so the take never drops frames. One palette per clip keeps GIFs small and shimmer-free.</li>
+        <li><b>Instant replay</b>Turn on Replay and the frame is buffered as you play. <kbd>Ctrl+F10</kbd> saves the last 15, 30, 60 or 120 seconds, so the cool physics bug you weren't recording still makes it to the devlog.</li>
+        <li><b>Pixel-perfect 2x / 3x / 4x</b>Nearest-neighbor upscaling for pixel art, or scale down to 50%, 720p or 480p for Discord's upload cap.</li>
+        <li><b>Exact sizes</b>Presets from 320x240 to 1080p, snap to any open window (your Unity Game view, a Godot run), or nudge with the arrow keys 1 px at a time.</li>
+        <li><b>Works minimized</b><kbd>Ctrl+F9</kbd> starts and stops from anywhere, even with the cam window tucked away. Space or Enter works when it has focus.</li>
+      </ul>
+      <div>
+        <figure>
+          <a class="shot" href="media/cam-rec.png" target="_blank" rel="noopener" aria-label="Open the full-size recording screenshot"><img src="media/cam-rec.png" width="892" height="459" loading="lazy" alt="The recorder mid-take: red frame, Stop 0:12, 50 fps, 640 x 400, GIF, 2x pixel"></a>
+          <figcaption>Mid-take: 50 fps, GIF out, 2x pixel. The ring goes red while it rolls.</figcaption>
+        </figure>
+        <pre><span class="c"># same pipeline, no window: handy for build scripts and CI captures</span>
+trontsnap rec --monitor 1 --secs 8 --fps 30 --format gif --scale 50%
+trontsnap rec --rect 0,0,1280,720 --format webm
+trontsnap cam --size 800x600 --format gif</pre>
+        <div class="credit glass"><p style="margin:0">Asked for by <b>André</b> and <b>aFoolsDuty</b> in the spicy-dev channel on the nativepixels Discord. Their wishlist became the spec.</p></div>
       </div>
-      <div class="tile">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M3 8V5a2 2 0 0 1 2-2h3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3"/><rect x="8" y="8" width="8" height="8" rx="1" stroke-dasharray="3 2.4"/></svg>
-        <h3>Region</h3>
-        <p>Freeze-frame, zoom loupe, exact.</p>
-      </div>
-      <div class="tile">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M3 8V5a2 2 0 0 1 2-2h3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3"/><circle cx="12" cy="12" r="4.2" fill="currentColor" stroke="none"/></svg>
-        <h3>Record</h3>
-        <p>H.264 + audio, GPU encoded, GIF export.</p>
-      </div>
-      <div class="tile">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M3 8V5a2 2 0 0 1 2-2h3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3"/><path d="M8.5 8.5h7M12 8.5v7.5"/></svg>
-        <h3>OCR text</h3>
-        <p>A region's words, not pixels. Offline.</p>
-      </div>
-      <div class="tile">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M3 8V5a2 2 0 0 1 2-2h3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3"/><path d="M8.5 15.5l7-7M8.2 15.8l-.7 2 2-.7"/></svg>
-        <h3>Edit + redact</h3>
-        <p>Arrows, text, crop, redaction that holds.</p>
-      </div>
-      <div class="tile">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M3 8V5a2 2 0 0 1 2-2h3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3"/><rect x="7.5" y="7.5" width="5.5" height="5.5" rx="1"/><rect x="11" y="11" width="5.5" height="5.5" rx="1"/></svg>
-        <h3>Full history</h3>
-        <p>TrontSnap + ShareX, searchable together.</p>
-      </div>
-    </div>
-
-    <ul class="key-list" aria-label="Default capture shortcuts">
-      <li><kbd>PrtSc</kbd>Capture the whole screen</li>
-      <li><kbd>Ctrl + PrtSc</kbd>Freeze the screen and select a region</li>
-      <li><kbd>Ctrl + Shift + PrtSc</kbd>Start or stop an MP4 recording with audio</li>
-      <li><kbd>Ctrl + Alt + PrtSc</kbd>Copy text from a region, offline</li>
-    </ul>
-    <div class="showcase showcase--editor">
-      <div><h3>Make the point.<br>Hide the private bits.</h3><p>Arrows, boxes, text and crop live in the annotation editor. Solid black redaction is the default. Save copies the edited image back to the clipboard.</p></div>
-      <figure class="product-shot"><a href="media/editor.png" target="_blank" rel="noopener" aria-label="Open the full-size annotation editor screenshot"><img src="media/editor.webp" width="1200" height="760" loading="lazy" alt="TrontSnap annotation editor with an arrow, a box and a solid black redaction on a public Terrain Lab screenshot"></a></figure>
     </div>
   </div>
 </section>
 
-<hr class="spectrum-rule">
-
-<section class="sec" id="migrate">
+<section id="shots">
   <div class="wrap">
-    <div class="sec-head" style="margin-bottom:0">
-
-      <h2 class="big">Your ShareX years come with you.</h2>
-      <p class="lede">TrontSnap reads an existing ShareX screenshot folder and merges it into the same timeline as its own captures: a decade of history, one scrolling gallery, nothing to convert, nothing abandoned. Search and OCR work across all of it.</p>
-    </div>
-  </div>
-  <div class="wrap showcase">
-      <figure class="product-shot"><a href="media/gallery-light.png" target="_blank" rel="noopener" aria-label="Open the full-size light gallery screenshot"><img src="media/gallery-light.webp" width="1400" height="820" loading="lazy" alt="TrontSnap's light-mode gallery with a violet accent and public screenshot history"></a><figcaption>Dark, light, or follow Windows. Your accent colors the whole interface.</figcaption></figure>
-      <div><h3>Your history.<br>Your colors.</h3><p>32 palettes, your own accent and a gradient wash. TrontSnap adjusts text contrast as the colors change.</p><p>The entire title bar is a grab point. Click a control to use it; drag from it to move the window.</p></div>
-    </div>
-    <div class="wrap showcase showcase--editor">
-      <div><h3>A theme in one click.</h3><p>Open the title-bar swatch to change colors without leaving the gallery. Pick a palette, adjust the frost, or roll something new.</p></div>
-      <figure class="product-shot"><a href="media/theme.png" target="_blank" rel="noopener" aria-label="Open the full-size theme controls screenshot"><img src="media/theme.webp" width="1400" height="820" loading="lazy" alt="The current TrontSnap gallery with its floating theme controls open"></a></figure>
-    </div>
-</section>
-
-<hr class="spectrum-rule">
-
-<section class="sec" id="download">
-  <div class="wrap">
-    <div class="sec-head" style="margin-bottom:0">
-      <h2 class="big">Download and run</h2>
-      <p class="lede">TrontSnap is a portable single exe: no installer, nothing to approve, no reboot. Download it, run it, and it's already in your tray.</p>
-    </div>
-    <div class="steps">
-      <div class="step"><div class="n">01</div><h3>Download</h3><p>Grab <code>trontsnap.exe</code> from the latest release.</p></div>
-      <div class="step"><div class="n">02</div><h3>Run it</h3><p>It drops into the tray and applies your hotkeys. Nothing to install.</p></div>
-      <div class="step"><div class="n">03</div><h3>Press PrtSc</h3><p>Or left-click the tray icon. That's it, you're capturing.</p></div>
-    </div>
-    <p class="uninstall">To uninstall: delete the exe (untick "Start at login" in the tray menu first if you had it on).</p>
-    <div class="note">
-      <b>Portable or installed</b>
-      <p>The portable EXE runs without an installer or admin. To capture while elevated windows have focus, use the release ZIP's installed mode: it adds a signed hotkey broker while the main app stays at normal integrity, so drag-out still works. The setup guide covers verification and reverting to portable.</p>
-    </div>
-    <div class="dl-ctas">
-      <a class="t-btn t-btn--primary t-btn--lg" href="https://github.com/TrentSterling/trontsnap/releases/latest">Download TrontSnap</a>
-      <a class="t-btn t-btn--ghost t-btn--lg" href="https://github.com/TrentSterling/trontsnap/blob/main/SETUP.md">Read the setup guide</a>
+    <h2 class="big">And the rest of it</h2>
+    <p class="lede">TrontSnap started as my ShareX replacement, so the screenshot side is all there: freeze-frame region picking with a zoom loupe, offline OCR, an annotation editor, and a gallery that stays fast with years of history in it.</p>
+    <div class="mosaic">
+      <figure><a class="shot" href="media/gallery-dark.png" target="_blank" rel="noopener"><img src="media/gallery-dark.webp" width="1400" height="820" loading="lazy" alt="TrontSnap gallery in dark mode with filters, search and a grid of public game screenshots"></a><figcaption>The gallery: TrontSnap + ShareX history in one timeline. Search by name, folder or date; Ctrl/Shift-click to pick a bunch, then drag them all into Discord.</figcaption></figure>
+      <figure><a class="shot" href="media/editor.png" target="_blank" rel="noopener"><img src="media/editor.webp" width="1200" height="760" loading="lazy" alt="Annotation editor with an arrow, a box and a solid black redaction on a Terrain Lab screenshot"></a><figcaption>Arrows, boxes, text, crop. Redaction is solid black by default, baked into the pixels.</figcaption></figure>
+      <figure><a class="shot" href="media/theme.png" target="_blank" rel="noopener"><img src="media/theme.webp" width="1400" height="820" loading="lazy" alt="The gallery with its floating theme window open"></a><figcaption>The theme window: 32 palettes, harmonies, gradient intensity + frost. Same knobs as the Theme Lab on this page.</figcaption></figure>
+      <figure><a class="shot" href="media/gallery-light.png" target="_blank" rel="noopener"><img src="media/gallery-light.webp" width="1400" height="820" loading="lazy" alt="Light mode gallery with a violet accent"></a><figcaption>Light mode, violet accent. Contrast is checked on every color change, so no theme ends up unreadable.</figcaption></figure>
     </div>
   </div>
 </section>
 
+<section id="keys">
+  <div class="wrap">
+    <h2 class="big">The keys</h2>
+    <p class="lede">All rebindable in Settings. The PrtSc combos work from the tray; the F9 + F10 ones belong to the recorder frame.</p>
+    <div class="keys glass">
+      <div><kbd>PrtSc</kbd><span>Whole screen (the monitor under your mouse)</span></div>
+      <div><kbd>Ctrl + PrtSc</kbd><span>Freeze, then click a window or drag a region</span></div>
+      <div><kbd>Ctrl + Shift + PrtSc</kbd><span>Quick MP4 recording of a region, with audio</span></div>
+      <div><kbd>Ctrl + Alt + PrtSc</kbd><span>Copy the text out of a region, offline</span></div>
+      <div><kbd>Ctrl + F9</kbd><span>Recorder frame: start / stop, even minimized</span></div>
+      <div><kbd>Ctrl + F10</kbd><span>Recorder frame: save the instant replay</span></div>
+    </div>
+  </div>
+</section>
+
+<section id="download">
+  <div class="wrap">
+    <div class="dl glass">
+      <div>
+        <h2>Grab it</h2>
+        <p>One portable exe: no installer, no admin, no reboot. Run it and it lives in the tray; the About tab has a one-click setup for Desktop + Start menu shortcuts (TrontSnap and TrontSnap Cam) and start at login. Uninstall by deleting the file.</p>
+        <p>GIF + WEBM use <a href="https://ffmpeg.org/">ffmpeg</a> if it's on your PATH (<code>winget install ffmpeg</code>). Without it you still get MP4, plus a built-in GIF encoder.</p>
+        <p>Want PrtSc to work over admin windows too? The release ZIP has an installed mode with a small signed hotkey helper; <a href="https://github.com/TrentSterling/trontsnap/blob/main/SETUP.md">the setup guide</a> walks through it.</p>
+      </div>
+      <div class="dl-ctas">
+        <a class="t-btn t-btn--wash t-btn--lg" href="https://github.com/TrentSterling/trontsnap/releases/latest">Download TrontSnap</a>
+        <a class="t-btn t-btn--ghost t-btn--lg" href="https://github.com/TrentSterling/trontsnap/blob/main/CHANGELOG.md">What's new</a>
+        <a class="t-btn t-btn--ghost t-btn--lg" href="https://tront.xyz/discord/">Ask for features on Discord</a>
+      </div>
+    </div>
+  </div>
+</section>
 </main>
+
+<aside id="lab" class="glass" hidden aria-label="Theme Lab">
+  <h3>Theme Lab <button type="button" id="lab-close" aria-label="Close the Theme Lab">&times;</button></h3>
+  <p>The app's colormagic engine, live. Crank it; APCA contrast keeps every word readable.</p>
+  <div class="row"><label for="l-accent">Accent</label><input type="color" id="l-accent" value="#00e0ff"><output></output></div>
+  <div class="row"><label for="l-preset">Gradient</label><select id="l-preset"></select><output></output></div>
+  <div class="row"><label for="l-harmony">Harmony</label><select id="l-harmony"></select><output></output></div>
+  <div class="row"><label for="l-pegs">Pegs</label><input type="range" id="l-pegs" min="1" max="4" step="1"><output></output></div>
+  <div class="row"><label for="l-int">Intensity</label><input type="range" id="l-int" min="0" max="1" step="0.01"><output></output></div>
+  <div class="row"><label for="l-frost">Frost</label><input type="range" id="l-frost" min="0.05" max="1" step="0.01"><output></output></div>
+  <div class="row"><label for="l-angle">Angle</label><input type="range" id="l-angle" min="0" max="360" step="1"><output></output></div>
+  <div class="row"><label for="l-mode">Mode</label><select id="l-mode"><option value="dark">Dark</option><option value="light">Light</option></select><output></output></div>
+  <div class="lab-btns">
+    <button class="t-btn t-btn--primary t-btn--sm" type="button" id="l-roll">Roll everything</button>
+    <button class="t-btn t-btn--ghost t-btn--sm" type="button" id="l-spin" aria-pressed="false">Spin</button>
+    <button class="t-btn t-btn--ghost t-btn--sm" type="button" id="l-reset">Reset</button>
+  </div>
+</aside>
+
 <footer><div class="wrap">
   <div>Built by <a href="https://tront.xyz">Trent Sterling</a> &middot; part of the TrontStack</div>
-  <div class="mono">Rust &middot; portable &middot; no admin &middot; <a href="https://github.com/TrentSterling/trontsnap">source</a></div>
+  <div>Rust &middot; portable &middot; <a href="https://github.com/TrentSterling/trontsnap">source</a> &middot; <a href="https://github.com/TrentSterling/trontsnap/blob/main/DEVLOG.md">devlog</a></div>
 </div></footer>
 
 <script src="assets/tront-system.js"></script>
@@ -306,44 +291,112 @@
   'use strict';
   if (!window.Tront) return; // static fallback tokens keep the page readable
 
-  // The page is themed by the SAME engine that ships inside the app: one cyan
-  // seed, APCA-guaranteed inks, gradient v2 wash. Roll re-seeds everything
-  // live, headline included, which is the theme engine demoing itself.
-  function boot(seed) {
-    Tront.applyTheme(seed, true);
+  var DEFAULTS = { seed: '#00e0ff', dark: true, preset: -1, harmony: 2, pegs: 3,
+                   intensity: 0.72, frost: 0.62, angle: 135 };
+  var st = Object.assign({}, DEFAULTS);
+  var $ = function (id) { return document.getElementById(id); };
+
+  // One function paints the page: theme scale from the seed, then the
+  // gradient (pegs, harmony, intensity, frost), then the headline ramp.
+  function paint() {
+    Tront.setGradient({
+      enabled: true, preset: st.preset, harmony: st.harmony, pegs: st.pegs,
+      intensity: st.intensity, angle: st.angle,
+      frostDark: st.frost, frostLight: st.frost
+    });
+    Tront.applyTheme(st.seed, st.dark);
     Tront.applyGradient();
     var pegs = Tront.gradientPegs(Tront.scale).map(Tront.toHex);
-    document.documentElement.style.setProperty(
-      '--headline-grad', 'linear-gradient(90deg,' + pegs.join(',') + ')');
+    if (pegs.length < 2) pegs.push(pegs[0]);
+    document.documentElement.style.setProperty('--headline-grad', 'linear-gradient(90deg,' + pegs.join(',') + ')');
+    sync();
   }
 
-  // Product nav from the system: parent mark + this page's own links + the
-  // crosslink menu straight out of the shared registry (Tront.SITES), which is
-  // the anti-drift move: rename a site in the hub, every page follows.
-  var nav = document.getElementById('tnav');
-  var cross = Tront.SITES.map(function (s) {
-    return '<a href="' + s.href + '">' + s.label + '</a>';
-  }).join('');
+  function sync() {
+    $('l-accent').value = st.seed;
+    $('l-preset').value = String(st.preset);
+    $('l-harmony').value = String(st.harmony);
+    $('l-pegs').value = st.pegs;
+    $('l-int').value = st.intensity;
+    $('l-frost').value = st.frost;
+    $('l-angle').value = st.angle;
+    $('l-mode').value = st.dark ? 'dark' : 'light';
+    document.querySelectorAll('#lab .row').forEach(function (r) {
+      var i = r.querySelector('input[type=range]');
+      r.querySelector('output').textContent = i ? (i.step === '1' ? i.value : Math.round(i.value * 100) + '%') : '';
+    });
+    $('l-harmony').disabled = st.preset !== -1;
+  }
+
+  // Nav from the shared registry (parent mark + crosslinks), plus the lab toggle.
+  var nav = $('tnav');
+  var cross = Tront.SITES.map(function (s) { return '<a href="' + s.href + '">' + s.label + '</a>'; }).join('');
   nav.innerHTML =
     '<a class="t-nav__mark" href="https://tront.xyz/"><span aria-hidden="true">&#9664;</span> tront.xyz</a>' +
     '<a class="brand" href="#top"><img src="assets/icon.png" alt=""> Tront<b>Snap</b></a>' +
     '<div class="t-nav__links">' +
-      '<a class="t-nav__link" href="#features">Features</a>' +
+      '<a class="t-nav__link" href="#gamedev">Recorder</a>' +
       '<a class="t-nav__link" href="#download">Download</a>' +
       '<a class="t-nav__link" href="https://github.com/TrentSterling/trontsnap">GitHub</a>' +
       '<details class="t-nav__more"><summary class="t-nav__link">More</summary>' +
         '<div class="t-nav__menu">' + cross + '</div></details>' +
-      '<button class="t-btn t-btn--ghost t-btn--sm" id="roll" type="button" ' +
-        'title="Rolls the page theme with the same colormagic engine the app ships. Text stays readable on every roll; that is the point.">Roll theme</button>' +
+      '<button class="t-btn t-btn--ghost t-btn--sm" type="button" data-open-lab>Theme Lab</button>' +
     '</div>';
 
-  document.getElementById('roll').onclick = function () {
-    boot('#' + [0, 0, 0].map(function () {
-      return Math.floor(Math.random() * 256).toString(16).padStart(2, '0');
-    }).join(''));
-  };
+  // Lab controls
+  var pre = $('l-preset');
+  pre.innerHTML = '<option value="-1">From accent (harmony)</option>' +
+    Tront.GRADIENT_PRESETS.map(function (p, i) { return '<option value="' + i + '">' + p[0] + '</option>'; }).join('');
+  $('l-harmony').innerHTML = Tront.HARMONY_RULES.map(function (h, i) { return '<option value="' + i + '">' + h + '</option>'; }).join('');
 
-  boot('#00e0ff');
+  var lab = $('lab');
+  document.querySelectorAll('[data-open-lab]').forEach(function (b) {
+    b.addEventListener('click', function () { lab.hidden = !lab.hidden; });
+  });
+  $('lab-close').onclick = function () { lab.hidden = true; };
+
+  function bind(id, key, parse) {
+    $(id).addEventListener('input', function (e) { st[key] = parse(e.target.value); paint(); });
+  }
+  bind('l-accent', 'seed', String);
+  bind('l-preset', 'preset', Number);
+  bind('l-harmony', 'harmony', Number);
+  bind('l-pegs', 'pegs', Number);
+  bind('l-int', 'intensity', Number);
+  bind('l-frost', 'frost', Number);
+  bind('l-angle', 'angle', Number);
+  bind('l-mode', 'dark', function (v) { return v === 'dark'; });
+
+  var rnd = function (a, b) { return a + Math.random() * (b - a); };
+  $('l-roll').onclick = function () {
+    st.seed = '#' + [0, 0, 0].map(function () { return Math.floor(Math.random() * 256).toString(16).padStart(2, '0'); }).join('');
+    st.preset = Math.random() < 0.35 ? Math.floor(Math.random() * Tront.GRADIENT_PRESETS.length) : -1;
+    st.harmony = Math.floor(Math.random() * Tront.HARMONY_RULES.length);
+    st.pegs = 2 + Math.floor(Math.random() * 3);
+    st.intensity = +rnd(0.45, 1).toFixed(2);
+    st.frost = +rnd(0.2, 0.9).toFixed(2);
+    st.angle = Math.floor(rnd(0, 360));
+    st.dark = Math.random() < 0.75;
+    paint();
+  };
+  $('l-reset').onclick = function () { st = Object.assign({}, DEFAULTS); paint(); };
+
+  // Spin: walk the gradient angle around. Repaints are cheap (a few custom
+  // properties), so ~30 fps is plenty; off when reduced motion is asked for.
+  var spinning = false, last = 0;
+  $('l-spin').onclick = function () {
+    spinning = !spinning;
+    this.setAttribute('aria-pressed', String(spinning));
+    if (spinning) requestAnimationFrame(tick);
+  };
+  function tick(t) {
+    if (!spinning) return;
+    if (t - last > 33) { st.angle = (st.angle + 1.5) % 360; paint(); last = t; }
+    requestAnimationFrame(tick);
+  }
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) $('l-spin').hidden = true;
+
+  paint();
 })();
 </script>
 </body>
