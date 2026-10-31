@@ -2071,13 +2071,19 @@ fn hwnd_from_frame(frame: &eframe::Frame) -> Option<isize> {
 /// Blocking/modal on the calling thread by Win32 design; gallery.rs calls this
 /// synchronously from update() (the UI thread), which is required.
 pub fn start_file_drag(hwnd: Option<isize>, path: &Path) -> bool {
+    start_files_drag(hwnd, &[path.to_path_buf()])
+}
+
+/// Drag several files out at once (a gallery multi-selection); the drag image
+/// is the first one.
+pub fn start_files_drag(hwnd: Option<isize>, paths: &[std::path::PathBuf]) -> bool {
     let Some(hwnd) = hwnd.and_then(NonZeroIsize::new) else {
         return false;
     };
+    let Some(first) = paths.first() else { return false };
     let handle = RawHwnd(hwnd);
-    let path = path.to_path_buf();
-    let item = drag::DragItem::Files(vec![path.clone()]);
-    let image = drag::Image::File(path);
+    let item = drag::DragItem::Files(paths.to_vec());
+    let image = drag::Image::File(first.clone());
     drag::start_drag(
         &handle,
         item,

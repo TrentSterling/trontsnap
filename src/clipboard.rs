@@ -241,6 +241,14 @@ pub fn set_file(file_path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Several files at once (CF_HDROP list): pastes all of them into Explorer,
+/// Discord or a terminal.
+pub fn set_files(paths: &[std::path::PathBuf]) -> anyhow::Result<()> {
+    let Some(first) = paths.first() else { return Ok(()) };
+    enqueue(Payload::File { dropfiles: build_dropfiles_many(paths) }, first);
+    Ok(())
+}
+
 /// Put plain TEXT on the clipboard (CF_UNICODETEXT) — the OCR delivery. Goes
 /// through the same writer thread + retry as images, and newest-wins applies
 /// across kinds too: a fresh capture rightly replaces a pending OCR result.
@@ -396,8 +404,15 @@ fn build_dibv5(w: u32, h: u32, bgra_bottom_up: &[u8]) -> Vec<u8> {
 /// DROPFILES + a double-null-terminated wide string list (one entry: the
 /// saved PNG's path) — exactly what CF_HDROP consumers expect.
 fn build_dropfiles(path: &Path) -> Vec<u8> {
-    let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
-    wide.push(0); // terminate this path
+    build_dropfiles_many(std::slice::from_ref(&path.to_path_buf()))
+}
+
+fn build_dropfiles_many(paths: &[std::path::PathBuf]) -> Vec<u8> {
+    let mut wide: Vec<u16> = Vec::new();
+    for p in paths {
+        wide.extend(p.as_os_str().encode_wide());
+        wide.push(0); // terminate this path
+    }
     wide.push(0); // terminate the list (double-null)
 
     let header = DROPFILES {

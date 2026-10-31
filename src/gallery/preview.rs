@@ -26,6 +26,7 @@ impl Gallery {
             query: String::new(),
             selected: HashSet::new(),
             sel_anchor: None,
+            last_click: None,
             confirm_delete: None,
             comparison: None,
             comparison_rx: None,

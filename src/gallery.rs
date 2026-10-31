@@ -54,8 +54,13 @@ enum Action {
     // (Shift+click), and the context-menu bulk ops, which resolve the CURRENT
     // visible selection inside apply() rather than snapshotting it per cell.
     ToggleSelect(PathBuf),
-    RangeSelect(PathBuf),
+    // Shift+click; `add` = Ctrl+Shift keeps the existing selection (Explorer).
+    RangeSelect { path: PathBuf, add: bool },
+    // Plain click: select just this one and copy it. Two within DOUBLE_CLICK_S
+    // on the SAME cell open it (`time` is egui's input clock).
+    Click { path: PathBuf, time: f64 },
     CopySelectedPaths,
+    CopySelectedFiles,
     DeleteSelected,
     CompareSelected,
 }
@@ -64,6 +69,9 @@ enum Action {
 /// everything recoverable anyway; the dialog exists so a stray Delete over a
 /// "select all" filter can't silently sweep thousands of shots.
 const CONFIRM_THRESHOLD: usize = 5;
+
+/// Two plain clicks on the same cell within this long open it.
+const DOUBLE_CLICK_S: f64 = 0.4;
 
 pub struct Gallery {
     shots: Vec<Shot>,
@@ -80,6 +88,8 @@ pub struct Gallery {
     selected: HashSet<PathBuf>,
     // Shift-click extends from the most recent Ctrl/plain selection here.
     sel_anchor: Option<PathBuf>,
+    // The cell the last plain click hit: a double-click only opens on the same cell.
+    last_click: Option<(PathBuf, f64)>,
     // Bulk delete parked while its confirm dialog is up.
     confirm_delete: Option<Vec<PathBuf>>,
     comparison: Option<crate::comparison::Pair>,
@@ -106,6 +116,7 @@ impl Gallery {
             query: String::new(),
             selected: HashSet::new(),
             sel_anchor: None,
+            last_click: None,
             confirm_delete: None,
             comparison: None,
             comparison_rx: None,
@@ -632,7 +643,53 @@ impl Gallery {
     }
 
     fn apply(&mut self, action: Action, hwnd: Option<isize>, ctx: &egui::Context) {
+        // A plain click resolves here: same cell as the last click + egui's
+        // double flag = open; anything else = select just this one and copy.
+        let action = match action {
+            Action::Click { path, time } => {
+                let double = matches!(&self.last_click, Some((p, t)) if *p == path && time - t < DOUBLE_CLICK_S);
+                // An opening click doesn't start a new pair (no open-open on a triple).
+                self.last_click = if double { None } else { Some((path.clone(), time)) };
+                if double {
+                    Action::Open(path)
+                } else {
+                    self.selected.clear();
+                    self.selected.insert(path.clone());
+                    self.sel_anchor = Some(path.clone());
+                    Action::Copy(path)
+                }
+            }
+            Action::ToggleSelect(_) | Action::RangeSelect { .. } => {
+                self.last_click = None;
+                action
+            }
+            other => other,
+        };
+        // Selection tests drive real clicks; never let them open files, touch
+        // the clipboard or start an OLE drag on the desktop.
+        #[cfg(test)]
+        if matches!(
+            action,
+            Action::Copy(_) | Action::Open(_) | Action::Drag(_) | Action::Reveal(_) | Action::Edit(_) | Action::CopySelectedFiles
+        ) {
+            select_test::OS.with(|o| o.borrow_mut().push(match &action {
+                Action::Open(_) => "open",
+                Action::Copy(_) => "copy",
+                Action::Drag(_) => "drag",
+                _ => "other",
+            }));
+            return;
+        }
         match action {
+            Action::Click { .. } => unreachable!("resolved above"),
+            Action::CopySelectedFiles => {
+                let vis = self.visible_selected();
+                let n = vis.len();
+                if let Err(e) = crate::clipboard::set_files(&vis) {
+                    eprintln!("trontsnap: multi copy failed: {e:#}");
+                }
+                self.set_status(format!("Copied {n} files"));
+            }
             Action::Copy(path) => {
                 let p = path.clone();
                 std::thread::spawn(move || {
@@ -669,7 +726,10 @@ impl Gallery {
                 }
             }
             Action::Drag(path) => {
-                if crate::app::start_file_drag(hwnd, &path) {
+                // Dragging any cell of a multi-selection drags the whole set.
+                let vis = self.visible_selected();
+                let files = if vis.len() > 1 && vis.contains(&path) { vis } else { vec![path] };
+                if crate::app::start_files_drag(hwnd, &files) {
                     self.set_status("Dragging...");
                 }
             }
@@ -728,7 +788,10 @@ impl Gallery {
                 }
                 self.sel_anchor = Some(path);
             }
-            Action::RangeSelect(path) => {
+            Action::RangeSelect { path, add } => {
+                if !add {
+                    self.selected.clear();
+                }
                 // Extend from the anchor within the CURRENT view, both ends
                 // resolved against filtered order. If the anchor is filtered
                 // out (or there never was one), Shift+click degrades to a
@@ -803,6 +866,8 @@ fn draw_cell(
     action: &mut Option<Action>,
 ) {
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(CELL, CELL), Sense::click_and_drag());
+    #[cfg(test)]
+    select_test::CELLS.with(|c| c.borrow_mut().push((shot.path.clone(), rect)));
     let painter = ui.painter();
     // Raised card: theme fill + a hairline border so tiles read as surfaces.
     painter.rect_filled(rect, 6.0, crate::theme::card_bg());
@@ -911,18 +976,23 @@ fn draw_cell(
 
     if resp.drag_started() {
         *action = Some(Action::Drag(shot.path.clone()));
-    } else if resp.double_clicked() {
-        *action = Some(Action::Open(shot.path.clone()));
-    } else if resp.clicked() {
-        // Plain click stays copy-to-clipboard (the flagship gesture); the
-        // modifier clicks are the selection model.
+    } else if resp.clicked() || resp.double_clicked() {
+        // Explorer's model: plain click selects one (and copies it, the
+        // flagship gesture), Ctrl toggles, Shift extends from the anchor.
+        // egui flags ANY two clicks within 0.3 s as a double-click, even on two
+        // different cells, which used to turn a quick Ctrl+click run into
+        // "open this file". Modifier clicks never open; plain double-clicks
+        // only open when both clicks hit the same cell (checked in apply).
         let mods = ui.input(|i| i.modifiers);
-        *action = Some(if mods.command {
-            Action::ToggleSelect(shot.path.clone())
+        let path = shot.path.clone();
+        *action = Some(if mods.command && mods.shift {
+            Action::RangeSelect { path, add: true }
+        } else if mods.command {
+            Action::ToggleSelect(path)
         } else if mods.shift {
-            Action::RangeSelect(shot.path.clone())
+            Action::RangeSelect { path, add: false }
         } else {
-            Action::Copy(shot.path.clone())
+            Action::Click { path, time: ui.input(|i| i.time) }
         });
     }
 
@@ -967,6 +1037,10 @@ fn draw_cell(
             ui.separator();
             if sel_count == 2 && ui.button("Compare and annotate").clicked() {
                 *action = Some(Action::CompareSelected);
+                ui.close_menu();
+            }
+            if ui.button(format!("Copy {sel_count} files")).clicked() {
+                *action = Some(Action::CopySelectedFiles);
                 ui.close_menu();
             }
             if ui.button(format!("Copy {sel_count} paths")).clicked() {
@@ -1084,3 +1158,7 @@ fn reveal(_path: &Path) {}
 #[cfg(test)]
 #[path = "gallery/preview.rs"]
 mod preview;
+
+#[cfg(test)]
+#[path = "gallery/select_test.rs"]
+mod select_test;
