@@ -18,7 +18,7 @@
 // Everything runs on dedicated threads; the app's UI thread is never involved.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -78,6 +78,15 @@ pub(crate) const MF_VERSION: u32 = 0x0002_0070;
 static RECORDING: AtomicBool = AtomicBool::new(false);
 /// Stop requested (second hotkey press, or pill clicked).
 static STOP: AtomicBool = AtomicBool::new(false);
+/// Auto-stop after this many ms (0 = until STOP). Only record_rect_for sets it.
+static MAX_MS: AtomicU64 = AtomicU64::new(0);
+/// Encoded length of the last finished recording, from its frame count.
+static LAST_MS: AtomicU64 = AtomicU64::new(0);
+
+/// Video length (seconds) of the most recent recording this process finished.
+pub fn last_secs() -> f64 {
+    LAST_MS.load(Ordering::SeqCst) as f64 / 1000.0
+}
 
 /// Hotkey entry: first press starts a session (region pick -> record), second press
 /// stops it. Safe to call from any thread.
@@ -356,7 +365,11 @@ fn capture_encode(origin: (i32, i32), rx: i32, ry: i32, w: u32, h: u32, fps: u32
         let mut have_frame = false;
         let mut cursor_cache = CursorCache::default();
 
+        let max_ms = MAX_MS.load(Ordering::SeqCst);
         while !STOP.load(Ordering::SeqCst) {
+            if max_ms > 0 && epoch.elapsed().as_millis() as u64 >= max_ms {
+                break; // replay segment length reached
+            }
             let target = Duration::from_nanos(n * 1_000_000_000 / fps as u64);
             if let Some(rest) = target.checked_sub(epoch.elapsed()) {
                 std::thread::sleep(rest);
@@ -436,6 +449,7 @@ fn capture_encode(origin: (i32, i32), rx: i32, ry: i32, w: u32, h: u32, fps: u32
         }
 
         writer.Finalize()?;
+        LAST_MS.store(n * 1000 / fps as u64, Ordering::SeqCst);
         if n == 0 {
             let _ = std::fs::remove_file(&path);
             anyhow::bail!("no frames captured");
@@ -525,6 +539,11 @@ pub fn request_stop() {
 /// `request_stop()`. Blocks; run it on its own thread. The rect is clamped to the
 /// monitor holding its center (duplication is per output) and evened for H.264.
 pub fn record_rect(r: RECT, fps: u32, audio: bool, path: PathBuf) -> anyhow::Result<PathBuf> {
+    record_rect_for(r, fps, audio, path, None)
+}
+
+/// `record_rect` that also ends on its own after `max` (the replay buffer's segments).
+pub fn record_rect_for(r: RECT, fps: u32, audio: bool, path: PathBuf, max: Option<Duration>) -> anyhow::Result<PathBuf> {
     let mons = capture::monitors()?;
     let (cx, cy) = ((r.left + r.right) / 2, (r.top + r.bottom) / 2);
     let m = mons
@@ -543,7 +562,9 @@ pub fn record_rect(r: RECT, fps: u32, audio: bool, path: PathBuf) -> anyhow::Res
         anyhow::bail!("already recording");
     }
     STOP.store(false, Ordering::SeqCst);
+    MAX_MS.store(max.map(|d| d.as_millis() as u64).unwrap_or(0), Ordering::SeqCst);
     let res = capture_encode((m.x, m.y), l, t, w, h, fps, audio, path);
+    MAX_MS.store(0, Ordering::SeqCst);
     RECORDING.store(false, Ordering::SeqCst);
     STOP.store(false, Ordering::SeqCst);
     res

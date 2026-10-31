@@ -33,6 +33,7 @@ mod overlay;
 mod printscreen;
 mod recorder;
 mod region_win32;
+mod replay;
 mod settings;
 mod shellexec;
 mod shortcuts;
@@ -82,6 +83,11 @@ fn main() {
         }
         "monitors" => capture::print_monitors(),
         "cam" => cam::run(&std::env::args().skip(2).collect::<Vec<_>>()),
+        "replay-test" => {
+            let secs = std::env::args().nth(2).and_then(|v| v.parse().ok()).unwrap_or(12);
+            let keep = std::env::args().nth(3).and_then(|v| v.parse().ok()).unwrap_or(8);
+            replay::replay_test(secs, keep)
+        }
         "rec" => cam::rec_cli(&std::env::args().skip(2).collect::<Vec<_>>()),
         "region" => {
             region_win32::capture_region();

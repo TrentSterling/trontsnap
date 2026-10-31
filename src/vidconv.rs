@@ -50,10 +50,12 @@ pub enum Scale {
     Pct(u32),
     /// Fixed output height (width follows the aspect); never upscales.
     Height(u32),
+    /// Whole-number nearest-neighbor upscale: crisp pixel art (2x, 3x, 4x).
+    Pixel(u32),
 }
 
 impl Scale {
-    pub const PRESETS: [Scale; 8] = [
+    pub const PRESETS: [Scale; 11] = [
         Scale::Native,
         Scale::Pct(75),
         Scale::Pct(50),
@@ -62,12 +64,16 @@ impl Scale {
         Scale::Height(720),
         Scale::Height(480),
         Scale::Height(360),
+        Scale::Pixel(2),
+        Scale::Pixel(3),
+        Scale::Pixel(4),
     ];
     pub fn label(self) -> String {
         match self {
             Scale::Native => "Native".into(),
             Scale::Pct(p) => format!("{p}%"),
             Scale::Height(h) => format!("{h}p"),
+            Scale::Pixel(n) => format!("{n}x pixel"),
         }
     }
     /// "native", "50%", "50", "720p".
@@ -75,6 +81,9 @@ impl Scale {
         let s = s.trim().to_ascii_lowercase();
         if s == "native" || s == "100%" || s == "100" {
             return Some(Scale::Native);
+        }
+        if let Some(n) = s.strip_suffix(" pixel").unwrap_or(&s).strip_suffix('x') {
+            return n.parse().ok().filter(|n| (2..=8).contains(n)).map(Scale::Pixel);
         }
         if let Some(h) = s.strip_suffix('p') {
             return h.parse().ok().filter(|h| *h >= 16).map(Scale::Height);
@@ -88,6 +97,7 @@ impl Scale {
             // Even dims keep H.264/VP9 happy; lanczos keeps pixel art and UI crisp.
             Scale::Pct(p) => Some(format!("scale=trunc(iw*{p}/200)*2:-2:flags=lanczos")),
             Scale::Height(h) => Some(format!("scale=-2:'min({h},ih)':flags=lanczos")),
+            Scale::Pixel(n) => Some(format!("scale=iw*{n}:ih*{n}:flags=neighbor")),
         }
     }
 }
@@ -193,6 +203,32 @@ pub fn finish(raw: &Path, fmt: Format, scale: Scale, fps: u32) -> anyhow::Result
     Ok((dst, None))
 }
 
+/// Join replay segments (oldest first, `total` seconds long) into one temp MP4
+/// holding only the last `keep` seconds. Stream copy, so it takes well under a
+/// second; the cut snaps to the nearest keyframe.
+pub fn concat_tail(segs: &[PathBuf], total: f64, keep: f64) -> anyhow::Result<PathBuf> {
+    let ffmpeg = find_ffmpeg().ok_or_else(|| anyhow::anyhow!("replay needs ffmpeg on PATH"))?;
+    let raw = temp_raw()?;
+    let list = raw.with_extension("txt");
+    let body: String = segs
+        .iter()
+        .map(|p| format!("file '{}'\n", p.to_string_lossy().replace('\\', "/").replace('\'', "'\\''")))
+        .collect();
+    std::fs::write(&list, body)?;
+    let start = (total - keep).max(0.0);
+    let out = hidden(Command::new(ffmpeg))
+        .args(["-hide_banner", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i"])
+        .arg(&list)
+        .args(["-ss", &format!("{start:.2}"), "-c", "copy", "-movflags", "+faststart"])
+        .arg(&raw)
+        .output()?;
+    let _ = std::fs::remove_file(&list);
+    if !out.status.success() || !raw.is_file() {
+        anyhow::bail!("joining the replay failed: {}", String::from_utf8_lossy(&out.stderr).trim());
+    }
+    Ok(raw)
+}
+
 /// No ffmpeg (or it failed): GIF via the built-in encoder, everything else stays MP4.
 fn fallback(raw: &Path, fmt: Format) -> anyhow::Result<(PathBuf, Option<String>)> {
     if fmt == Format::Gif {
@@ -240,6 +276,8 @@ mod tests {
         assert_eq!(Scale::parse("50%"), Some(Scale::Pct(50)));
         assert_eq!(Scale::parse("720p"), Some(Scale::Height(720)));
         assert_eq!(Scale::parse("0"), None);
+        assert_eq!(Scale::parse("2x"), Some(Scale::Pixel(2)));
+        assert_eq!(Scale::parse("3x pixel"), Some(Scale::Pixel(3)));
         assert!(!needs_pass(Format::Mp4, Scale::Native));
         assert!(needs_pass(Format::Mp4, Scale::Pct(50)));
         assert!(needs_pass(Format::Gif, Scale::Native));

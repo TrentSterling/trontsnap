@@ -34,7 +34,7 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyState, RegisterHotKey, ReleaseCapture, SetCapture, UnregisterHotKey, MOD_CONTROL,
-    MOD_NOREPEAT, VK_CONTROL, VK_DOWN, VK_ESCAPE, VK_F9, VK_LEFT, VK_RETURN, VK_RIGHT, VK_SHIFT,
+    MOD_NOREPEAT, VK_CONTROL, VK_DOWN, VK_ESCAPE, VK_F10, VK_F9, VK_LEFT, VK_RETURN, VK_RIGHT, VK_SHIFT,
     VK_SPACE, VK_UP,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
@@ -59,6 +59,10 @@ static REC_START: Mutex<Option<Instant>> = Mutex::new(None);
 static STATUS: Mutex<String> = Mutex::new(String::new());
 static LAST_FILE: Mutex<Option<PathBuf>> = Mutex::new(None);
 static CLOSE_PENDING: AtomicBool = AtomicBool::new(false);
+/// Replay was buffering when a manual recording started; resume it after.
+static RESUME_REPLAY: AtomicBool = AtomicBool::new(false);
+static CUR_SET: Mutex<Option<Settings>> = Mutex::new(None);
+const REPLAY_HOTKEY_ID: i32 = 2;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Btn {
@@ -67,18 +71,20 @@ enum Btn {
     Size,
     Format,
     Scale,
+    Replay,
     Status,
     Min,
     Close,
 }
 
 /// (button, width in 96-dpi px; 0 = takes the leftover width).
-const BUTTONS: [(Btn, i32); 8] = [
+const BUTTONS: [(Btn, i32); 9] = [
     (Btn::Rec, 118),
     (Btn::Fps, 62),
     (Btn::Size, 100),
     (Btn::Format, 58),
-    (Btn::Scale, 70),
+    (Btn::Scale, 76),
+    (Btn::Replay, 104),
     (Btn::Status, 0),
     (Btn::Min, 32),
     (Btn::Close, 32),
@@ -247,7 +253,13 @@ pub fn load_settings() -> Settings {
 }
 
 fn save(set: &Settings, hole: &RECT) {
+    // The replay buffer runs on its own thread; it reads these at each segment.
+    crate::replay::set_target(*hole, set.fps, set.format != Format::Gif && crate::settings::record_audio());
+    if let Ok(mut g) = CUR_SET.lock() {
+        *g = Some(*set);
+    }
     if let Some(k) = reg() {
+        let _ = k.set_value("ReplayKeep", &crate::replay::keep_secs());
         let _ = k.set_value("Fps", &set.fps);
         let _ = k.set_value("Format", &set.format.ext().to_string());
         let _ = k.set_value("Scale", &set.scale.label());
@@ -377,32 +389,22 @@ fn toggle() {
         2 => {} // encoding; nothing to stop
         _ => {
             let Some((hole, set)) = with(|c| (c.hole, c.set)) else { return };
+            // One duplication at a time: pause the replay buffer for the take.
+            if crate::replay::is_on() {
+                crate::replay::stop();
+                RESUME_REPLAY.store(true, Ordering::SeqCst);
+            }
             PHASE.store(1, Ordering::SeqCst);
             if let Ok(mut g) = REC_START.lock() {
                 *g = Some(Instant::now());
             }
             set_status("");
             std::thread::spawn(move || {
-                match record_and_finish(hole, set) {
-                    Ok((path, note)) => {
-                        let clip = crate::clipboard::set_file(&path).is_ok();
-                        crate::sound::play_shutter();
-                        crate::toast::launch(&path, clip);
-                        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                        set_status(match note {
-                            Some(n) => format!("{n}  ({name})"),
-                            None => format!("Saved + copied  {name}"),
-                        });
-                        if let Ok(mut g) = LAST_FILE.lock() {
-                            *g = Some(path);
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("trontsnap: cam recording failed: {e:#}");
-                        set_status(format!("Failed: {e}"));
-                    }
-                }
+                deliver(record_and_finish(hole, set));
                 PHASE.store(0, Ordering::SeqCst);
+                if RESUME_REPLAY.swap(false, Ordering::SeqCst) && !CLOSE_PENDING.load(Ordering::SeqCst) {
+                    crate::replay::start();
+                }
                 post(WM_CAM_DONE);
             });
         }
@@ -410,6 +412,41 @@ fn toggle() {
     unsafe {
         let _ = InvalidateRect(HWND(HWND_CELL.load(Ordering::SeqCst)), None, false);
     }
+}
+
+/// Finished file -> clipboard (as a file), shutter, toast, status line.
+fn deliver(res: anyhow::Result<(PathBuf, Option<String>)>) {
+    match res {
+        Ok((path, note)) => {
+            let clip = crate::clipboard::set_file(&path).is_ok();
+            crate::sound::play_shutter();
+            crate::toast::launch(&path, clip);
+            let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            set_status(match note {
+                Some(n) => format!("{n}  ({name})"),
+                None => format!("Saved + copied  {name}"),
+            });
+            if let Ok(mut g) = LAST_FILE.lock() {
+                *g = Some(path);
+            }
+        }
+        Err(e) => {
+            eprintln!("trontsnap: cam recording failed: {e:#}");
+            set_status(format!("Failed: {e}"));
+        }
+    }
+}
+
+/// A saved replay (temp MP4) -> the chosen format, off the buffer's thread so
+/// buffering resumes at once.
+fn on_replay_saved(res: anyhow::Result<PathBuf>) {
+    let set = CUR_SET.lock().ok().and_then(|g| *g).unwrap_or_else(load_settings);
+    std::thread::spawn(move || {
+        set_status(format!("Saving replay as {}...", set.format.label()));
+        post(WM_CAM_TICK);
+        deliver(res.and_then(|raw| crate::vidconv::finish(&raw, set.format, set.scale, set.fps)));
+        post(WM_CAM_TICK);
+    });
 }
 
 // ---------------------------------------------------------------- entry
@@ -477,6 +514,12 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
         if RegisterHotKey(hwnd, HOTKEY_ID, MOD_CONTROL | MOD_NOREPEAT, VK_F9.0 as u32).is_err() {
             set_status("Ctrl+F9 is taken by another app; use Space or Enter");
         }
+        let _ = RegisterHotKey(hwnd, REPLAY_HOTKEY_ID, MOD_CONTROL | MOD_NOREPEAT, VK_F10.0 as u32);
+        crate::replay::set_handler(on_replay_saved);
+        if let Some(k) = reg().and_then(|k| k.get_value::<u32, _>("ReplayKeep").ok()) {
+            crate::replay::set_keep_secs(k);
+        }
+        save(&set, &hole); // publishes the target for the replay buffer
         relayout();
         let _ = ShowWindow(hwnd, SW_SHOW);
         let _ = SetForegroundWindow(hwnd);
@@ -555,6 +598,32 @@ fn on_button(btn: Btn) {
                 crate::shellexec::run("explorer.exe", &format!("/select,\"{}\"", p.display()));
             }
         }
+        Btn::Replay if idle => {
+            let on = crate::replay::is_on();
+            let keep = crate::replay::keep_secs();
+            let mut items: Vec<_> = vec![(700, "Off".to_string(), !on)];
+            for (i, s) in [15u32, 30, 60, 120].iter().enumerate() {
+                items.push((701 + i, format!("Keep the last {s} s"), on && keep == *s));
+            }
+            items.push((0, String::new(), false));
+            items.push((710, "Save replay now   (Ctrl+F10)".into(), false));
+            let id = popup(hwnd, rect, &items, None);
+            match id {
+                700 => crate::replay::stop(),
+                701..=704 => {
+                    crate::replay::set_keep_secs([15, 30, 60, 120][id - 701]);
+                    if crate::vidconv::find_ffmpeg().is_none() {
+                        set_status("Replay needs ffmpeg on PATH (winget install ffmpeg)");
+                    } else {
+                        crate::replay::start();
+                        set_status("");
+                    }
+                }
+                710 => crate::replay::request_save(),
+                _ => {}
+            }
+        }
+        Btn::Replay => {}
         _ if !idle => {} // settings are locked while recording / encoding
         Btn::Fps => {
             let items: Vec<_> = FPS_PRESETS.iter().map(|f| (100 + *f as usize, format!("{f} fps"), *f == set.fps)).collect();
@@ -643,6 +712,7 @@ fn close(hwnd: HWND) {
         return; // let the encode finish
     }
     with(|c| save(&c.set, &c.hole));
+    crate::replay::stop();
     unsafe {
         let _ = DestroyWindow(hwnd);
     }
@@ -748,6 +818,8 @@ unsafe extern "system" fn proc_(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) ->
         WM_HOTKEY => {
             if wp.0 as i32 == HOTKEY_ID {
                 toggle();
+            } else if wp.0 as i32 == REPLAY_HOTKEY_ID {
+                crate::replay::request_save();
             }
             LRESULT(0)
         }
@@ -866,6 +938,7 @@ unsafe extern "system" fn proc_(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) ->
         }
         WM_DESTROY => {
             let _ = UnregisterHotKey(hwnd, HOTKEY_ID);
+            let _ = UnregisterHotKey(hwnd, REPLAY_HOTKEY_ID);
             PostQuitMessage(0);
             LRESULT(0)
         }
@@ -957,7 +1030,7 @@ unsafe fn paint(hdc: HDC, c: &Cam) {
     for (btn, r) in &l.buttons {
         let inner = RECT { left: r.left + pad, top: r.top + pad, right: r.right - pad, bottom: r.bottom - pad };
         let hover = c.hover == Some(*btn);
-        let settings_btn = matches!(btn, Btn::Fps | Btn::Size | Btn::Format | Btn::Scale);
+        let settings_btn = matches!(btn, Btn::Fps | Btn::Size | Btn::Format | Btn::Scale | Btn::Replay);
         let (label, bg, col): (String, COLORREF, COLORREF) = match btn {
             Btn::Rec => match phase {
                 1 => {
@@ -971,12 +1044,21 @@ unsafe fn paint(hdc: HDC, c: &Cam) {
             Btn::Size => (format!("{hw} x {hh}"), rgb(32, 36, 46), if idle { fg } else { dim }),
             Btn::Format => (c.set.format.label().into(), rgb(32, 36, 46), if idle { fg } else { dim }),
             Btn::Scale => (c.set.scale.label(), rgb(32, 36, 46), if idle { fg } else { dim }),
+            Btn::Replay => {
+                if crate::replay::is_on() {
+                    (format!("\u{25CF} Replay {}s", crate::replay::keep_secs()), rgb(24, 92, 64), fg)
+                } else {
+                    ("Replay off".into(), rgb(32, 36, 46), if idle { fg } else { dim })
+                }
+            }
             Btn::Status => {
                 let s = STATUS.lock().map(|s| s.clone()).unwrap_or_default();
                 let s = if !s.is_empty() {
                     s
                 } else if phase == 1 {
                     "Recording. Space, Enter or Ctrl+F9 stops".into()
+                } else if crate::replay::is_on() {
+                    format!("Buffering. Ctrl+F10 saves the last {} s", crate::replay::keep_secs())
                 } else {
                     "Space or Ctrl+F9. Drag here to move".into()
                 };
