@@ -13,7 +13,7 @@ use windows::Win32::Graphics::Dwm::{
     DwmGetWindowAttribute, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetClassNameW, GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW, IsIconic,
+    EnumWindows, GetClassNameW, GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW, IsIconic,
     IsWindowVisible, GWL_EXSTYLE, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
 };
 
@@ -39,6 +39,12 @@ pub type RawRect = RECT;
 /// bounds. DWMWA_EXTENDED_FRAME_BOUNDS gives the accurate on-screen rect DWM
 /// composites (the same preference ShareX makes). Falls back to GetWindowRect.
 pub fn enumerate_windows_raw() -> Vec<RawRect> {
+    enumerate_windows_titled().into_iter().map(|(_, r)| r).collect()
+}
+
+/// Same filter as `enumerate_windows_raw`, keeping each window's title (the cam
+/// window's "Snap to window" menu lists them).
+pub fn enumerate_windows_titled() -> Vec<(String, RawRect)> {
     let mut hwnds: Vec<HWND> = Vec::new();
     unsafe {
         let _ = EnumWindows(Some(enum_proc), LPARAM(&mut hwnds as *mut _ as isize));
@@ -70,7 +76,8 @@ pub fn enumerate_windows_raw() -> Vec<RawRect> {
             }
             // Skip titleless windows: message-only/utility, and phantom full-screen
             // ApplicationFrameWindow hosts of real UWP content.
-            if GetWindowTextLengthW(hwnd) <= 0 {
+            let tlen = GetWindowTextLengthW(hwnd);
+            if tlen <= 0 {
                 continue;
             }
             // Skip non-activatable tool windows (overlays/utilities). Requires BOTH
@@ -95,7 +102,9 @@ pub fn enumerate_windows_raw() -> Vec<RawRect> {
                 continue;
             }
 
-            out.push(r);
+            let mut tbuf = vec![0u16; tlen as usize + 1];
+            let n = GetWindowTextW(hwnd, &mut tbuf).max(0) as usize;
+            out.push((String::from_utf16_lossy(&tbuf[..n]), r));
         }
     }
     out

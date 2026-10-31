@@ -130,7 +130,11 @@ fn record_session() {
     };
     std::thread::spawn(move || hud_thread(region));
 
-    match capture_encode(origin, x, y, w, h) {
+    let path = match out_path("mp4") {
+        Ok(p) => p,
+        Err(e) => return eprintln!("trontsnap: recording failed: {e:#}"),
+    };
+    match capture_encode(origin, x, y, w, h, FPS, settings::record_audio(), path) {
         Ok(path) => {
             // Best-effort: the finished MP4 goes on the clipboard as a file (CF_HDROP),
             // so it pastes straight into Discord — same spirit as screenshots.
@@ -162,14 +166,14 @@ pub fn record_test(monitor: usize, secs: u64) -> anyhow::Result<()> {
         std::thread::sleep(Duration::from_secs(secs));
         STOP.store(true, Ordering::SeqCst);
     });
-    let path = capture_encode((m.x, m.y), 0, 0, w, h)?;
+    let path = capture_encode((m.x, m.y), 0, 0, w, h, FPS, settings::record_audio(), out_path("mp4")?)?;
     RECORDING.store(false, Ordering::SeqCst);
     println!("recorded {w}x{h} from monitor {monitor} -> {}", path.display());
     Ok(())
 }
 
 /// The capture + encode loop. Blocks until STOP; returns the finished file.
-fn capture_encode(origin: (i32, i32), rx: i32, ry: i32, w: u32, h: u32) -> anyhow::Result<PathBuf> {
+fn capture_encode(origin: (i32, i32), rx: i32, ry: i32, w: u32, h: u32, fps: u32, audio_on: bool, path: PathBuf) -> anyhow::Result<PathBuf> {
     unsafe {
         // COM + MF for this thread/session. RPC_E_CHANGED_MODE just means the thread
         // already had COM in another mode — fine for everything we use.
@@ -268,7 +272,7 @@ fn capture_encode(origin: (i32, i32), rx: i32, ry: i32, w: u32, h: u32) -> anyho
         let _dib_guard = DibGuard(dib_dc, old_bmp, dib);
 
         // --- MP4 sink writer -----------------------------------------------------
-        let path = out_path()?;
+        let fps = fps.clamp(1, 120);
         let wide: Vec<u16> = path.to_string_lossy().encode_utf16().chain([0]).collect();
         let mut attrs: Option<IMFAttributes> = None;
         MFCreateAttributes(&mut attrs, 1)?;
@@ -278,13 +282,13 @@ fn capture_encode(origin: (i32, i32), rx: i32, ry: i32, w: u32, h: u32) -> anyho
             MFCreateSinkWriterFromURL(PCWSTR(wide.as_ptr()), None, Some(&attrs))?;
 
         // ~0.13 bits per pixel per frame lands near screen-recorder norms; clamped.
-        let bitrate = ((w as u64 * h as u64 * FPS as u64) / 8).clamp(4_000_000, 24_000_000) as u32;
+        let bitrate = ((w as u64 * h as u64 * fps as u64) / 8).clamp(4_000_000, 24_000_000) as u32;
         let out_type: IMFMediaType = MFCreateMediaType()?;
         out_type.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)?;
         out_type.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_H264)?;
         out_type.SetUINT32(&MF_MT_AVG_BITRATE, bitrate)?;
         out_type.SetUINT64(&MF_MT_FRAME_SIZE, ((w as u64) << 32) | h as u64)?;
-        out_type.SetUINT64(&MF_MT_FRAME_RATE, ((FPS as u64) << 32) | 1)?;
+        out_type.SetUINT64(&MF_MT_FRAME_RATE, ((fps as u64) << 32) | 1)?;
         out_type.SetUINT64(&MF_MT_PIXEL_ASPECT_RATIO, (1u64 << 32) | 1)?;
         out_type.SetUINT32(&MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive.0 as u32)?;
         let stream = writer.AddStream(&out_type)?;
@@ -293,7 +297,7 @@ fn capture_encode(origin: (i32, i32), rx: i32, ry: i32, w: u32, h: u32) -> anyho
         in_type.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)?;
         in_type.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_RGB32)?;
         in_type.SetUINT64(&MF_MT_FRAME_SIZE, ((w as u64) << 32) | h as u64)?;
-        in_type.SetUINT64(&MF_MT_FRAME_RATE, ((FPS as u64) << 32) | 1)?;
+        in_type.SetUINT64(&MF_MT_FRAME_RATE, ((fps as u64) << 32) | 1)?;
         in_type.SetUINT64(&MF_MT_PIXEL_ASPECT_RATIO, (1u64 << 32) | 1)?;
         in_type.SetUINT32(&MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive.0 as u32)?;
         // Positive stride = top-down RGB32, matching the DIB.
@@ -306,7 +310,7 @@ fn capture_encode(origin: (i32, i32), rx: i32, ry: i32, w: u32, h: u32) -> anyho
         let epoch = Instant::now();
         let audio_stop = Arc::new(AtomicBool::new(false));
         let mut audio: Option<(u32, crossbeam_channel::Receiver<crate::audio::AudioBlock>)> = None;
-        if crate::settings::record_audio() {
+        if audio_on {
             match crate::audio::start(epoch, audio_stop.clone()) {
                 Ok((fmt, rx)) => {
                     let out_a: IMFMediaType = MFCreateMediaType()?;
@@ -353,7 +357,7 @@ fn capture_encode(origin: (i32, i32), rx: i32, ry: i32, w: u32, h: u32) -> anyho
         let mut cursor_cache = CursorCache::default();
 
         while !STOP.load(Ordering::SeqCst) {
-            let target = Duration::from_nanos(n * 1_000_000_000 / FPS as u64);
+            let target = Duration::from_nanos(n * 1_000_000_000 / fps as u64);
             if let Some(rest) = target.checked_sub(epoch.elapsed()) {
                 std::thread::sleep(rest);
             }
@@ -415,8 +419,8 @@ fn capture_encode(origin: (i32, i32), rx: i32, ry: i32, w: u32, h: u32) -> anyho
                 &writer,
                 stream,
                 frame,
-                (n as i64) * 10_000_000 / FPS as i64,
-                10_000_000 / FPS as i64,
+                (n as i64) * 10_000_000 / fps as i64,
+                10_000_000 / fps as i64,
             )?;
             n += 1;
         }
@@ -501,14 +505,48 @@ unsafe fn primary_output(adapter: &IDXGIAdapter) -> anyhow::Result<IDXGIOutput> 
     first.ok_or_else(|| anyhow::anyhow!("no DXGI outputs"))
 }
 
-fn out_path() -> anyhow::Result<PathBuf> {
+/// A fresh timestamped `TrontSnap_<stamp>.<ext>` in the captures folder.
+pub(crate) fn out_path(ext: &str) -> anyhow::Result<PathBuf> {
     let dir = capture::trontsnap_dir()?;
     std::fs::create_dir_all(&dir)?;
     let name = format!(
-        "TrontSnap_{}.mp4",
+        "TrontSnap_{}.{ext}",
         chrono::Local::now().format("%Y-%m-%d_%H-%M-%S")
     );
     Ok(dir.join(name))
+}
+
+/// Stop a live recording (the cam window's Stop button and hotkey).
+pub fn request_stop() {
+    STOP.store(true, Ordering::SeqCst);
+}
+
+/// Record the screen rect `r` (virtual-desktop px) at `fps` into `path` until
+/// `request_stop()`. Blocks; run it on its own thread. The rect is clamped to the
+/// monitor holding its center (duplication is per output) and evened for H.264.
+pub fn record_rect(r: RECT, fps: u32, audio: bool, path: PathBuf) -> anyhow::Result<PathBuf> {
+    let mons = capture::monitors()?;
+    let (cx, cy) = ((r.left + r.right) / 2, (r.top + r.bottom) / 2);
+    let m = mons
+        .iter()
+        .find(|m| cx >= m.x && cx < m.x + m.w as i32 && cy >= m.y && cy < m.y + m.h as i32)
+        .or_else(|| mons.first())
+        .expect("monitors() is non-empty");
+    let (l, t) = ((r.left - m.x).clamp(0, m.w as i32), (r.top - m.y).clamp(0, m.h as i32));
+    let (rr, bb) = ((r.right - m.x).clamp(0, m.w as i32), (r.bottom - m.y).clamp(0, m.h as i32));
+    let w = ((rr - l).max(0) & !1) as u32;
+    let h = ((bb - t).max(0) & !1) as u32;
+    if w < 16 || h < 16 {
+        anyhow::bail!("record area too small ({w}x{h})");
+    }
+    if RECORDING.swap(true, Ordering::SeqCst) {
+        anyhow::bail!("already recording");
+    }
+    STOP.store(false, Ordering::SeqCst);
+    let res = capture_encode((m.x, m.y), l, t, w, h, fps, audio, path);
+    RECORDING.store(false, Ordering::SeqCst);
+    STOP.store(false, Ordering::SeqCst);
+    res
 }
 
 /// Per-frame cursor compositor. GetIconInfo allocates two bitmaps per call, so the

@@ -277,6 +277,7 @@ impl App {
         let each_i = MenuItem::new("Capture Each Monitor Separately", true, None);
         let region_i = MenuItem::new("Capture Region   (Ctrl+PrtSc)", true, None);
         let record_i = MenuItem::new("Record Region   (Ctrl+Shift+PrtSc)", true, None);
+        let cam_i = MenuItem::new("Recorder Frame (GIF / MP4 / WEBM)", true, None);
         let ocr_i = MenuItem::new("Copy Text from Region   (Ctrl+Alt+PrtSc)", true, None);
         let cursor_i =
             CheckMenuItem::new("Capture cursor", true, crate::settings::capture_cursor(), None);
@@ -291,6 +292,7 @@ impl App {
         menu.append(&each_i)?;
         menu.append(&region_i)?;
         menu.append(&record_i)?;
+        menu.append(&cam_i)?;
         menu.append(&ocr_i)?;
         menu.append(&PredefinedMenuItem::separator())?;
         menu.append(&cursor_i)?;
@@ -329,6 +331,7 @@ impl App {
             let each = each_i.id().clone();
             let region = region_i.id().clone();
             let record = record_i.id().clone();
+            let cam = cam_i.id().clone();
             let ocr = ocr_i.id().clone();
             let quit = quit_i.id().clone();
             MenuEvent::set_event_handler(Some(move |ev: MenuEvent| {
@@ -352,6 +355,8 @@ impl App {
                 } else if ev.id == record {
                     // Toggle: first click picks a region + records, second stops.
                     crate::recorder::toggle();
+                } else if ev.id == cam {
+                    crate::cam::launch();
                 } else if ev.id == ocr {
                     std::thread::spawn(region_win32::capture_region_ocr);
                 } else if ev.id == quit {
@@ -670,6 +675,10 @@ impl App {
                             }
                             if ui.button("Record   (Ctrl+Shift+PrtSc)").clicked() {
                                 crate::recorder::toggle();
+                                ui.close_menu();
+                            }
+                            if ui.button("Recorder frame (GIF / MP4 / WEBM)").clicked() {
+                                crate::cam::launch();
                                 ui.close_menu();
                             }
                             if ui.button("Copy text   (Ctrl+Alt+PrtSc)").clicked() {
@@ -1129,6 +1138,15 @@ fn settings_tab_ui(ui: &mut egui::Ui) {
                     autostart::is_enabled(),
                     autostart::set,
                 );
+                ui.add_space(6.0);
+                if ui
+                    .button("Add Desktop + Start menu shortcuts")
+                    .on_hover_text("TrontSnap and TrontSnap Cam (the recorder frame). Click again after moving the exe to repair them.")
+                    .clicked()
+                {
+                    shortcuts_button_result(ui);
+                }
+                shortcuts_status(ui);
                 ui.add_space(8.0);
             });
         });
@@ -1756,7 +1774,27 @@ impl App {
                 shortcut_row(ui, "Ctrl + Shift + PrtSc", "Start or stop a screen recording");
                 shortcut_row(ui, "Ctrl + Alt + PrtSc", "Copy the TEXT out of a region (OCR)");
                 shortcut_row(ui, "Tray icon", "Left-click for an instant region capture");
+                shortcut_row(ui, "TrontSnap Cam", "Recorder frame: GIF / MP4 / WEBM, Ctrl+F9");
                 ui.add_space(18.0);
+                if !crate::shortcuts::present() || !autostart::is_enabled() {
+                    ui.separator();
+                    ui.add_space(14.0);
+                    ui.label(egui::RichText::new("One-click setup").strong().color(crate::theme::accent_ink()));
+                    ui.add_space(6.0);
+                    ui.label(
+                        egui::RichText::new(
+                            "Adds TrontSnap and TrontSnap Cam to your Desktop and Start menu, and starts TrontSnap at login.",
+                        )
+                        .color(crate::theme::t().text_muted),
+                    );
+                    ui.add_space(8.0);
+                    if ui.button("  Set me up  ").clicked() {
+                        autostart::set(true);
+                        shortcuts_button_result(ui);
+                    }
+                    shortcuts_status(ui);
+                    ui.add_space(18.0);
+                }
                 ui.separator();
                 ui.add_space(14.0);
 
@@ -1786,6 +1824,25 @@ impl App {
                 ui.add_space(20.0);
             });
         });
+    }
+}
+
+fn shortcuts_status_id() -> egui::Id {
+    egui::Id::new("trontsnap-shortcuts-status")
+}
+
+/// Make the launchers and remember the outcome line for `shortcuts_status`.
+fn shortcuts_button_result(ui: &mut egui::Ui) {
+    let msg = match crate::shortcuts::create_all() {
+        Ok(_) => "Done: TrontSnap and TrontSnap Cam are on your Desktop and in Start.".to_string(),
+        Err(e) => format!("Could not make shortcuts: {e}"),
+    };
+    ui.data_mut(|d| d.insert_temp(shortcuts_status_id(), msg));
+}
+
+fn shortcuts_status(ui: &mut egui::Ui) {
+    if let Some(msg) = ui.data(|d| d.get_temp::<String>(shortcuts_status_id())) {
+        ui.label(egui::RichText::new(msg).small().color(crate::theme::t().text_muted));
     }
 }
 

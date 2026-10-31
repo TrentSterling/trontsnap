@@ -6,6 +6,8 @@
 //   "region"        -> one-shot freeze-frame region picker, deliver, exit
 //   "full"          -> one-shot fullscreen grab, deliver, exit
 //   "ocr"           -> one-shot region picker, TEXT to clipboard (Windows OCR), exit
+//   "cam"           -> GifCam-style recorder frame (fps / size / GIF MP4 WEBM / scale)
+//   "rec ..."       -> headless record with the cam pipeline, prints the file
 //   "edit <path>"   -> annotation editor (arrow/box/redact/pixelate/text/crop); save overwrites
 //
 // Hotkeys owned by the app: PrintScreen = fullscreen, Ctrl+PrintScreen = region.
@@ -15,6 +17,7 @@
 mod app;
 mod audio;
 mod autostart;
+mod cam;
 mod capture;
 mod clipboard;
 mod color;
@@ -32,10 +35,12 @@ mod recorder;
 mod region_win32;
 mod settings;
 mod shellexec;
+mod shortcuts;
 mod sound;
 mod theme;
 mod thumbs;
 mod toast;
+mod vidconv;
 mod videothumb;
 mod watcher;
 mod window_chrome;
@@ -76,6 +81,8 @@ fn main() {
             recorder::record_test(n, secs)
         }
         "monitors" => capture::print_monitors(),
+        "cam" => cam::run(&std::env::args().skip(2).collect::<Vec<_>>()),
+        "rec" => cam::rec_cli(&std::env::args().skip(2).collect::<Vec<_>>()),
         "region" => {
             region_win32::capture_region();
             Ok(())
